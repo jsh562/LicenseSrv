@@ -1,0 +1,41 @@
+# Server CI gate for the tenancy/data foundation (E002). GitHub-hosted runners provide a
+# Docker daemon, so the Testcontainers integration tests run against real PostgreSQL.
+# NOTE (DOD supply-chain policy): pin every `uses:` to a commit SHA before production use.
+name: server-ci
+
+on:
+  push:
+    paths:
+      - "src/server/**"
+      - "migrations/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "vitest.config.ts"
+      - "eslint.config.js"
+      - ".github/workflows/server-ci.yml"
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # TODO: pin to SHA (DOD)
+      - uses: actions/setup-node@v4 # TODO: pin to SHA (DOD)
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run lint # module-boundary + style (TR-010)
+      - run: npm run typecheck
+      # Security gate: fail on any high/critical advisory in PROD dependencies.
+      - run: npm audit --omit=dev --audit-level=high
+      # SAST gate: high-severity findings fail the build (SQL injection, authz).
+      - uses: returntocorp/semgrep-action@v1 # TODO: pin to SHA (DOD)
+        with:
+          config: >-
+            p/typescript
+            p/sql-injection
+            p/owasp-top-ten
+      # Tests + coverage (>= 80% lines AND branches enforced in vitest.config.ts).
+      - run: npm run test:cov

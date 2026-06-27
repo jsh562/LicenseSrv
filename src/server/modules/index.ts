@@ -1,0 +1,19 @@
+import type { FastifyInstance } from "fastify";
+
+import type { AppDeps } from "../app.js";
+
+/**
+ * A feature module plugs into the modular monolith here (ADR-0005, TR-010). The reserved
+ * seams are for the feature epics — E004 signing, E005 admin, E007 catalog, E008 issuance,
+ * E009 activation — each registering without any other module importing it. A build-failing
+ * dependency-boundary lint rule (see eslint config) keeps cross-module imports out.
+ */
+export type ServerModule = (app: FastifyInstance, deps: AppDeps) => void;
+
+const MODULES: ServerModule[] = [
+  // Registered by later epics; intentionally empty in the foundation.
+];
+
+export function registerModules(app: FastifyInstance, deps: AppDeps): void {
+  for (const register of MODULES) register(app, deps);
+}

@@ -1,0 +1,2 @@
+Completed: 2026-06-27
+Note: data layer implemented with node-postgres (`pg`) + raw SQL migrations per AD-006 (Drizzle ORM deferred to feature epics). Semgrep SAST is wired into CI but not installed locally.

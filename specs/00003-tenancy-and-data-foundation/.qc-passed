@@ -1,0 +1,2 @@
+QC Passed: 2026-06-27
+Condition: Semgrep SAST is enforced in CI only (tool not installed locally); all other gates passed locally — typecheck, lint, npm audit (0 vulns), 24/24 tests on real Postgres, coverage 91.2% lines / 87.7% branches.
