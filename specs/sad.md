@@ -251,4 +251,5 @@ Project-level architectural decisions are maintained as standalone MADR files un
 
 ## Project Context Baseline Updates
 
-- (None yet — reusable project-level technical context promoted from later planning runs will be recorded here.)
+- The offline verifier core exposes the single canonical verification API and license token format (`LIC1.` envelope); its byte layout is a project-wide freeze point consumed by the bindings, signing, issuance, and activation work. Token-format changes are breaking and must be versioned (`token_version`, `key_id`).
+- The verifier core targets `no_std` + `alloc` (`wasm32` + 64-bit desktop/server) so one crate serves all bindings; its public API follows SemVer, its failure reasons are a closed append-only `VerifyError` enum (a stable cross-binding contract), and the keyring carries per-key validity (`valid_from`/`valid_until`, revoked) enforced offline.
