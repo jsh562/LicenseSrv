@@ -24,6 +24,8 @@ fn sample_token() -> (String, Keyring, VerifyOptions) {
         expires_at: Some(i64::MAX),
         max_activations: 1,
         fingerprint: None,
+        fp_min: None,
+        max_skew_secs: None,
         entitlements: ent,
         max_version: None,
         maintenance_until: None,

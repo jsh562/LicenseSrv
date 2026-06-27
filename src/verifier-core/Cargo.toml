@@ -2,19 +2,24 @@
 name = "verifier-core"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
-description = "Offline license-token verification core (Ed25519 + CBOR). See ADR-0001/ADR-0002."
+rust-version = "1.81"
+description = "Offline license-token verification core (Ed25519 + CBOR, no_std+alloc). See ADR-0001/ADR-0002."
 license = "MIT"
 
+[features]
+default = []
+# Opt-in std (the core is no_std + alloc by default; bindings choose).
+std = ["ed25519-dalek/std", "serde/std", "ciborium/std", "base64/std"]
+
 [dependencies]
-ed25519-dalek = "2"
-ciborium = "0.2"
-serde = { version = "1", features = ["derive"] }
-base64 = "0.22"
-thiserror = "2"
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
+ciborium = { version = "0.2", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 criterion = "0.5"
+ciborium = { version = "0.2" }
 
 [[bench]]
 name = "verify_bench"
