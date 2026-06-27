@@ -1,0 +1,24 @@
+# cargo-fuzz target for the token parser (HINT-002). Requires nightly:
+#   rustup toolchain install nightly
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run parse_token
+# Excluded from the main workspace (see root Cargo.toml).
+[package]
+name = "verifier-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+verifier-core = { path = ".." }
+
+[[bin]]
+name = "parse_token"
+path = "fuzz_targets/parse_token.rs"
+test = false
+doc = false
+bench = false

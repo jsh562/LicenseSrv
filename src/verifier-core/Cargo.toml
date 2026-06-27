@@ -1,0 +1,21 @@
+[package]
+name = "verifier-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Offline license-token verification core (Ed25519 + CBOR). See ADR-0001/ADR-0002."
+license = "MIT"
+
+[dependencies]
+ed25519-dalek = "2"
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+thiserror = "2"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "verify_bench"
+harness = false

@@ -1,0 +1,112 @@
+openapi: 3.1.0
+info:
+  title: License Server API
+  version: 0.1.0
+  description: >
+    Multi-tenant license server. Runtime endpoints (/v1) are used by licensed
+    applications via API key + license key. Admin endpoints (/admin/v1) back the
+    no-code console (interactive session) and automation (admin-scoped API keys).
+    Offline verification needs NO server call — see ADR-0001/ADR-0002.
+servers:
+  - url: https://{host}/{basePath}
+    variables: { host: { default: api.example.com }, basePath: { default: "" } }
+
+components:
+  securitySchemes:
+    apiKey: { type: apiKey, in: header, name: X-API-Key }       # runtime/machine (FR-018)
+    licenseToken: { type: http, scheme: bearer, bearerFormat: LIC1 }  # issued token
+    session: { type: apiKey, in: cookie, name: sid }             # console humans (FR-028)
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties: { code: { type: string }, message: { type: string }, details: { type: object } }
+    ActivateRequest:
+      type: object
+      required: [licenseKey, fingerprint, nonce]
+      properties:
+        licenseKey: { type: string, description: "LIC1.<base64url>" }
+        fingerprint:
+          type: object
+          description: "5 hashed signals; server matches >=3 of 5 (FR-015)"
+          properties: { machineId: {type: string}, mac: {type: string}, cpu: {type: string}, osInstall: {type: string}, disk: {type: string} }
+        nonce: { type: string, description: "anti-replay (FR-021)" }
+    TokenResponse:
+      type: object
+      properties:
+        token: { type: string, description: "LIC1.<base64url> bound to fingerprint" }
+        activationId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+    ValidateResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [VALID, EXPIRED, SUSPENDED, REVOKED, TOO_MANY_MACHINES, NO_MACHINE] }
+        entitlements: { type: object, additionalProperties: true }
+        serverTime: { type: string, format: date-time, description: "signed freshness anchor" }
+    AirgapRequestFile:
+      type: object
+      required: [requestFile]
+      properties: { requestFile: { type: string, description: "base64 signed activation request (FR-016)" } }
+    AirgapResponseFile:
+      type: object
+      properties: { responseFile: { type: string, description: "base64 signed activation response to import offline" } }
+    Jwks: { type: object, description: "public keyring (key_id → Ed25519 public key)" }
+
+paths:
+  /v1/activations:
+    post:
+      summary: Activate a license on a machine (consumes a seat)
+      security: [{ apiKey: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ActivateRequest' } } } }
+      responses:
+        '201': { description: activated, content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } } }
+        '409': { description: seat limit / revoked, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /v1/activations/{id}:
+    delete:
+      summary: Deactivate a machine (frees a seat) (FR-014)
+      security: [{ licenseToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '204': { description: deactivated } }
+  /v1/validate:
+    post:
+      summary: Online validation + freshness anchor (P2 heartbeat, FR-023)
+      security: [{ licenseToken: [] }]
+      responses: { '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/ValidateResponse' } } } } }
+  /v1/entitlements:
+    get:
+      summary: Resolve current entitlements
+      security: [{ licenseToken: [] }]
+      responses: { '200': { description: ok, content: { application/json: { schema: { type: object } } } } }
+  /v1/jwks:
+    get:
+      summary: Public signing keyring (for clients pinning keys)
+      responses: { '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Jwks' } } } } }
+  /v1/airgap/request:
+    post:
+      summary: Process an air-gapped activation request file → response file (FR-016)
+      security: [{ apiKey: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AirgapRequestFile' } } } }
+      responses: { '200': { description: signed response file, content: { application/json: { schema: { $ref: '#/components/schemas/AirgapResponseFile' } } } } }
+
+  /admin/v1/auth/login:
+    post:
+      summary: Console interactive login (FR-028)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email, password], properties: { email: {type: string}, password: {type: string} } } } } }
+      responses: { '200': { description: session established } }
+  /admin/v1/products:
+    post:
+      summary: Create product (no-code catalog, FR-001) — also plans, entitlements
+      security: [{ session: [] }, { apiKey: [] }]
+      responses: { '201': { description: created } }
+  /admin/v1/licenses:
+    post:
+      summary: Issue a signed license (FR-004)
+      security: [{ session: [] }, { apiKey: [] }]
+      responses: { '201': { description: issued, content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } } } }
+  /admin/v1/licenses/{id}/status:
+    patch:
+      summary: Revoke / suspend / reinstate (FR-006)
+      security: [{ session: [] }, { apiKey: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [active, suspended, revoked] } } } } } }
+      responses: { '200': { description: updated } }
