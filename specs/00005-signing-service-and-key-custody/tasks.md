@@ -59,7 +59,7 @@
 
 - [X] T010 [OBJ1] {TR-002} Default KeystoreSigner: unwrap key in custody, sign via token, in src/server/modules/signing/keystore-signer.ts ← T007:mintConformantToken → exports: KeystoreSigner
 - [X] T011 [OBJ1] {TR-011,TR-018} Fail-closed: custody fault returns SignerUnavailable, zero bytes, no key in error, in src/server/modules/signing/keystore-signer.ts
-- [ ] T012 [OBJ1] {TR-017} Config-driven signer factory selecting the keystore signer by default in src/server/modules/signing/index.ts ← T010:KeystoreSigner → exports: createSigner
+- [X] T012 [OBJ1] {TR-017} Config-driven signer factory selecting the keystore signer by default in src/server/modules/signing/index.ts ← T010:KeystoreSigner → exports: createSigner
 - [X] T013 [OBJ1] {TR-018} Conformance test: keystore-minted tokens verify via wasm/pkg core (SC-001) in src/server/modules/signing/__tests__/conformance.test.ts after:T011
 
 ---
@@ -73,8 +73,8 @@
 - [X] T014 [OBJ2] {TR-003} Per-product Ed25519 keypair gen + unique key_id, wrap key via custody, in src/server/modules/signing/registry.ts ← T008:wrapPrivateKey → exports: generateSigningKey
 - [X] T015 [OBJ2] {TR-005,TR-014} Provision (first key→active else→rotating) + signing_key.created audit in src/server/modules/signing/registry.ts → exports: provisionSigningKey
 - [X] T016 [OBJ2] {TR-006} Active-key selection (status='active') stamping the token key_id in src/server/modules/signing/registry.ts → exports: selectActiveKey
-- [ ] T017 [OBJ2] {TR-004} Provision route POST …/signing-keys (201+Location, admin RBAC, 4xx) in src/server/modules/signing/routes.ts ← T015:provisionSigningKey → exports: registerSigningRoutes
-- [ ] T018 [OBJ2] {TR-005,TR-010} [COMPLETES TR-005] List route GET …/signing-keys → 200, viewer+ RBAC, public metadata only, in src/server/modules/signing/routes.ts
+- [X] T017 [OBJ2] {TR-004} Provision route POST …/signing-keys (201+Location, admin RBAC, 4xx) in src/server/modules/signing/routes.ts ← T015:provisionSigningKey → exports: registerSigningRoutes
+- [X] T018 [OBJ2] {TR-005,TR-010} [COMPLETES TR-005] List route GET …/signing-keys → 200, viewer+ RBAC, public metadata only, in src/server/modules/signing/routes.ts
 - [X] T019 [OBJ2] {TR-004,TR-015} [COMPLETES TR-004] Integration test: RLS isolation, provision, active-key, audit, cross-product, in src/server/modules/signing/__tests__/registry.integration.test.ts
 
 ---
@@ -89,8 +89,8 @@
 - [X] T021 [OBJ3] {TR-009,TR-019} Revoke (status→revoked: off keyring + never selected) and retire (retired never signs, stays publishable until removed; bounded overlap close) in src/server/modules/signing/rotation.ts → exports: revokeKey, retireKey
 - [X] T022 [OBJ3] {TR-014} Append-only audit for rotate/retire/revoke (rotated/retired/revoked; revoke → security_event) in src/server/modules/signing/rotation.ts
 - [X] T023 [OBJ3] {TR-008,TR-019} JWKS keyring from product_keyring view (active+rotating+retired trusted; kid/kty/crv/alg/x/validity; no private material) in src/server/modules/signing/keyring.ts after:T004 → exports: buildKeyring
-- [ ] T024 [OBJ3] {TR-007,TR-009} Rotate + revoke routes (200; admin RBAC; 409 rotation_in_flight/already_revoked) in src/server/modules/signing/routes.ts ← T020:rotateKey ← T021:revokeKey
-- [ ] T025 [OBJ3] {TR-008} [COMPLETES TR-008] Public keyring route GET …/keyring → 200 jwk-set+json, viewer+/public-distribution, in src/server/modules/signing/routes.ts ← T023:buildKeyring
+- [X] T024 [OBJ3] {TR-007,TR-009} Rotate + revoke routes (200; admin RBAC; 409 rotation_in_flight/already_revoked) in src/server/modules/signing/routes.ts ← T020:rotateKey ← T021:revokeKey
+- [X] T025 [OBJ3] {TR-008} [COMPLETES TR-008] Public keyring route GET …/keyring → 200 jwk-set+json, viewer+/public-distribution, in src/server/modules/signing/routes.ts ← T023:buildKeyring
 - [X] T026 [OBJ3] {TR-007,TR-009,TR-015} [COMPLETES TR-007,TR-009] Integration: rotate keeps v1, revoke omits, cross-product, in src/server/modules/signing/__tests__/rotation.integration.test.ts
 - [X] T027 [OBJ3] {TR-018} [COMPLETES TR-018] Conformance ext: rotated-key tokens verify under the published keyring via wasm/pkg in src/server/modules/signing/__tests__/conformance.test.ts after:T020 (covered in signing.integration.test.ts: pre-rotation token verifies under published keyring, SC-004)
 
@@ -102,9 +102,9 @@
 
 **Independent test**: Start with fewer than k shares — the signer does not unlock, signs nothing, returns a defined error, and readiness fails; with the backend unavailable a signing request is refused with no partial/unsigned token and no key material in logs (SC-006).
 
-- [ ] T028 [OBJ4] {TR-011,TR-012} Boot-time unlock — reconstruct master key from k-of-n shares (E006), zeroize on shutdown, in src/server/modules/signing/index.ts ← T008:reconstructMasterKey
-- [ ] T029 [OBJ4] {TR-011} [COMPLETES TR-011] Readiness (not liveness) reflects custody — below k/backend down → not-ready, signer locked, in src/server/modules/signing/index.ts
-- [ ] T030 [OBJ4] {TR-013} Write the key-recovery runbook: keystore backup separated from unlock material, k-of-n custodian recovery steps, in deploy/signing-key-recovery.md
+- [X] T028 [OBJ4] {TR-011,TR-012} Boot-time unlock — reconstruct master key from k-of-n shares (E006), zeroize on shutdown, in src/server/modules/signing/index.ts ← T008:reconstructMasterKey
+- [X] T029 [OBJ4] {TR-011} [COMPLETES TR-011] Readiness (not liveness) reflects custody — below k/backend down → not-ready, signer locked, in src/server/modules/signing/index.ts
+- [X] T030 [OBJ4] {TR-013} Write the key-recovery runbook: keystore backup separated from unlock material, k-of-n custodian recovery steps, in deploy/signing-key-recovery.md
 - [X] T031 [OBJ4] {TR-012} [COMPLETES TR-012] Custody unit: Shamir split/recombine, envelope wrap/unwrap, fail-closed <k + backend down, in src/server/modules/signing/__tests__/custody.unit.test.ts
 
 ---
@@ -115,18 +115,18 @@
 
 **Independent test**: Configure the deployment to the KMS/PKCS#11 adapter with no caller change — issuance still produces tokens that verify offline, and the private key never leaves the backend (no export path) (SC-007).
 
-- [ ] T032 [OBJ5] {TR-016} KMS/PKCS#11 adapter implements Signer (sign-only, no export; opaque-handle scheme) in src/server/modules/signing/kms-signer.ts ← T005:Signer → exports: KmsSigner
-- [ ] T033 [OBJ5] {TR-016,TR-017} Extend the config-driven factory to select KMS/PKCS#11 vs keystore with no caller change in src/server/modules/signing/index.ts after:T012 ← T032:KmsSigner
-- [ ] T034 [OBJ5] {TR-016} [COMPLETES TR-016] KMS-swap: no caller change, tokens verify via wasm/pkg, key stays in backend, in src/server/modules/signing/__tests__/conformance.test.ts after:T033
+- [ ] T032 [OBJ5] {TR-016} [DEFERRED] KMS/PKCS#11 adapter implements Signer (sign-only, no export; opaque-handle scheme) in src/server/modules/signing/kms-signer.ts ← T005:Signer → exports: KmsSigner
+- [ ] T033 [OBJ5] {TR-016,TR-017} [DEFERRED] Extend the config-driven factory to select KMS/PKCS#11 vs keystore with no caller change in src/server/modules/signing/index.ts after:T012 ← T032:KmsSigner
+- [ ] T034 [OBJ5] {TR-016} [DEFERRED] [COMPLETES TR-016] KMS-swap: no caller change, tokens verify via wasm/pkg, key stays in backend, in src/server/modules/signing/__tests__/conformance.test.ts after:T033
 
 ---
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-- [ ] T035 [P] {TR-010} [COMPLETES TR-010] Secret-leakage: no private-key bytes in any response/log/error on all key paths (SC-001) in src/server/modules/signing/__tests__/secret-leakage.test.ts
-- [ ] T036 [P] Register the signing module (routes + createSigner + initCustody + readiness) in src/server/modules/index.ts after:T029 ← T017:registerSigningRoutes
-- [ ] T037 [P] Unit tests (keyring projection, status guards, envelope round-trip) for ≥80% line+branch coverage in src/server/modules/signing/__tests__/signing.unit.test.ts
-- [ ] T038 [P] Verify the server-ci security gate covers the signing module — npm audit (no critical) + semgrep on src/server/modules/signing — in .github/workflows/server-ci.yml
+- [X] T035 [P] {TR-010} [COMPLETES TR-010] Secret-leakage: no private-key bytes in any response/log/error on all key paths (SC-001) in src/server/modules/signing/__tests__/secret-leakage.test.ts
+- [X] T036 [P] Register the signing module (routes + createSigner + initCustody + readiness) in src/server/modules/index.ts after:T029 ← T017:registerSigningRoutes
+- [X] T037 [P] Unit tests (keyring projection, status guards, envelope round-trip) for ≥80% line+branch coverage in src/server/modules/signing/__tests__/signing.unit.test.ts
+- [X] T038 [P] Verify the server-ci security gate covers the signing module — npm audit (no critical) + semgrep on src/server/modules/signing — in .github/workflows/server-ci.yml (existing gate globs src/server/** + migrations/**; lint/typecheck/audit/semgrep/coverage all cover the signing module)
 
 ---
 

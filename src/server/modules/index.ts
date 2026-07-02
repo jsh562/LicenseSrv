@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
 import type { AppDeps } from "../app.js";
+import { registerSigning } from "./signing/index.js";
 
 /**
  * A feature module plugs into the modular monolith here (ADR-0005, TR-010). The reserved
@@ -11,7 +12,7 @@ import type { AppDeps } from "../app.js";
 export type ServerModule = (app: FastifyInstance, deps: AppDeps) => void;
 
 const MODULES: ServerModule[] = [
-  // Registered by later epics; intentionally empty in the foundation.
+  registerSigning, // E004 — signing service & key custody
 ];
 
 export function registerModules(app: FastifyInstance, deps: AppDeps): void {

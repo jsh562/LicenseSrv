@@ -1,0 +1,7 @@
+QC Passed: 2026-07-02T00:00:00Z (partial pass — deferred remain)
+P1 MVP (OBJ1–OBJ4) complete and verified: 58/58 tests, typecheck + lint clean, coverage >= 80%
+lines+branches, npm audit 0 vulns, Story Verifier P1 PASS, PI (I/II/III) PASS, TR-010 leak-free.
+Deferred (P2, non-blocking): OBJ5 cloud-KMS/PKCS#11 adapter (T032/T033/T034; TR-016/017, SC-007) —
+config-driven signer seam already in place.
+Standing condition (CI-enforced, matching the E002/E003 precedent): Semgrep SAST runs in CI only
+(tool not installed locally); all other gates passed locally.

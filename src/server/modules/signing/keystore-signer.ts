@@ -8,7 +8,7 @@ import type { Custody } from "./custody.js";
 import { ed25519Sign } from "./edkeys.js";
 import { activeKey } from "./registry.js";
 import type { Signer } from "./signer.js";
-import { SignerError } from "./signer.js";
+import { KeyMaterial, SignerError } from "./signer.js";
 import type { Claims } from "./token.js";
 import { assembleToken, buildSigningInput, conformanceVerify } from "./token.js";
 
@@ -49,9 +49,12 @@ export class KeystoreSigner implements Signer {
     }
 
     try {
-      const stamped: Claims = { ...claims, keyId: ak.keyId };
+      // Route the key through the KeyMaterial boundary (TR-010/AD-007): the private seed is only
+      // reachable via the opaque `signOver` closure, never serialized/logged/returned.
+      const km = new KeyMaterial(ak.keyId, ak.publicKey, (input) => ed25519Sign(seed, input));
+      const stamped: Claims = { ...claims, keyId: km.keyId };
       const { payload, signingInput } = buildSigningInput(stamped);
-      const signature = ed25519Sign(seed, signingInput);
+      const signature = km.signOver(signingInput);
       const token = assembleToken(payload, signature);
 
       // Conformance oracle: the minted token MUST verify via the real core before we return it.

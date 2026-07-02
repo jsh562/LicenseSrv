@@ -18,7 +18,7 @@ import { Custody, shamirSplit } from "../custody.js";
 import { KeystoreSigner } from "../keystore-signer.js";
 import { buildKeyring } from "../keyring.js";
 import { activeKey, listKeys, provisionKey } from "../registry.js";
-import { revokeKey, rotateKey } from "../rotation.js";
+import { retireKey, revokeKey, rotateKey } from "../rotation.js";
 import { SignerError } from "../signer.js";
 import type { Claims } from "../token.js";
 
@@ -40,6 +40,7 @@ const tenantA = randomUUID();
 const tenantB = randomUUID();
 const productA = randomUUID();
 const productB = randomUUID();
+const productC = randomUUID();
 
 function claims(productId: string): Claims {
   return {
@@ -153,6 +154,29 @@ describe("signing service (integration, real Postgres)", () => {
 
     const after = await buildKeyring(pool, tenantA, productA);
     expect(after.keys.map((k) => k.kid)).not.toContain(victim);
+  });
+
+  it("bounds the rotation overlap window and governs the retired state (TR-019)", async () => {
+    await provisionKey(pool, tenantA, productC, custody, "admin-a");
+    const rotated = await rotateKey(pool, tenantA, productC, custody, "admin-a", 3600); // 1h overlap
+
+    // The demoted (rotating) key now has a BOUNDED valid_until — not open-ended.
+    const rotating = await withTenant(pool, tenantA, async (q) => {
+      const r = await q(
+        "SELECT key_id, valid_until FROM signing_key WHERE product_id = $1 AND status = 'rotating'",
+        [productC],
+      );
+      return r.rows[0] as { key_id: string; valid_until: Date | null } | undefined;
+    });
+    expect(rotating).toBeDefined();
+    expect(rotating!.valid_until).not.toBeNull();
+
+    // retire: rotating -> retired (still publishable/trusted until removed).
+    expect(await retireKey(pool, tenantA, productC, rotating!.key_id, "admin-a")).toBe(true);
+    const keyring = await buildKeyring(pool, tenantA, productC);
+    const kids = keyring.keys.map((k) => k.kid);
+    expect(kids).toContain(rotating!.key_id); // retired stays trusted/published
+    expect(kids).toContain(rotated.keyId); // new active
   });
 
   it("records revocation as a security event (TR-011/TR-014)", async () => {

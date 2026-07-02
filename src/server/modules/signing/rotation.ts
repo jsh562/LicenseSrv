@@ -28,6 +28,7 @@ export async function rotateKey(
   productId: string,
   custody: Custody,
   actor: string,
+  overlapSeconds = 2_592_000, // TR-019: bounded overlap window (default 30d; operator-configurable via index.ts)
 ): Promise<SigningKeyMetadata> {
   if (!custody.unlocked) throw new Error("custody locked: cannot rotate");
   const gen = generateSigningKey();
@@ -35,10 +36,14 @@ export async function rotateKey(
   gen.privateSeed.fill(0);
 
   return withTenant(pool, tenantId, async (q) => {
-    // Demote the prior active key first so the partial-unique (one active) invariant holds.
+    // Demote the prior active key to rotating and BOUND its trust window (TR-019): it stays trusted
+    // only until now + overlapSeconds, never open-ended. This keeps the partial-unique (one active)
+    // invariant and time-bounds the overlap.
     await q(
-      "UPDATE signing_key SET status = 'rotating' WHERE product_id = $1 AND status = 'active'",
-      [productId],
+      `UPDATE signing_key
+          SET status = 'rotating', valid_until = now() + ($2::int * interval '1 second')
+        WHERE product_id = $1 AND status = 'active'`,
+      [productId, overlapSeconds],
     );
     const id = crypto.randomUUID();
     const inserted = await q(
