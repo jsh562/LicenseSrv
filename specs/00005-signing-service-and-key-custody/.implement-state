@@ -1,0 +1,20 @@
+phase: Phase 6 (OBJ4) partial — security-critical core done + tested
+completed: 22
+remaining: 15
+blocked: none
+timestamp: 2026-07-02T00:00:00Z
+notes: |
+  DONE + VALIDATED (17 tests pass: 10 unit + 7 integration; typecheck clean):
+  - Foundational: migrations/0004 (table+indexes+RLS+view, ran under Testcontainers), signer.ts,
+    token.ts (byte-exact LIC1 encoder + conformance oracle; AD-001 proven), custody.ts
+    (Shamir GF256 + AES-256-GCM), edkeys.ts, registry.ts.
+  - OBJ1: keystore-signer.ts (sign + conformance-verify + fail-closed).
+  - OBJ2: per-product keygen, provision, active-key selection, audit (integration-tested: RLS
+    isolation, cross-product, audit — SC-001/002/003).
+  - OBJ3: rotation.ts (rotate/revoke/retire), keyring.ts (JWKS) — integration-tested rotation
+    keeps prior token valid (SC-004), revocation-by-omission (SC-005).
+  - OBJ4 custody: Custody class + Shamir unlock/fail-closed (unit-tested SC-006-partial).
+  REMAINING (15): T012 signer factory (index.ts); T017/T018/T024/T025 REST routes (routes.ts);
+  T028/T029 index custody boot-unlock + readiness wiring; T030 recovery runbook; T032-T034 KMS
+  adapter (P2); T035 secret-leakage test; T036 module registration; T037 unit coverage top-up;
+  T038 CI security-gate check. Then QC (.completed NOT created — implement incomplete).

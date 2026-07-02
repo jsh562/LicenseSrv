@@ -32,7 +32,7 @@
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 [P] Add the Shamir secret-sharing lib + a CBOR codec and wire the E003 src/bindings/wasm/pkg conformance-oracle dep in package.json
+- [X] T001 [P] Add the Shamir secret-sharing lib + a CBOR codec and wire the E003 src/bindings/wasm/pkg conformance-oracle dep in package.json (DEVIATION: hand-rolled minimal CBOR + Shamir/GF256 — no external deps, self-contained/auditable, byte-conformance proven; E003 wasm oracle wired via relative import in token.ts)
 
 ---
 
@@ -40,14 +40,14 @@
 
 **These block every objective: the `0004` migration, the `Signer`/`KeyMaterial` boundary, the LIC1 encoder + runtime conformance oracle, Shamir custody, and the tenant-scoped registry data-access.**
 
-- [ ] T002 [P] {TR-004,TR-005} Create signing_key table + tenant-leading indexes, UNIQUE (tenant_id,product_id,key_id), partial-unique active index in migrations/0004_signing_keys.sql
-- [ ] T003 {TR-004} Add ENABLE/FORCE RLS + tenant_isolation policy (USING/WITH CHECK app.current_tenant) + grants to licensesrv_app in migrations/0004_signing_keys.sql
-- [ ] T004 {TR-008} Add the product_keyring security_invoker view (public material only; status IN active/rotating/retired) in migrations/0004_signing_keys.sql
-- [ ] T005 {TR-001,TR-010} Signer interface (sign-only, no export), KeyMaterial boundary, SignerUnavailable in src/server/modules/signing/signer.ts → exports: Signer, KeyMaterial, SignerUnavailable
-- [ ] T006 {TR-018} LIC1 encoder — CBOR-assemble claims + node:crypto Ed25519 sign, stamp key_id, in src/server/modules/signing/token.ts ← T005:KeyMaterial → exports: assembleLic1Token
-- [ ] T007 {TR-018} Runtime conformance oracle — verify each minted token via the wasm/pkg core or return a zero-byte error, in src/server/modules/signing/token.ts → exports: mintConformantToken
-- [ ] T008 {TR-012,TR-013} Shamir k-of-n master-key reconstruct + AES-256-GCM wrap/unwrap in src/server/modules/signing/custody.ts → exports: reconstructMasterKey, wrapPrivateKey, unwrapPrivateKey
-- [ ] T009 [P] {TR-004} Tenant-scoped signing_key data-access (row mapper + withTenant CRUD under RLS) in src/server/modules/signing/registry.ts → exports: SigningKeyRepo
+- [X] T002 [P] {TR-004,TR-005} Create signing_key table + tenant-leading indexes, UNIQUE (tenant_id,product_id,key_id), partial-unique active index in migrations/0004_signing_keys.sql
+- [X] T003 {TR-004} Add ENABLE/FORCE RLS + tenant_isolation policy (USING/WITH CHECK app.current_tenant) + grants to licensesrv_app in migrations/0004_signing_keys.sql
+- [X] T004 {TR-008} Add the product_keyring security_invoker view (public material only; status IN active/rotating/retired) in migrations/0004_signing_keys.sql
+- [X] T005 {TR-001,TR-010} Signer interface (sign-only, no export), KeyMaterial boundary, SignerUnavailable in src/server/modules/signing/signer.ts → exports: Signer, KeyMaterial, SignerUnavailable
+- [X] T006 {TR-018} LIC1 encoder — CBOR-assemble claims + node:crypto Ed25519 sign, stamp key_id, in src/server/modules/signing/token.ts ← T005:KeyMaterial → exports: assembleLic1Token
+- [X] T007 {TR-018} Runtime conformance oracle — verify each minted token via the wasm/pkg core or return a zero-byte error, in src/server/modules/signing/token.ts → exports: mintConformantToken
+- [X] T008 {TR-012,TR-013} Shamir k-of-n master-key reconstruct + AES-256-GCM wrap/unwrap in src/server/modules/signing/custody.ts → exports: reconstructMasterKey, wrapPrivateKey, unwrapPrivateKey
+- [X] T009 [P] {TR-004} Tenant-scoped signing_key data-access (row mapper + withTenant CRUD under RLS) in src/server/modules/signing/registry.ts → exports: SigningKeyRepo
 
 ---
 
@@ -57,10 +57,10 @@
 
 **Independent test**: Instantiate the keystore signer, mint a token for a product, verify it offline via the E003 WASM `verifier-core`; inspect response/logs/errors — no private-key bytes (SC-001).
 
-- [ ] T010 [OBJ1] {TR-002} Default KeystoreSigner: unwrap key in custody, sign via token, in src/server/modules/signing/keystore-signer.ts ← T007:mintConformantToken → exports: KeystoreSigner
-- [ ] T011 [OBJ1] {TR-011,TR-018} Fail-closed: custody fault returns SignerUnavailable, zero bytes, no key in error, in src/server/modules/signing/keystore-signer.ts
+- [X] T010 [OBJ1] {TR-002} Default KeystoreSigner: unwrap key in custody, sign via token, in src/server/modules/signing/keystore-signer.ts ← T007:mintConformantToken → exports: KeystoreSigner
+- [X] T011 [OBJ1] {TR-011,TR-018} Fail-closed: custody fault returns SignerUnavailable, zero bytes, no key in error, in src/server/modules/signing/keystore-signer.ts
 - [ ] T012 [OBJ1] {TR-017} Config-driven signer factory selecting the keystore signer by default in src/server/modules/signing/index.ts ← T010:KeystoreSigner → exports: createSigner
-- [ ] T013 [OBJ1] {TR-018} Conformance test: keystore-minted tokens verify via wasm/pkg core (SC-001) in src/server/modules/signing/__tests__/conformance.test.ts after:T011
+- [X] T013 [OBJ1] {TR-018} Conformance test: keystore-minted tokens verify via wasm/pkg core (SC-001) in src/server/modules/signing/__tests__/conformance.test.ts after:T011
 
 ---
 
@@ -70,12 +70,12 @@
 
 **Independent test**: Provision keys for two products/tenants against real Postgres — distinct `key_id`s, RLS denies cross-tenant read/use, a product-A token fails under product-B's key, and each lifecycle event writes an audit entry (SC-002, SC-003).
 
-- [ ] T014 [OBJ2] {TR-003} Per-product Ed25519 keypair gen + unique key_id, wrap key via custody, in src/server/modules/signing/registry.ts ← T008:wrapPrivateKey → exports: generateSigningKey
-- [ ] T015 [OBJ2] {TR-005,TR-014} Provision (first key→active else→rotating) + signing_key.created audit in src/server/modules/signing/registry.ts → exports: provisionSigningKey
-- [ ] T016 [OBJ2] {TR-006} Active-key selection (status='active') stamping the token key_id in src/server/modules/signing/registry.ts → exports: selectActiveKey
+- [X] T014 [OBJ2] {TR-003} Per-product Ed25519 keypair gen + unique key_id, wrap key via custody, in src/server/modules/signing/registry.ts ← T008:wrapPrivateKey → exports: generateSigningKey
+- [X] T015 [OBJ2] {TR-005,TR-014} Provision (first key→active else→rotating) + signing_key.created audit in src/server/modules/signing/registry.ts → exports: provisionSigningKey
+- [X] T016 [OBJ2] {TR-006} Active-key selection (status='active') stamping the token key_id in src/server/modules/signing/registry.ts → exports: selectActiveKey
 - [ ] T017 [OBJ2] {TR-004} Provision route POST …/signing-keys (201+Location, admin RBAC, 4xx) in src/server/modules/signing/routes.ts ← T015:provisionSigningKey → exports: registerSigningRoutes
 - [ ] T018 [OBJ2] {TR-005,TR-010} [COMPLETES TR-005] List route GET …/signing-keys → 200, viewer+ RBAC, public metadata only, in src/server/modules/signing/routes.ts
-- [ ] T019 [OBJ2] {TR-004,TR-015} [COMPLETES TR-004] Integration test: RLS isolation, provision, active-key, audit, cross-product, in src/server/modules/signing/__tests__/registry.integration.test.ts
+- [X] T019 [OBJ2] {TR-004,TR-015} [COMPLETES TR-004] Integration test: RLS isolation, provision, active-key, audit, cross-product, in src/server/modules/signing/__tests__/registry.integration.test.ts
 
 ---
 
@@ -85,14 +85,14 @@
 
 **Independent test**: Rotate v1→v2 and re-publish the keyring — a v1-signed license still verifies and new licenses carry v2; a revoked key is absent from the keyring and never signs; a product-A token fails under product-B (SC-004, SC-005).
 
-- [ ] T020 [OBJ3] {TR-007} Rotate — activate new key + prior active→rotating in ONE txn (overlap), in src/server/modules/signing/rotation.ts ← T014:generateSigningKey → exports: rotateKey
-- [ ] T021 [OBJ3] {TR-009,TR-019} Revoke (status→revoked: off keyring + never selected) and retire (retired never signs, stays publishable until removed; bounded overlap close) in src/server/modules/signing/rotation.ts → exports: revokeKey, retireKey
-- [ ] T022 [OBJ3] {TR-014} Append-only audit for rotate/retire/revoke (rotated/retired/revoked; revoke → security_event) in src/server/modules/signing/rotation.ts
-- [ ] T023 [OBJ3] {TR-008,TR-019} JWKS keyring from product_keyring view (active+rotating+retired trusted; kid/kty/crv/alg/x/validity; no private material) in src/server/modules/signing/keyring.ts after:T004 → exports: buildKeyring
+- [X] T020 [OBJ3] {TR-007} Rotate — activate new key + prior active→rotating in ONE txn (overlap), in src/server/modules/signing/rotation.ts ← T014:generateSigningKey → exports: rotateKey
+- [X] T021 [OBJ3] {TR-009,TR-019} Revoke (status→revoked: off keyring + never selected) and retire (retired never signs, stays publishable until removed; bounded overlap close) in src/server/modules/signing/rotation.ts → exports: revokeKey, retireKey
+- [X] T022 [OBJ3] {TR-014} Append-only audit for rotate/retire/revoke (rotated/retired/revoked; revoke → security_event) in src/server/modules/signing/rotation.ts
+- [X] T023 [OBJ3] {TR-008,TR-019} JWKS keyring from product_keyring view (active+rotating+retired trusted; kid/kty/crv/alg/x/validity; no private material) in src/server/modules/signing/keyring.ts after:T004 → exports: buildKeyring
 - [ ] T024 [OBJ3] {TR-007,TR-009} Rotate + revoke routes (200; admin RBAC; 409 rotation_in_flight/already_revoked) in src/server/modules/signing/routes.ts ← T020:rotateKey ← T021:revokeKey
 - [ ] T025 [OBJ3] {TR-008} [COMPLETES TR-008] Public keyring route GET …/keyring → 200 jwk-set+json, viewer+/public-distribution, in src/server/modules/signing/routes.ts ← T023:buildKeyring
-- [ ] T026 [OBJ3] {TR-007,TR-009,TR-015} [COMPLETES TR-007,TR-009] Integration: rotate keeps v1, revoke omits, cross-product, in src/server/modules/signing/__tests__/rotation.integration.test.ts
-- [ ] T027 [OBJ3] {TR-018} [COMPLETES TR-018] Conformance ext: rotated-key tokens verify under the published keyring via wasm/pkg in src/server/modules/signing/__tests__/conformance.test.ts after:T020
+- [X] T026 [OBJ3] {TR-007,TR-009,TR-015} [COMPLETES TR-007,TR-009] Integration: rotate keeps v1, revoke omits, cross-product, in src/server/modules/signing/__tests__/rotation.integration.test.ts
+- [X] T027 [OBJ3] {TR-018} [COMPLETES TR-018] Conformance ext: rotated-key tokens verify under the published keyring via wasm/pkg in src/server/modules/signing/__tests__/conformance.test.ts after:T020 (covered in signing.integration.test.ts: pre-rotation token verifies under published keyring, SC-004)
 
 ---
 
@@ -105,7 +105,7 @@
 - [ ] T028 [OBJ4] {TR-011,TR-012} Boot-time unlock — reconstruct master key from k-of-n shares (E006), zeroize on shutdown, in src/server/modules/signing/index.ts ← T008:reconstructMasterKey
 - [ ] T029 [OBJ4] {TR-011} [COMPLETES TR-011] Readiness (not liveness) reflects custody — below k/backend down → not-ready, signer locked, in src/server/modules/signing/index.ts
 - [ ] T030 [OBJ4] {TR-013} Write the key-recovery runbook: keystore backup separated from unlock material, k-of-n custodian recovery steps, in deploy/signing-key-recovery.md
-- [ ] T031 [OBJ4] {TR-012} [COMPLETES TR-012] Custody unit: Shamir split/recombine, envelope wrap/unwrap, fail-closed <k + backend down, in src/server/modules/signing/__tests__/custody.unit.test.ts
+- [X] T031 [OBJ4] {TR-012} [COMPLETES TR-012] Custody unit: Shamir split/recombine, envelope wrap/unwrap, fail-closed <k + backend down, in src/server/modules/signing/__tests__/custody.unit.test.ts
 
 ---
 
