@@ -1,0 +1,61 @@
+# `ls-ffi` — the single thin FFI surface that wraps `verifier-core` (E001) for every
+# language binding (C ABI, WASM, UniFFI). No cryptography is implemented here; this crate
+# only adapts the one core's offline `verify` to a panic-safe, memory-explicit ABI
+# (Principle III / ADR-0002 / FR-004).
+[package]
+name = "ls-ffi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+description = "Embeddable FFI bindings (C ABI / WASM / UniFFI) over the offline license verifier-core. See ADR-0002."
+license = "MIT"
+
+[lib]
+# cdylib  -> native shared library (.dll/.so/.dylib) for the C ABI, and the .wasm for WASM.
+# staticlib -> native static archive (.a/.lib) for statically linked C/.NET hosts.
+# rlib    -> lets the integration tests in this crate link the Rust glue directly.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+# wasm-pack's optional wasm-opt pass downloads a binaryen release; disable it so the build is
+# self-contained (no network at build time, consistent with the offline ethos). The wasm-bindgen
+# output is already correct; wasm-opt is only a size/speed optimization.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false
+
+[features]
+# std is required for the catch_unwind panic guard (FR-005) and C-string marshalling; the
+# C-ABI and UniFFI bindings always build with it. The wasm32 build relies on the core's
+# panic-free (fuzzed) parser instead of catch_unwind — a wasm trap is the platform's
+# terminal fault and out of scope per FR-005.
+default = ["std"]
+std = ["verifier-core/std"]
+# Opt-in heavy P2 generated-binding toolchain; kept off the P1 (C-ABI + WASM) build path.
+uniffi = ["dep:uniffi"]
+
+[dependencies]
+verifier-core = { path = "../../verifier-core", default-features = false }
+uniffi = { version = "0.28", optional = true, features = ["cli"] }
+
+# The uniffi-bindgen generator (P2). Only built when the `uniffi` feature is on.
+[[bin]]
+name = "uniffi-bindgen"
+required-features = ["uniffi"]
+
+# wasm-bindgen is only pulled in for the wasm32 target so native/C-ABI builds stay lean.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+
+[build-dependencies]
+# cbindgen runs from build.rs to generate the authoritative C header (T019); this avoids a
+# globally-installed cbindgen CLI. It is skipped on the wasm32 target.
+cbindgen = { version = "0.27", default-features = false }
+
+[dev-dependencies]
+# The integration tests sign throwaway tokens with the core's `issue` helper (reached via the
+# std-enabled `verifier-core` dep above). ed25519-dalek's rand_core feature is added here so
+# tests can generate ephemeral signing keys; Cargo unifies it with the core's ed25519-dalek.
+ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }

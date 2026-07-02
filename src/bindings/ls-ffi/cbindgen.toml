@@ -1,0 +1,23 @@
+# cbindgen configuration for the C ABI header (T019, FR-001). The header is generated from the
+# `extern "C"` surface in src/lib.rs by build.rs; do not hand-edit licensesrv.h.
+language = "C"
+pragma_once = true
+include_guard = "LICENSESRV_H"
+autogen_warning = "/* Generated from the ls-ffi crate by cbindgen. DO NOT EDIT BY HAND. */"
+documentation = true
+documentation_style = "c99"
+style = "type"
+cpp_compat = true
+
+[parse]
+parse_deps = false
+
+[export]
+# The opaque handles are reached only behind pointers; force-include so they are declared.
+include = ["LsKeyring", "LsResult"]
+
+[fn]
+sort_by = "None"
+
+[enum]
+prefix_with_name = true

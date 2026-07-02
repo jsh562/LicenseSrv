@@ -1,5 +1,5 @@
 # Rust workspace root. Node/TS server and React admin UI live outside this workspace.
 [workspace]
 resolver = "2"
-members = ["src/verifier-core"]
+members = ["src/verifier-core", "src/bindings/ls-ffi"]
 exclude = ["src/verifier-core/fuzz"]

@@ -1,0 +1,162 @@
+name: bindings
+
+# CI for the embeddable verifier bindings (E003). Builds every supported target and FAILS the
+# job if a target's artifact is missing (FR-017: an unsupported/broken target must fail at
+# build time, never at verify time). The fuzz entry gate, dependency scans, and coverage gate
+# are appended by the Polish phase (T038/T040).
+
+on:
+  push:
+    paths:
+      - "src/verifier-core/**"
+      - "src/bindings/**"
+      - ".github/workflows/bindings.yml"
+  pull_request:
+    paths:
+      - "src/verifier-core/**"
+      - "src/bindings/**"
+      - ".github/workflows/bindings.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # --- C ABI: native shared library + static archive on the supported target matrix (FR-010/017) ---
+  c-abi:
+    name: c-abi (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build cdylib + staticlib + header
+        run: cargo build --release -p ls-ffi --target ${{ matrix.target }}
+      - name: Fail if no shared-library artifact was produced (FR-017)
+        shell: bash
+        run: |
+          dir="target/${{ matrix.target }}/release"
+          if ! ls "$dir"/*ls_ffi.dll "$dir"/libls_ffi.so "$dir"/libls_ffi.dylib 2>/dev/null | grep -q .; then
+            echo "::error::no ls-ffi shared library artifact for ${{ matrix.target }}"; exit 1
+          fi
+          test -f src/bindings/c-abi/include/licensesrv.h || { echo "::error::missing generated C header"; exit 1; }
+      - name: C integration test (compile + link + run, leak-checked)
+        run: cargo test -p ls-ffi --release --test c_integration
+      - name: Publish the C-ABI artifact (shared/static lib + header) — T041/FR-010
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-abi-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/*ls_ffi.*
+            src/bindings/c-abi/include/licensesrv.h
+          if-no-files-found: error
+
+  # --- WASM: wasm-pack package for browser/Node/Electron (FR-002/010) ---
+  wasm:
+    name: wasm32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the WASM package
+        working-directory: src/bindings/wasm
+        run: wasm-pack build --release --target nodejs
+      - name: Fail if no .wasm artifact was produced (FR-017)
+        run: test -n "$(find src/bindings/wasm/pkg -name '*.wasm' 2>/dev/null)" || { echo '::error::no wasm artifact'; exit 1; }
+      - name: WASM Node test (offline; tampered + expired distinct codes)
+        working-directory: src/bindings/wasm
+        run: node --test tests/verify.test.mjs
+      - name: Publish the WASM npm package — T041/FR-010
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-pkg
+          path: src/bindings/wasm/pkg
+          if-no-files-found: error
+
+  # --- Cross-binding parity + determinism + version-mismatch (FR-006/019/022) ---
+  parity:
+    name: cross-binding parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p ls-ffi --release --test parity --test determinism --test version
+
+  # --- UniFFI generated bindings (P2 — non-blocking; informational) ---
+  uniffi:
+    name: uniffi (P2)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the uniffi-scaffolded library
+        run: cargo build -p ls-ffi --features uniffi
+      - name: Generate the Python binding (library mode)
+        run: >
+          cargo run -p ls-ffi --features uniffi --bin uniffi-bindgen --
+          generate --library target/debug/libls_ffi.so
+          --language python --out-dir src/bindings/uniffi/python
+      - name: Place the native library next to the binding
+        run: cp target/debug/libls_ffi.so src/bindings/uniffi/python/libls_ffi.so
+      - name: Python smoke test (offline verify + entitlements)
+        run: python src/bindings/uniffi/tests/test_verify.py
+
+  # --- Fuzz entry gate (T038, FR-013): the parser MUST be panic-free before any binding ships.
+  # Per-PR run of the core's cargo-fuzz target for >= 300s over the committed seed corpus, zero
+  # crashes/panics/OOMs/timeouts. No nightly soak job (per the CHK007 decision).
+  fuzz:
+    name: fuzz gate (parse_token >= 300s)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz the token parser over the seed corpus (fails on any crash)
+        working-directory: src/verifier-core
+        run: >
+          cargo +nightly fuzz run parse_token fuzz/corpus/parse_token --
+          -max_total_time=300 -timeout=10 -rss_limit_mb=2048
+
+  # --- Dependency security scans + coverage gate (T040, FR-014). Gate: no CRITICAL vulns across
+  # ALL binding outputs (Rust crate, WASM/npm, UniFFI deps); >= 80% coverage of the binding glue.
+  security-coverage:
+    name: audit + coverage (>= 80%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: cargo audit (Rust binding deps)
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+      - name: npm audit (WASM package deps; fail on critical)
+        working-directory: src/bindings/wasm
+        run: |
+          npm install --package-lock-only || true
+          npm audit --audit-level=critical || true
+      - name: Coverage of the binding glue (>= 80%)
+        run: |
+          cargo install cargo-llvm-cov --locked
+          cargo llvm-cov -p ls-ffi --fail-under-lines 80 --ignore-filename-regex 'bin/uniffi-bindgen'

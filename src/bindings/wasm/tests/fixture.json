@@ -1,0 +1,8 @@
+{
+  "keyId": "k-test-1",
+  "publicKey": [234, 74, 108, 99, 226, 156, 82, 10, 190, 245, 80, 123, 19, 46, 197, 249, 149, 71, 118, 174, 190, 190, 123, 146, 66, 30, 234, 105, 20, 70, 210, 44],
+  "nowUnix": 1800000000,
+  "expiredNow": 1950000000,
+  "token": "LIC1.AathdgFjbGlkZWxpYy0xY3BpZGZwcm9kLTFicGxmcGxhbi0xY2NpZGZjdXN0LTFjaWF0GmVT8QBjZXhwGnE_swBkbWF4YQNjZW50omNwcm_1ZXNlYXRzBWNraWRoay10ZXN0LTFjbm9uZ25vbmNlLTEr_g5keosFp52-6AxwVmbvatVx58CzWfll4ouvZ0XJb1ez2NvPDX7aUgayUJHXfEicU3aeiQkoUMhkXGIQxFIN",
+  "tampered": "LIC1.AathdgFjbGlkZWxpYy0xY3BpZGZwcm9kLTFicGxmcGxhbi0xY2NpZGZjdXN0LTFjaWF0GmVT8QBjZXhwGnE_swBkbWF4YQNjZW50omNwcm_1ZXNlYXRzBWNraWRoay10ZXN0LTFjbm9uZ25vbmNlLTEr_g5keosFp52-6AxwVmbvatVx58CzWfll4ouvZ0XJb1ez2NvPDX7aUgayUJHXfEicU3aeiQkoUMhkXGAQxFIN"
+}
