@@ -1,0 +1,597 @@
+openapi: 3.1.0
+info:
+  title: Signing Service — Key Management & Public Keyring API
+  version: 0.1.0
+  description: >
+    REST surface for epic E004 (Signing Service and Key Custody). Covers per-product
+    Ed25519 signing-key lifecycle (provision / rotate / revoke / list) and the public,
+    JWKS-style keyring that offline verifiers (E003 bindings, E001 clients) pin out of band.
+
+
+    SCOPE: The signing operation itself is NOT exposed here. Tokens are minted by the
+    in-process `Signer` interface consumed by issuance (E008) and air-gap (E010); there is
+    deliberately no `/sign` endpoint. This API only manages key metadata and publishes
+    public material.
+
+
+    SECURITY INVARIANT (TR-001 / TR-010): No request, response, header, example, or error in
+    this contract ever carries private key material. Only public keys (base64url of the
+    32-byte Ed25519 public key) are returned. There is no key-export or private-key-read path.
+
+
+    All endpoints are tenant-scoped through the API-key auth context established by the server
+    (`X-API-Key` -> tenant + scopes). Signing keys are additionally product-scoped and
+    persisted under Row-Level Security via the E002 tenant repository (TR-004). Key-management
+    operations require the `admin` scope + admin role (RBAC); the keyring is readable and can
+    optionally be published fully public per deployment (see the `/keyring` operation).
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: signing-keys
+    description: Per-product Ed25519 signing-key lifecycle (admin, tenant-scoped). Private material never returned.
+  - name: keyring
+    description: Public JWKS-style keyring for out-of-band verifier pinning (E001/E003).
+
+security:
+  - apiKey: []
+
+paths:
+  /v1/products/{productId}/signing-keys:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    post:
+      tags: [signing-keys]
+      operationId: provisionSigningKey
+      summary: Provision a new per-product Ed25519 signing key
+      description: >
+        Generate a new Ed25519 keypair for the product inside the custody boundary, persist a
+        `signing_key` registry row (RLS, tenant+product scoped, TR-003/TR-004/TR-005), and write
+        an append-only audit entry (TR-014). The private key is generated and stored only in
+        custody (keystore/KMS) and is NEVER returned. If the product has no active key yet, the
+        new key becomes `active`; otherwise it is provisioned as `rotating` (use the rotate
+        operation to promote it). RBAC: role `admin` + scope `admin`.
+      x-rbac: { requiredRole: admin, requiredScope: admin }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProvisionSigningKeyRequest' }
+            examples:
+              minimal:
+                summary: Provision with defaults (valid from now)
+                value: {}
+              labeled:
+                summary: Provision with a label and explicit validity start
+                value: { label: "2026-H2 rotation seed", valid_from: "2026-07-01T00:00:00Z" }
+      responses:
+        '201':
+          description: Signing key provisioned. Body is public metadata only.
+          headers:
+            Location:
+              description: Canonical path of the created key resource.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SigningKeyMetadata' }
+              examples:
+                activeFirstKey:
+                  summary: First key for the product — becomes active
+                  value:
+                    key_id: key_a1b2c3d4e5f6
+                    product_id: 550e8400-e29b-41d4-a716-446655440000
+                    algorithm: Ed25519
+                    public_key: 9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ
+                    status: active
+                    valid_from: "2026-07-01T00:00:00Z"
+                    valid_until: null
+                    created_at: "2026-07-01T00:00:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [signing-keys]
+      operationId: listSigningKeys
+      summary: List a product's signing keys (public metadata only)
+      description: >
+        Return every signing key for the product across all statuses (active / rotating /
+        retired / revoked), as public metadata only — key_id, algorithm, public key, status and
+        validity. No private material (TR-010). RBAC: scope `admin`; role `viewer` or higher
+        (read-only view for operators without mutate rights).
+      x-rbac: { requiredRole: viewer, requiredScope: admin }
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Optional filter by lifecycle status.
+          schema: { $ref: '#/components/schemas/SigningKeyStatus' }
+      responses:
+        '200':
+          description: List of signing keys (public metadata only).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SigningKeyList' }
+              examples:
+                duringRotation:
+                  summary: Product mid-rotation — new active + prior retired-but-trusted
+                  value:
+                    product_id: 550e8400-e29b-41d4-a716-446655440000
+                    keys:
+                      - key_id: key_f6e5d4c3b2a1
+                        product_id: 550e8400-e29b-41d4-a716-446655440000
+                        algorithm: Ed25519
+                        public_key: 2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw
+                        status: active
+                        valid_from: "2026-07-01T12:00:00Z"
+                        valid_until: null
+                        created_at: "2026-07-01T12:00:00Z"
+                      - key_id: key_a1b2c3d4e5f6
+                        product_id: 550e8400-e29b-41d4-a716-446655440000
+                        algorithm: Ed25519
+                        public_key: 9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ
+                        status: retired
+                        valid_from: "2026-01-01T00:00:00Z"
+                        valid_until: "2026-07-31T12:00:00Z"
+                        created_at: "2026-01-01T00:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/products/{productId}/signing-keys/rotate:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    post:
+      tags: [signing-keys]
+      operationId: rotateSigningKey
+      summary: Rotate the product's active signing key (overlapping keyring)
+      description: >
+        Activate a new `key_id` for the product while keeping previously-issued keys trusted
+        within an overlap window (TR-007). The previously-active key transitions to `retired`
+        but remains in the published keyring until its overlap window ends or it is explicitly
+        revoked, so licenses signed under it keep verifying (SC-004). Returns the NEW active key
+        metadata. Fails with 409 if a rotation is already in flight for the product. RBAC: role
+        `admin` + scope `admin`.
+      x-rbac: { requiredRole: admin, requiredScope: admin }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RotateSigningKeyRequest' }
+            examples:
+              defaultOverlap:
+                summary: Rotate now with the deployment default overlap window
+                value: {}
+              explicitOverlap:
+                summary: Rotate with a 30-day overlap for the retiring key
+                value: { overlap_window: "P30D", label: "quarterly rotation 2026-Q3" }
+      responses:
+        '200':
+          description: Rotation complete. Body is the NEW active key (public metadata only).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SigningKeyMetadata' }
+              examples:
+                newActive:
+                  summary: New active key after rotation
+                  value:
+                    key_id: key_f6e5d4c3b2a1
+                    product_id: 550e8400-e29b-41d4-a716-446655440000
+                    algorithm: Ed25519
+                    public_key: 2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw
+                    status: active
+                    valid_from: "2026-07-01T12:00:00Z"
+                    valid_until: null
+                    created_at: "2026-07-01T12:00:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Conflict — a rotation is already in flight for this product (an unpromoted
+            `rotating` key exists) or the product has no active key to rotate from.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                inFlightRotation:
+                  value:
+                    code: rotation_in_flight
+                    message: A rotation is already in progress for this product.
+                    details: { productId: 550e8400-e29b-41d4-a716-446655440000, pendingKeyId: key_f6e5d4c3b2a1 }
+
+  /v1/products/{productId}/signing-keys/{keyId}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+      - $ref: '#/components/parameters/KeyId'
+    post:
+      tags: [signing-keys]
+      operationId: revokeSigningKey
+      summary: Revoke a specific signing key
+      description: >
+        Mark the key `revoked` so it is removed from the published keyring and is never again
+        selected for signing, while preserving its full audit history (TR-009, SC-005). Revocation
+        is terminal. Returns the updated key metadata (status `revoked`). Fails with 409 if the key
+        is already revoked. RBAC: role `admin` + scope `admin`.
+      x-rbac: { requiredRole: admin, requiredScope: admin }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RevokeSigningKeyRequest' }
+            examples:
+              withReason:
+                summary: Revoke with an audit reason
+                value: { reason: "suspected custodian-share compromise" }
+      responses:
+        '200':
+          description: Key revoked. Body is the updated key (public metadata only).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SigningKeyMetadata' }
+              examples:
+                revoked:
+                  summary: Key transitioned to revoked
+                  value:
+                    key_id: key_a1b2c3d4e5f6
+                    product_id: 550e8400-e29b-41d4-a716-446655440000
+                    algorithm: Ed25519
+                    public_key: 9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ
+                    status: revoked
+                    valid_from: "2026-01-01T00:00:00Z"
+                    valid_until: "2026-07-01T09:15:00Z"
+                    created_at: "2026-01-01T00:00:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Unknown product or unknown key_id for this product/tenant.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unknownKey:
+                  value:
+                    code: key_not_found
+                    message: No signing key with that key_id exists for this product.
+                    details: { keyId: key_deadbeef0000 }
+        '409':
+          description: Conflict — the key is already revoked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                alreadyRevoked:
+                  value:
+                    code: already_revoked
+                    message: This key is already revoked.
+                    details: { keyId: key_a1b2c3d4e5f6 }
+
+  /v1/products/{productId}/keyring:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [keyring]
+      operationId: getProductKeyring
+      summary: Public JWKS-style keyring for a product (verifier pinning)
+      description: >
+        The product's set of currently-trusted public keys in JWKS form (TR-008, IP-005). Each
+        entry carries only public material — kid, kty=OKP, crv=Ed25519, alg=EdDSA, x
+        (base64url of the 32-byte public key) and validity. Included statuses: `active`,
+        `rotating`, and `retired`-but-still-in-overlap (all trusted). `revoked` and removed keys
+        are OMITTED (SC-005). This is the out-of-band material E003 bindings and E001 clients pin.
+
+
+        AUTH: modeled here as readable with any valid tenant API key (`apiKey`). A fully-public
+        distribution variant (dropping the security requirement, i.e. `security: []`, and/or
+        serving this as a static/CDN artifact) is a supported deployment option — publishing
+        public keys carries no secret, so operators may expose it anonymously.
+      x-rbac: { requiredRole: viewer, requiredScope: any }
+      x-public-distribution-option: >
+        Deployments may serve this keyring with no auth (security: []) as a static artifact.
+      responses:
+        '200':
+          description: The product's trusted public keyring (JWKS).
+          headers:
+            Cache-Control:
+              description: Verifiers may cache; keyring changes only on rotate/revoke.
+              schema: { type: string }
+          content:
+            application/jwk-set+json:
+              schema: { $ref: '#/components/schemas/Keyring' }
+              examples:
+                singleActive:
+                  summary: Product with a single active key
+                  value:
+                    product_id: 550e8400-e29b-41d4-a716-446655440000
+                    keys:
+                      - kid: key_a1b2c3d4e5f6
+                        kty: OKP
+                        crv: Ed25519
+                        alg: EdDSA
+                        use: sig
+                        x: 9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ
+                        valid_from: "2026-01-01T00:00:00Z"
+                        valid_until: null
+                overlap:
+                  summary: Mid-rotation — new active + prior retired key both trusted
+                  value:
+                    product_id: 550e8400-e29b-41d4-a716-446655440000
+                    keys:
+                      - kid: key_f6e5d4c3b2a1
+                        kty: OKP
+                        crv: Ed25519
+                        alg: EdDSA
+                        use: sig
+                        x: 2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw
+                        valid_from: "2026-07-01T12:00:00Z"
+                        valid_until: null
+                      - kid: key_a1b2c3d4e5f6
+                        kty: OKP
+                        crv: Ed25519
+                        alg: EdDSA
+                        use: sig
+                        x: 9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ
+                        valid_from: "2026-01-01T00:00:00Z"
+                        valid_until: "2026-07-31T12:00:00Z"
+          # Also acceptable as application/json for generic clients.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Tenant/machine API key. Resolves to a tenant + capability scopes; RBAC role and the
+        `admin` scope gate key-management operations. See src/server/auth.
+
+  parameters:
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      description: The product that owns the signing keys / keyring (E007 catalog scope).
+      schema: { type: string }
+      example: 550e8400-e29b-41d4-a716-446655440000
+    KeyId:
+      name: keyId
+      in: path
+      required: true
+      description: A specific signing-key version identifier (stamped into tokens as key_id / kid).
+      schema: { type: string }
+      example: key_a1b2c3d4e5f6
+
+  schemas:
+    Error:
+      type: object
+      description: Structured JSON error for key-management faults (validation/auth/RBAC/not-found/conflict).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error code (snake_case). The set is enumerated and stable —
+            it is NOT left to implementation discretion. New codes require a contract change.
+          enum: [validation_error, unauthorized, forbidden, product_not_found, key_not_found, rotation_in_flight, already_revoked, conflict]
+          example: validation_error
+        message:
+          type: string
+          description: Human-readable summary. Never contains key material.
+        details:
+          type: object
+          additionalProperties: true
+          description: Optional structured context. MUST NOT contain private key material.
+
+    SigningKeyStatus:
+      type: string
+      description: >
+        Lifecycle status. `active` = selected for new signing; `rotating` = provisioned/next,
+        not yet promoted; `retired` = no longer signs but still trusted in the overlap window;
+        `revoked` = removed from keyring, never signs again, audit retained.
+      enum: [active, rotating, retired, revoked]
+
+    SigningKeyMetadata:
+      type: object
+      description: >
+        Public metadata for one signing key. PRIVATE KEY MATERIAL IS NEVER PRESENT — `public_key`
+        is the only key field, base64url of the 32-byte Ed25519 public key (TR-001/TR-005/TR-010).
+      required: [key_id, product_id, algorithm, public_key, status, valid_from]
+      properties:
+        key_id:
+          type: string
+          description: Unique key-version identifier, stamped into signed tokens (TR-006).
+          example: key_a1b2c3d4e5f6
+        product_id:
+          type: string
+          example: 550e8400-e29b-41d4-a716-446655440000
+        algorithm:
+          type: string
+          enum: [Ed25519]
+          description: Signature algorithm (fixed to Ed25519 for LIC1).
+        public_key:
+          type: string
+          description: base64url (unpadded) of the 32-byte Ed25519 public key. Public material only.
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          example: 9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ
+        status: { $ref: '#/components/schemas/SigningKeyStatus' }
+        valid_from:
+          type: string
+          format: date-time
+          description: Start of the key's validity window.
+        valid_until:
+          type: [string, "null"]
+          format: date-time
+          description: End of validity / trust window; null while open-ended (typically the active key).
+        created_at:
+          type: string
+          format: date-time
+          description: When the key was provisioned.
+
+    SigningKeyList:
+      type: object
+      required: [product_id, keys]
+      properties:
+        product_id:
+          type: string
+          example: 550e8400-e29b-41d4-a716-446655440000
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/SigningKeyMetadata' }
+
+    ProvisionSigningKeyRequest:
+      type: object
+      description: Optional provisioning parameters. All fields optional; empty body is valid.
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+          maxLength: 200
+          description: Optional human label recorded in the audit entry.
+        valid_from:
+          type: string
+          format: date-time
+          description: Optional start of validity; defaults to now.
+
+    RotateSigningKeyRequest:
+      type: object
+      description: Optional rotation parameters. Empty body rotates now with the deployment default overlap.
+      additionalProperties: false
+      properties:
+        overlap_window:
+          type: string
+          description: >
+            ISO-8601 duration the retiring key stays trusted in the keyring (e.g. "P30D").
+            Defaults to the deployment-configured overlap.
+          pattern: '^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(\d+H)?(\d+M)?(\d+S)?)?$'
+          example: P30D
+        valid_from:
+          type: string
+          format: date-time
+          description: Optional activation time for the new key; defaults to now.
+        label:
+          type: string
+          maxLength: 200
+          description: Optional human label recorded in the audit entry.
+
+    RevokeSigningKeyRequest:
+      type: object
+      description: Optional revocation parameters.
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          description: Optional human reason recorded in the append-only audit entry.
+
+    KeyringKey:
+      type: object
+      description: >
+        One JWKS entry (RFC 8037 OKP/Ed25519). Public material only — there is no `d` (private)
+        member and it MUST never be added. `additionalProperties: false` structurally forbids any
+        undeclared member (including a `d` private component) from ever validating (TR-001/TR-010).
+        Each entry also carries its validity window (`valid_from`/`valid_until`) so verifiers can
+        time-scope trust, mapping 1:1 to E001's `KeyEntry` (AD-004/HINT-005).
+      additionalProperties: false
+      required: [kid, kty, crv, alg, x, valid_from, valid_until]
+      properties:
+        kid:
+          type: string
+          description: Key ID — equals the signing key's key_id.
+          example: key_a1b2c3d4e5f6
+        kty:
+          type: string
+          enum: [OKP]
+        crv:
+          type: string
+          enum: [Ed25519]
+        alg:
+          type: string
+          enum: [EdDSA]
+        use:
+          type: string
+          enum: [sig]
+          description: Public-key use (signature verification).
+        x:
+          type: string
+          description: base64url (unpadded) of the 32-byte Ed25519 public key.
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          example: 9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ
+        valid_from:
+          type: string
+          format: date-time
+        valid_until:
+          type: [string, "null"]
+          format: date-time
+          description: End of the trust window; null while open-ended.
+
+    Keyring:
+      type: object
+      description: JWKS-style set of a product's currently-trusted public keys. Revoked/removed keys omitted.
+      required: [keys]
+      properties:
+        product_id:
+          type: string
+          example: 550e8400-e29b-41d4-a716-446655440000
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/KeyringKey' }
+
+  responses:
+    BadRequest:
+      description: Validation error in the request (malformed body, bad duration, etc.).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            badDuration:
+              value:
+                code: validation_error
+                message: overlap_window is not a valid ISO-8601 duration.
+                details: { field: overlap_window, value: "30days" }
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingKey:
+              value: { code: unauthorized, message: Missing or invalid API key. }
+    Forbidden:
+      description: Authenticated but lacks the required RBAC role/scope for this operation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: Key management requires the admin role and admin scope.
+                details: { requiredRole: admin, requiredScope: admin }
+    NotFound:
+      description: Unknown product (or key) for this tenant.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownProduct:
+              value:
+                code: product_not_found
+                message: No such product for this tenant.
+                details: { productId: 550e8400-e29b-41d4-a716-446655440000 }
+    Conflict:
+      description: Operation conflicts with current key state (e.g. in-flight rotation, already revoked).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            conflict:
+              value: { code: conflict, message: The requested operation conflicts with the current key state. }
