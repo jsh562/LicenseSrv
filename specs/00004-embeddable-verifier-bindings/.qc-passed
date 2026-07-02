@@ -1,0 +1,9 @@
+QC Passed: 2026-07-02T00:00:00Z
+Conditions (both CI-enforced, matching the E002 precedent):
+  1. Semgrep SAST runs in CI only (tool not installed locally).
+  2. Full-suite line coverage runs in CI (Linux); the local windows-gnu toolchain lacks
+     `profiler_builtins` so cannot instrument. Coverage was measured under the windows-msvc
+     toolchain over the in-process test subset at 81.39% lines / 91.89% functions (>= 80%).
+All other gates passed locally: build, clippy -D warnings, 49/49 tests across all four bindings
+(C-ABI, WASM, UniFFI, + verifier-core), cargo audit (0 vulns), requirements traceability
+(all US/SC/FR), and PI compliance (Principle I offline, Principle III single core).
