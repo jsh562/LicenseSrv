@@ -1,3 +1,4 @@
+import cookie from "@fastify/cookie";
 import Fastify, { type FastifyInstance } from "fastify";
 import type pg from "pg";
 
@@ -23,8 +24,12 @@ declare module "fastify" {
 export function createApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: false });
 
+  // Human admin console (E005) authenticates via session cookies, not the machine X-API-Key.
+  void app.register(cookie);
+
   app.addHook("preHandler", async (req, reply) => {
     if (req.url.startsWith("/internal/")) return; // reserved non-tenant routes (probes etc.)
+    if (req.url.startsWith("/admin/")) return; // human session-auth path (E005); guarded by its own module
     const raw = req.headers["x-api-key"];
     if (typeof raw !== "string") {
       await reply.code(401).send({ error: "missing api key" });

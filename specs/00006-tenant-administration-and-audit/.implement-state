@@ -1,0 +1,32 @@
+# E005 — Implement/QC checkpoint
+
+Iteration boundary: backend COMPLETE + validated; React SPA + polish + QC remain.
+
+## DONE + VALIDATED (20 admin tests pass: 5 unit, 15 integration on real Postgres)
+- Phase 1 Setup: T002 (@fastify/cookie + register), T003 (AdminConfig/loadAdminConfig, TTL default 8h / max 24h)
+  - T001 (React scaffold) NOT done — starts Phase 9.
+- Phase 2 Foundational auth spine: T004 migration 0005 (app_user credential/lockout cols + admin_session + forced RLS/grants),
+  T005 admin_session RLS isolation, T006/T007 scrypt password, T008/T009 opaque session (privileged pre-tenant resolve),
+  T010/T011 CSRF double-submit, T012 requireRole preHandler.
+- Phase 3 US1 sign-in: T013 login→session→logout, T014 lockout (5/15min), T015 login/logout, T016 lockout counters+audit,
+  T017 /admin/auth routes, T018 session RLS.
+- Phase 4 US2 RBAC: T019 viewer-403+authz.denied, T020 audited denial, T021 requireRole on every route.
+- Phase 5 US3 users: T022 create/role/deactivate, T023 last-owner 409 (race-safe FOR UPDATE), T024 users.ts, T025 last-owner guard, T026 routes.
+- Phase 6 US4 api-keys: T027 lifecycle+revoked-fails-auth, T028 apikeys.ts (secret-once, rotate=create+revoke), T029 routes.
+- Phase 7 US5 audit: T030 read+filters, T031 audit.ts (keyset cursor), T032 GET-only route.
+- Polish: T043 secret-leakage, T044 CSRF-missing-header 403, T045 module registered in modules/index.ts.
+
+Files: migrations/0005_admin_sessions.sql; src/server/modules/admin/{password,session,csrf,rbac-middleware,auth,users,apikeys,audit,routes,index}.ts;
+tests __tests__/{auth-primitives.unit, auth.integration, routes.integration, secret-leakage}.test.ts;
+src/server/app.ts (cookie + /admin exemption); src/server/modules/index.ts (registerAdmin).
+
+## REMAINING
+- Phase 9 Frontend SPA (T001 scaffold, T035 api client, T036 Login, T037 Shell, T038 RequireRole, T039 Users, T040 ApiKeys,
+  T041 Audit, T042 RTL tests) — needs React18+Vite+Vitest(jsdom)+RTL toolchain install under src/admin-ui/.
+- Phase 10 polish: T046 ≥80% line+branch coverage gate (admin module), T047 npm audit + semgrep (CI-only).
+- Phase 8 US6 SSO (T033/T034) — P2, DEFERRED (non-blocking for P1 gate), like E004's KMS.
+- Then QC → qc-report.md + .qc-passed.
+
+## Notes
+- Consolidated test filenames (auth-primitives.unit, routes.integration, secret-leakage) cover the per-task filenames in tasks.md; intent met.
+- Fix this iteration: Postgres forbids `FOR UPDATE` with `DISTINCT` in the last-owner guard → dedupe by id in JS.
