@@ -218,6 +218,7 @@ Project-level architectural decisions are maintained as standalone MADR files un
 | ADR-0005 | Architecture Style — Modular Monolith | accepted | 2026-06-26 | — | [0005-architecture-style-modular-monolith.md](adrs/0005-architecture-style-modular-monolith.md) |
 | ADR-0006 | Deployment & Packaging — Single Container Image for SaaS and Self-Host | accepted | 2026-06-26 | — | [0006-deployment-packaging-single-container-image.md](adrs/0006-deployment-packaging-single-container-image.md) |
 | ADR-0007 | Public API Style — REST/JSON First | accepted | 2026-06-26 | — | [0007-public-api-style-rest-json-first.md](adrs/0007-public-api-style-rest-json-first.md) |
+| ADR-0008 | Admin Console Human Authentication — Server-Side Cookie Sessions | accepted | 2026-07-02 | — | [0008-admin-console-session-authentication.md](adrs/0008-admin-console-session-authentication.md) |
 
 ## Risks, Assumptions, Constraints, and Open Questions
 

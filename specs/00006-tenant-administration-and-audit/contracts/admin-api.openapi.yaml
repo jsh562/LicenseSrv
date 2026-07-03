@@ -1,0 +1,961 @@
+openapi: 3.1.0
+info:
+  title: Tenant Administration & Audit — Admin Console API
+  version: 0.1.0
+  description: >
+    REST surface for epic E005 (Tenant Administration and Audit) — the human-facing admin
+    console API. Covers interactive sign-in / session lifecycle, user & role management,
+    runtime API-key management, and read-only audit-log viewing (FR-001..018).
+
+
+    AUTH MODEL (distinct from the machine API). This API authenticates HUMAN sessions via an
+    opaque, httpOnly + Secure + SameSite session COOKIE (`admin_session`) established by
+    `POST /admin/auth/login`. It deliberately does NOT use the `X-API-Key` header of the
+    machine API (`src/server/auth/apikey.ts`); that header authenticates integrations, this
+    cookie authenticates people. The two are separate credential paths that both resolve to a
+    single tenant scope.
+
+
+    TENANT SCOPING. Every endpoint is implicitly scoped to the session's tenant (FR-002). There
+    is no tenant path/query parameter — the tenant is resolved from the session and can never be
+    widened by the caller. A session for tenant A can never read or mutate tenant B's data.
+
+
+    RBAC. Roles are `owner > admin > viewer` (mirrors src/server/auth/rbac.ts). The minimum role
+    for each operation is declared on the operation via the `x-rbac` extension (`minRole`) and is
+    enforced server-side, fail-closed (FR-004). A denied privileged action is recorded as an
+    auditable security event (FR-005).
+
+
+    SECRECY INVARIANTS. No response, header, example, or error in this contract ever carries a
+    human password, a password hash, or a raw session token (FR-017). An API-key SECRET appears
+    in exactly one place — the body of `POST /admin/api-keys` (create) and
+    `POST /admin/api-keys/{keyId}/rotate` — and is never retrievable afterward (FR-009); every
+    other API-key view returns metadata only. The audit surface is strictly read-only: there is
+    deliberately no create/update/delete operation on `/admin/audit` (append-only, FR-013).
+
+
+    Field naming is camelCase throughout (Node/TypeScript idiom for this human console surface),
+    which differs from the snake_case machine contracts (e.g. E004 signing-keys). See README.
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: auth
+    description: Interactive human sign-in and tenant-scoped session lifecycle (FR-001/003/018).
+  - name: users
+    description: Tenant user & role management (FR-006/007/008). Passwords/hashes never returned.
+  - name: api-keys
+    description: Runtime machine API-key lifecycle (FR-009/010). Secret shown once at create/rotate.
+  - name: audit
+    description: Read-only, tenant-scoped, filterable audit log (FR-011/012/013). Append-only.
+
+# Global default: every operation requires a valid session cookie. Login overrides with `security: []`.
+security:
+  - sessionCookie: []
+
+paths:
+  /admin/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Interactive human sign-in (establishes a tenant-scoped session)
+      description: >
+        Authenticate an interactive human credential (email + password) and, on success,
+        establish a session bound to exactly one tenant (FR-001). On success the server sets the
+        opaque `admin_session` cookie (httpOnly + Secure + SameSite) via `Set-Cookie` and returns
+        the resolved principal `{ user, tenantId, role }`. The password is validated against a
+        salted one-way hash and is NEVER stored/logged/returned in plaintext (FR-017); the session
+        token itself is opaque and is returned only as the cookie, never in the body.
+
+
+        This is the ONLY unauthenticated endpoint (`security: []`). The path is throttled and
+        subject to account lockout to resist credential guessing (FR-018): too many failed
+        attempts return `429 rate_limited` (with `Retry-After`); throttle/lockout events are
+        audited. Bad credentials return `401 unauthenticated` with a generic message (no account
+        enumeration).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+            examples:
+              standard:
+                summary: Sign in with email + password
+                value: { tenantSlug: "acme", email: "admin@acme.example", password: "correct horse battery staple" }
+      responses:
+        '200':
+          description: >
+            Authenticated. The session cookie is set via `Set-Cookie`; the body carries the
+            resolved principal. No token or credential appears in the body.
+          headers:
+            Set-Cookie:
+              description: >
+                Sets the opaque session cookie:
+                `admin_session=<opaque>; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=3600`.
+                `Max-Age` is a bounded TTL — the reference configuration uses `3600` seconds (1 hour),
+                injected via runtime config (NEW-CONFIG); the session also carries an absolute
+                server-side `expires_at`. The token is opaque (not a JWT / not the credential) and is
+                never echoed in the body (FR-017).
+              schema: { type: string }
+              example: "admin_session=8f3c...opaque...a91; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=3600"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+              examples:
+                ownerLogin:
+                  summary: Owner of tenant A signs in
+                  value:
+                    user:
+                      id: "usr_2c1a9f04"
+                      email: "admin@acme.example"
+                      role: owner
+                      status: active
+                      createdAt: "2026-01-04T09:00:00Z"
+                    tenantId: "550e8400-e29b-41d4-a716-446655440000"
+                    role: owner
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: >
+            Bad credentials, or the user is deactivated (FR-007). Generic code/message to avoid
+            account enumeration; no cookie is set.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                badCredentials:
+                  value: { code: unauthenticated, message: "Invalid email or password." }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Sign out (revoke the current session)
+      description: >
+        Revoke the session identified by the `admin_session` cookie server-side and clear the
+        cookie via `Set-Cookie` (Max-Age=0). Idempotent: a request without a valid session still
+        clears any residual cookie. After logout the session grants no access (FR-003). 204 No
+        Content on success.
+      x-rbac: { minRole: viewer }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Session revoked and cookie cleared.
+          headers:
+            Set-Cookie:
+              description: Clears the session cookie.
+              schema: { type: string }
+              example: "admin_session=; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=0"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/auth/me:
+    get:
+      tags: [auth]
+      operationId: getCurrentPrincipal
+      summary: Resolve the current session principal
+      description: >
+        Return the principal resolved from the `admin_session` cookie: `{ userId, tenantId, role }`.
+        Used by the console shell to render RBAC-aware navigation. Returns `401 unauthenticated`
+        if the cookie is missing, expired, or revoked (FR-003). Never returns any credential.
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The current session principal.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionPrincipal' }
+              examples:
+                viewer:
+                  value:
+                    userId: "usr_77b0e412"
+                    tenantId: "550e8400-e29b-41d4-a716-446655440000"
+                    role: viewer
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/users:
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: List tenant users (metadata only)
+      description: >
+        List the tenant's users as `{ id, email, role, status }` (FR-006). READ is allowed for
+        `viewer` and above. No password, password hash, or credential material is ever included
+        (FR-017).
+      x-rbac: { minRole: viewer }
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Optional filter by user status.
+          schema: { $ref: '#/components/schemas/UserStatus' }
+      responses:
+        '200':
+          description: The tenant's users.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserList' }
+              examples:
+                twoUsers:
+                  value:
+                    users:
+                      - id: "usr_2c1a9f04"
+                        email: "admin@acme.example"
+                        role: owner
+                        status: active
+                        createdAt: "2026-01-04T09:00:00Z"
+                      - id: "usr_77b0e412"
+                        email: "reviewer@acme.example"
+                        role: viewer
+                        status: invited
+                        createdAt: "2026-06-30T14:22:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: Create / invite a user with an initial role
+      description: >
+        Create (invite) a user in the tenant with an initial role (FR-006). The invitee sets their
+        own credential out of band (invite flow) — no password is accepted or returned here
+        (FR-017). Creation is audited (FR-014). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateUserRequest' }
+            examples:
+              inviteViewer:
+                summary: Invite a viewer
+                value: { email: "reviewer@acme.example", role: viewer }
+      responses:
+        '201':
+          description: User created (invited). Metadata only.
+          headers:
+            Location:
+              description: Canonical path of the created user resource.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+              examples:
+                invited:
+                  value:
+                    id: "usr_77b0e412"
+                    email: "reviewer@acme.example"
+                    role: viewer
+                    status: invited
+                    createdAt: "2026-06-30T14:22:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: A user with that email already exists in this tenant.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                duplicate:
+                  value:
+                    code: email_exists
+                    message: "A user with that email already exists in this tenant."
+                    details: { email: "reviewer@acme.example" }
+
+  /admin/users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      tags: [users]
+      operationId: updateUser
+      summary: Change a user's role and/or status
+      description: >
+        Change a user's `role` and/or `status` (deactivate / reactivate) (FR-006/007). At least
+        one field must be present. Deactivation is effective for the user's subsequent requests
+        (FR-007). Enforces the LAST-OWNER SAFEGUARD (FR-008): a change that would demote or
+        deactivate the tenant's final `owner` is refused with `409 last_owner`. Unknown user →
+        `404 not_found`. The change is audited (FR-014). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateUserRequest' }
+            examples:
+              promote:
+                summary: Promote a viewer to admin
+                value: { role: admin }
+              deactivate:
+                summary: Deactivate a user
+                value: { status: deactivated }
+      responses:
+        '200':
+          description: Updated user (metadata only).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+              examples:
+                promoted:
+                  value:
+                    id: "usr_77b0e412"
+                    email: "reviewer@acme.example"
+                    role: admin
+                    status: active
+                    createdAt: "2026-06-30T14:22:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Last-owner safeguard tripped — the change would leave the tenant with no owner (FR-008).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                lastOwner:
+                  value:
+                    code: last_owner
+                    message: "Cannot demote or deactivate the tenant's last owner."
+                    details: { userId: "usr_2c1a9f04" }
+
+  /admin/api-keys:
+    get:
+      tags: [api-keys]
+      operationId: listApiKeys
+      summary: List runtime API keys (metadata only — never the secret)
+      description: >
+        List the tenant's machine API keys as `{ id, scopes, status, createdAt }` (FR-009). The
+        SECRET is NEVER included here — it exists only in the create/rotate response (FR-009).
+        RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Optional filter by key status.
+          schema: { $ref: '#/components/schemas/ApiKeyStatus' }
+      responses:
+        '200':
+          description: The tenant's API keys (metadata only).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyList' }
+              examples:
+                keys:
+                  value:
+                    keys:
+                      - id: "key_1a2b3c4d"
+                        label: "prod-activation"
+                        scopes: [activate, validate]
+                        status: active
+                        createdAt: "2026-05-01T00:00:00Z"
+                      - id: "key_9f8e7d6c"
+                        label: "legacy-integration"
+                        scopes: [validate]
+                        status: revoked
+                        createdAt: "2026-01-10T00:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [api-keys]
+      operationId: createApiKey
+      summary: Create a scoped API key (secret returned EXACTLY ONCE)
+      description: >
+        Create a machine API key with explicit scopes (FR-009). The response includes the raw
+        `secret` in `plaintext EXACTLY ONCE` — it is only its salted hash that is stored, and it
+        can never be retrieved again (FR-009). Creation is audited (FR-014). RBAC: `admin` or
+        higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateApiKeyRequest' }
+            examples:
+              scoped:
+                summary: Create a key scoped to activate + validate
+                value: { label: "prod-activation", scopes: [activate, validate] }
+      responses:
+        '201':
+          description: >
+            API key created. The `secret` field is present HERE ONLY and will never be returned again.
+          headers:
+            Location:
+              description: Canonical path of the created key resource.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeySecret' }
+              examples:
+                created:
+                  value:
+                    id: "key_1a2b3c4d"
+                    label: "prod-activation"
+                    scopes: [activate, validate]
+                    status: active
+                    createdAt: "2026-07-02T10:00:00Z"
+                    secret: "lsk_live_7Qm2p9Xk4Rb0Tt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1e"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/api-keys/{keyId}/rotate:
+    parameters:
+      - $ref: '#/components/parameters/KeyId'
+    post:
+      tags: [api-keys]
+      operationId: rotateApiKey
+      summary: Rotate an API key (new secret once; old secret stops authenticating)
+      description: >
+        Issue a replacement key inheriting the original's scopes/label and revoke the old secret
+        so it immediately stops authenticating (FR-010). The response returns the NEW `secret`
+        EXACTLY ONCE (FR-009). Rotation is audited (FR-014). Unknown key → `404 not_found`;
+        rotating an already-revoked key → `409 already_revoked`. RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: >
+            Rotation complete. Body is the replacement key including the new `secret` (shown once).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeySecret' }
+              examples:
+                rotated:
+                  value:
+                    id: "key_5e6f7a8b"
+                    label: "prod-activation"
+                    scopes: [activate, validate]
+                    status: active
+                    createdAt: "2026-07-02T11:30:00Z"
+                    rotatedFrom: "key_1a2b3c4d"
+                    secret: "lsk_live_2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The key is already revoked and cannot be rotated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                alreadyRevoked:
+                  value:
+                    code: already_revoked
+                    message: "This key is already revoked."
+                    details: { keyId: "key_1a2b3c4d" }
+
+  /admin/api-keys/{keyId}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/KeyId'
+    post:
+      tags: [api-keys]
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      description: >
+        Revoke the key so it immediately stops authenticating (FR-010). Terminal. Returns the
+        updated metadata (status `revoked`) — no secret. Revocation is audited (FR-014). Unknown
+        key → `404 not_found`; already revoked → `409 already_revoked`. RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Key revoked. Metadata only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyMetadata' }
+              examples:
+                revoked:
+                  value:
+                    id: "key_1a2b3c4d"
+                    label: "prod-activation"
+                    scopes: [activate, validate]
+                    status: revoked
+                    createdAt: "2026-05-01T00:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The key is already revoked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                alreadyRevoked:
+                  value:
+                    code: already_revoked
+                    message: "This key is already revoked."
+                    details: { keyId: "key_1a2b3c4d" }
+
+  /admin/audit:
+    get:
+      tags: [audit]
+      operationId: listAuditEntries
+      summary: Read the tenant's audit log (read-only, filterable)
+      description: >
+        Return append-only audit entries scoped to the session's tenant (FR-011), each
+        `{ id, actor, action, target, timestamp, securityEvent }`. Supports filtering by date
+        range (`from`/`to`), by the `securityEvent` flag, and by `actor` (FR-012), plus cursor
+        pagination. READ is allowed for `viewer` and above.
+
+
+        The audit surface is STRICTLY READ-ONLY (FR-013): there is deliberately no create, update,
+        or delete operation anywhere in this contract. No role — including `owner` — can edit or
+        delete an audit entry through the API; the log is append-only and tamper-evident.
+      x-rbac: { minRole: viewer }
+      x-append-only: true
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Inclusive lower bound on entry timestamp (ISO-8601 date-time).
+          schema: { type: string, format: date-time }
+          example: "2026-06-01T00:00:00Z"
+        - name: to
+          in: query
+          required: false
+          description: Exclusive upper bound on entry timestamp (ISO-8601 date-time).
+          schema: { type: string, format: date-time }
+          example: "2026-07-01T00:00:00Z"
+        - name: securityEvent
+          in: query
+          required: false
+          description: When set, return only entries whose security-event flag matches (FR-012).
+          schema: { type: boolean }
+          example: true
+        - name: actor
+          in: query
+          required: false
+          description: >
+            Optional filter by acting principal. Matches the entry's recorded `actor` identifier by
+            EXACT, case-sensitive, whole-value comparison — NOT a substring or prefix search. The
+            recorded actor is whichever form the entry stored — a user id, a user email, or an
+            api-key id — so the supplied value must equal that stored form exactly.
+          schema: { type: string }
+          example: "usr_2c1a9f04"
+        - name: limit
+          in: query
+          required: false
+          description: Max entries to return (page size).
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque pagination cursor from a prior response's `nextCursor`.
+          schema: { type: string }
+      responses:
+        '200':
+          description: A page of audit entries (newest first), tenant-scoped.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditList' }
+              examples:
+                mixed:
+                  summary: A normal mutation and a denied security event
+                  value:
+                    entries:
+                      - id: "aud_0001f2e3"
+                        actor: "usr_2c1a9f04"
+                        action: "user.role_changed"
+                        target: "usr_77b0e412"
+                        timestamp: "2026-07-02T10:05:00Z"
+                        securityEvent: false
+                      - id: "aud_0001f2e2"
+                        actor: "usr_77b0e412"
+                        action: "api_key.create.denied"
+                        target: "api-keys"
+                        timestamp: "2026-07-02T09:59:12Z"
+                        securityEvent: true
+                    nextCursor: null
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        HUMAN session credential (NOT the machine `X-API-Key`). An opaque session token carried in
+        the `admin_session` cookie, set by `POST /admin/auth/login` and cleared by
+        `POST /admin/auth/logout`. The server MUST set it with `HttpOnly` (no JS access), `Secure`
+        (HTTPS only), and `SameSite=Strict` — a necessary but NOT sufficient CSRF mitigation, so
+        every state-changing POST/PATCH request additionally carries a double-submit `X-CSRF-Token`
+        header (AD-006) — scoped to `Path=/admin` with a bounded `Max-Age` (the reference
+        configuration uses `3600` s / 1 hour, injected via runtime config). The token is opaque and
+        server-side revocable
+        (FR-003); it is never a JWT and is never returned in any response body (FR-017). `login`
+        is the only operation that does not require it (`security: []`).
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: >
+        Double-submit CSRF token (AD-006 / HINT-005). MUST equal the value of the non-HttpOnly CSRF
+        cookie issued alongside the session, and is REQUIRED on every state-changing `/admin` request
+        (POST/PATCH) except `login`. `SameSite=Strict` on the session cookie is necessary but not
+        sufficient across all browsers/flows, so this header is required as defense-in-depth; a
+        missing or mismatched token is rejected and the mutation is refused.
+      schema: { type: string }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: A user identifier within the session's tenant.
+      schema: { type: string }
+      example: "usr_77b0e412"
+    KeyId:
+      name: keyId
+      in: path
+      required: true
+      description: A machine API-key identifier within the session's tenant.
+      schema: { type: string }
+      example: "key_1a2b3c4d"
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details }`. `code` is a stable,
+        enumerated machine-readable value; `message` is human-readable and MUST NOT contain any
+        credential; `details` is optional structured context and MUST NOT contain a password,
+        hash, session token, or API-key secret.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code (snake_case). Enumerated; new codes require a contract change.
+          enum:
+            - validation_error   # 400
+            - unauthenticated    # 401
+            - forbidden          # 403 (RBAC deny)
+            - not_found          # 404
+            - last_owner         # 409 (last-owner safeguard, FR-008)
+            - already_revoked    # 409 (API-key already revoked)
+            - email_exists       # 409 (duplicate user email)
+            - rate_limited       # 429 (login throttle / lockout, FR-018)
+          example: forbidden
+        message:
+          type: string
+          description: Human-readable summary. Never contains a password, hash, token, or secret.
+        details:
+          type: object
+          additionalProperties: true
+          description: Optional structured context. MUST NOT contain any credential material.
+
+    Role:
+      type: string
+      description: RBAC role. Ordering (fail-closed) is `owner > admin > viewer` (src/server/auth/rbac.ts).
+      enum: [owner, admin, viewer]
+
+    UserStatus:
+      type: string
+      description: >
+        User lifecycle status. `invited` = created, credential not yet set; `active` = can sign in
+        and act; `deactivated` = cannot sign in or act on subsequent requests (FR-007).
+        RECONCILIATION with the data-model: `invited` corresponds to an `app_user` row whose
+        `password_hash` is NULL (created but no credential yet — see data-model §2); the data-model
+        `app_user.status` domain is reconciled to include `invited` alongside `active`/`deactivated`
+        so the contract enum and the schema CHECK agree.
+      enum: [invited, active, deactivated]
+
+    User:
+      type: object
+      description: >
+        A tenant user — metadata only. NEVER carries a password, password hash, or any credential
+        material (FR-017).
+      required: [id, email, role, status]
+      properties:
+        id: { type: string, example: "usr_77b0e412" }
+        email:
+          type: string
+          format: email
+          description: The user's email (login identifier). Returned as stored, tenant-scoped.
+          example: "reviewer@acme.example"
+        role: { $ref: '#/components/schemas/Role' }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        createdAt:
+          type: string
+          format: date-time
+          description: When the user was created/invited.
+
+    UserList:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items: { $ref: '#/components/schemas/User' }
+
+    LoginRequest:
+      type: object
+      description: >
+        Interactive human credentials plus the tenant selector. The password is write-only and
+        never echoed (FR-017). `tenantSlug` selects the tenant because an email is unique only per
+        tenant (`UNIQUE (tenant_id, email_hash)`), so the same email may exist in multiple tenants
+        — login resolves the tenant by slug, then verifies email + password within it (AD-001 /
+        HINT-002).
+      additionalProperties: false
+      required: [tenantSlug, email, password]
+      properties:
+        tenantSlug:
+          type: string
+          description: >
+            Slug of the tenant to authenticate against (AD-001). Required because an email is
+            unique only per tenant; a generic failure is returned for a bad tenant/email/password
+            alike (no enumeration).
+          minLength: 1
+          example: "acme"
+        email:
+          type: string
+          format: email
+          example: "admin@acme.example"
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 1
+          description: >
+            Plaintext password, transmitted over TLS and validated against a salted one-way hash.
+            Never stored in plaintext, never logged, never returned (FR-017).
+
+    LoginResponse:
+      type: object
+      description: >
+        Resolved session principal returned on successful login. Carries no token/credential — the
+        session token is delivered only via the `Set-Cookie` header.
+      required: [user, tenantId, role]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        tenantId:
+          type: string
+          description: The single tenant this session is bound to (FR-001).
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        role: { $ref: '#/components/schemas/Role' }
+
+    SessionPrincipal:
+      type: object
+      description: The principal resolved from the session cookie (GET /admin/auth/me). No credential material.
+      required: [userId, tenantId, role]
+      properties:
+        userId: { type: string, example: "usr_77b0e412" }
+        tenantId: { type: string, example: "550e8400-e29b-41d4-a716-446655440000" }
+        role: { $ref: '#/components/schemas/Role' }
+
+    CreateUserRequest:
+      type: object
+      description: Invite/create a user with an initial role. No password is accepted here (invite flow).
+      additionalProperties: false
+      required: [email, role]
+      properties:
+        email: { type: string, format: email, example: "reviewer@acme.example" }
+        role: { $ref: '#/components/schemas/Role' }
+
+    UpdateUserRequest:
+      type: object
+      description: >
+        Change a user's role and/or status. At least one property MUST be present. A demotion or
+        deactivation that would strand the tenant with no owner is refused with `409 last_owner`
+        (FR-008).
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
+        status: { $ref: '#/components/schemas/UserStatus' }
+
+    Scope:
+      type: string
+      description: Machine API-key capability scope (src/server/auth/rbac.ts).
+      enum: [activate, validate, admin]
+
+    ApiKeyStatus:
+      type: string
+      description: API-key status. `active` = authenticates; `revoked` = terminal, never authenticates again.
+      enum: [active, revoked]
+
+    ApiKeyMetadata:
+      type: object
+      description: >
+        Machine API-key metadata — NEVER includes the secret (FR-009). Returned by list and by
+        revoke.
+      required: [id, scopes, status, createdAt]
+      properties:
+        id: { type: string, example: "key_1a2b3c4d" }
+        label:
+          type: string
+          description: Optional human label.
+          example: "prod-activation"
+        scopes:
+          type: array
+          items: { $ref: '#/components/schemas/Scope' }
+          example: [activate, validate]
+        status: { $ref: '#/components/schemas/ApiKeyStatus' }
+        createdAt: { type: string, format: date-time }
+        rotatedFrom:
+          type: [string, "null"]
+          description: If this key replaced another via rotation, the prior key id.
+
+    ApiKeyList:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/ApiKeyMetadata' }
+
+    CreateApiKeyRequest:
+      type: object
+      description: Create a machine API key with explicit least-privilege scopes.
+      additionalProperties: false
+      required: [scopes]
+      properties:
+        label:
+          type: string
+          maxLength: 200
+          description: Optional human label recorded with the key and in the audit entry.
+        scopes:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/Scope' }
+          description: One or more capability scopes granted to the key.
+          example: [activate, validate]
+
+    ApiKeySecret:
+      description: >
+        API-key metadata PLUS the raw `secret`, returned in EXACTLY ONE place per key: the create
+        and rotate responses. The secret is never persisted in plaintext and never retrievable
+        again (FR-009). This schema MUST NOT be used by any read/list endpoint.
+      allOf:
+        - $ref: '#/components/schemas/ApiKeyMetadata'
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: >
+                The raw API-key secret, shown EXACTLY ONCE at create/rotate (FR-009). Callers must
+                store it securely now; it can never be recovered from the API afterward.
+              example: "lsk_live_7Qm2p9Xk4Rb0Tt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1e"
+
+    AuditEntry:
+      type: object
+      description: >
+        One append-only audit record (FR-011). Read-only: no API operation can create, edit, or
+        delete an entry (FR-013).
+      required: [id, actor, action, target, timestamp, securityEvent]
+      properties:
+        id: { type: string, example: "aud_0001f2e3" }
+        actor:
+          type: string
+          description: The acting principal — a user id/email or an API-key id (FR-014).
+          example: "usr_2c1a9f04"
+        action:
+          type: string
+          description: The action performed (e.g. auth.login, user.role_changed, api_key.revoke, *.denied).
+          example: "user.role_changed"
+        target:
+          type: [string, "null"]
+          description: The subject of the action (e.g. affected user id, key id, or resource).
+          example: "usr_77b0e412"
+        timestamp:
+          type: string
+          format: date-time
+          description: When the action occurred.
+        securityEvent:
+          type: boolean
+          description: >
+            True for security-relevant events — notably RBAC denials (FR-005) and login
+            throttle/lockout (FR-018). Filterable via the `securityEvent` query param (FR-012).
+
+    AuditList:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page, or null when there are no more entries.
+
+  responses:
+    BadRequest:
+      description: Validation error in the request (malformed body, bad filter value, etc.).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invalidRole:
+              value:
+                code: validation_error
+                message: "role must be one of owner, admin, viewer."
+                details: { field: role, value: "superuser" }
+    Unauthorized:
+      description: No valid session — the `admin_session` cookie is missing, expired, or revoked (FR-003).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noSession:
+              value: { code: unauthenticated, message: "Authentication required." }
+    Forbidden:
+      description: >
+        Authenticated but the session's role is below the operation's `x-rbac.minRole`. Denied
+        fail-closed and recorded as an auditable security event (FR-004/005).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the admin role."
+                details: { minRole: admin, role: viewer }
+    NotFound:
+      description: The referenced resource does not exist within the session's tenant.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownUser:
+              value:
+                code: not_found
+                message: "No such user in this tenant."
+                details: { userId: "usr_deadbeef" }
+    RateLimited:
+      description: >
+        Too many failed sign-in attempts — the sign-in path is throttled / the account is locked
+        out to resist credential guessing (FR-018). The event is auditable.
+      headers:
+        Retry-After:
+          required: true
+          description: Seconds to wait before retrying. Always present on a 429 from the login path.
+          schema: { type: integer }
+          example: 60
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            lockout:
+              value:
+                code: rate_limited
+                message: "Too many failed attempts. Try again later."
+                details: { retryAfterSeconds: 60 }

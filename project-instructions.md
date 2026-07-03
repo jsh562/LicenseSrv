@@ -33,7 +33,7 @@ All agent output MUST be concise and outcome-oriented. This principle supersedes
 <!-- Downstream phases (Plan, QC, Autopilot) read this section as the authoritative tech-stack reference. -->
 
 - **Language/Runtime**: TypeScript 5.x / Node 22 (license server + admin API); Rust (stable toolchain) for the embeddable verifier core. Migration of the server to Rust is a planned future phase; the verifier core is Rust from day one.
-- **Frameworks**: Server — Fastify (HTTP), Drizzle ORM (Postgres access), Zod (validation). Admin UI — React + Vite (TypeScript SPA). Verifier core — Rust with `ed25519-dalek` (signatures) and `ciborium` (CBOR), exposed via C ABI (`cbindgen`), WASM (`wasm-pack`), and UniFFI-generated bindings.
+- **Frameworks**: Server — Fastify (HTTP), node-postgres (`pg`) with raw SQL migrations for Postgres access, Zod (validation). Admin UI — React + Vite (TypeScript SPA). Verifier core — Rust with `ed25519-dalek` (signatures) and `ciborium` (CBOR), exposed via C ABI (`cbindgen`), WASM (`wasm-pack`), and UniFFI-generated bindings.
 - **Storage**: PostgreSQL 16 (primary, tenant-scoped store). Redis 7 reserved for later phases (rate-limit counters, floating-seat leases).
 - **Infrastructure**: Docker; ships as one signed multi-arch container image that runs self-hosted (including air-gapped) or as a managed multi-tenant SaaS — **self-host-first and cloud-agnostic, with no mandatory cloud dependency**. Signing keys held via a pluggable signer: encrypted-keystore / soft-HSM default, with optional cloud KMS / HSM (PKCS#11) adapters; never in application memory as plaintext. (See `specs/dod.md` DDR-001, DDR-003.)
 
@@ -75,7 +75,8 @@ All agent output MUST be concise and outcome-oriented. This principle supersedes
 
 ## Changelog
 
+- **1.2.0** (2026-07-02): Corrected the server data-access framework from "Drizzle ORM" to node-postgres (`pg`) with raw SQL migrations, matching the shipped, QC-passed implementation (E002 AD-006 dropped Drizzle for `pg` + advisory-locked SQL migrations; E004/E005 followed). Localized change — PRD/SAD/DOD do not mandate an ORM, so no cross-document propagation was required.
 - **1.1.0** (2026-06-26): Reconciled Infrastructure posture to self-host-first / cloud-agnostic with a pluggable signer (encrypted-keystore/soft-HSM default, optional cloud KMS) to align with `specs/sad.md` and `specs/dod.md` (DDR-001, DDR-003); expanded the security-scanning toolchain to include image/supply-chain scanning (Trivy + Grype) alongside dependency audit and SAST.
 - **1.0.0** (2026-06-26): Initial project instructions (principles, technology stack, testing/quality policy, source layout, workflow, governance).
 
-**Version**: 1.1.0 | **Last Amended**: 2026-06-26
+**Version**: 1.2.0 | **Last Amended**: 2026-07-02
