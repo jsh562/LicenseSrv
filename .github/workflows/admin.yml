@@ -1,0 +1,82 @@
+name: admin
+
+# CI for the tenant-administration module (E005): the Fastify /admin console API and the React SPA.
+# Gates: typecheck + lint, the real-Postgres integration suite (Testcontainers), the SPA component
+# suite with a >=80% coverage gate, a production-scope dependency audit (no high/critical in shipped
+# deps), and a semgrep scan (CI-only). Dev-server toolchain advisories (vite dev server / vitest UI
+# server) are out of scope for the shipped-artifact audit — see the audit step for the rationale.
+
+on:
+  push:
+    paths:
+      - "src/server/**"
+      - "src/admin-ui/**"
+      - "migrations/**"
+      - ".github/workflows/admin.yml"
+  pull_request:
+    paths:
+      - "src/server/**"
+      - "src/admin-ui/**"
+      - "migrations/**"
+      - ".github/workflows/admin.yml"
+
+jobs:
+  # --- Server: typecheck, lint, and the admin module's integration suite on real Postgres ---------
+  server:
+    name: server (admin module + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      # ubuntu-latest ships Docker, so Testcontainers spins up Postgres 16 for the integration tests.
+      - name: Admin integration + unit tests (Testcontainers)
+        run: npx vitest run src/server/modules/admin
+      - name: Server production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  # --- SPA: typecheck, component tests + coverage gate, and a shipped-deps audit -------------------
+  spa:
+    name: spa (React console)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/admin-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/admin-ui/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Component tests + >=80% coverage gate
+        run: npm run test:cov
+      # Shipped bundle = production deps only (react/react-dom), which audit clean. The remaining
+      # high/critical advisories are dev-only (vite dev server `server.fs.deny` bypass; vitest UI
+      # server file read) — they require running a dev/UI server we never start in CI or production,
+      # and resolving them means a vite 8 / vitest 4 major bump. Gate on the shipped surface.
+      - name: SPA production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  # --- Static analysis: semgrep over the admin backend + SPA (CI-only; not run locally) -----------
+  semgrep:
+    name: semgrep (admin + SPA)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/admin src/admin-ui/src

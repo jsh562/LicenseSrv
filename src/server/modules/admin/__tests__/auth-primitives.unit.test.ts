@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import { csrfValid, issueCsrfToken } from "../csrf.js";
+import { DEFAULT_SESSION_TTL_SECONDS, loadAdminConfig, MAX_SESSION_TTL_SECONDS } from "../index.js";
 import { hashPassword, verifyPassword } from "../password.js";
 import { generateToken, tokenHash } from "../session.js";
 
@@ -52,5 +53,35 @@ describe("CSRF double-submit (FR-019)", () => {
     expect(csrfValid(token, undefined)).toBe(false); // missing header
     expect(csrfValid(undefined, token)).toBe(false); // missing cookie
     expect(csrfValid(undefined, undefined)).toBe(false);
+  });
+});
+
+describe("admin config (FR-003/018)", () => {
+  it("uses safe defaults when the environment is unset", () => {
+    const c = loadAdminConfig({});
+    expect(c.sessionTtlSeconds).toBe(DEFAULT_SESSION_TTL_SECONDS);
+    expect(c.maxFailedLogins).toBe(5);
+    expect(c.lockoutSeconds).toBe(15 * 60);
+  });
+
+  it("honors operator overrides for TTL, lockout threshold, and lockout window", () => {
+    const c = loadAdminConfig({
+      ADMIN_SESSION_TTL_SECONDS: "3600",
+      ADMIN_MAX_FAILED_LOGINS: "3",
+      ADMIN_LOCKOUT_SECONDS: "120",
+    });
+    expect(c.sessionTtlSeconds).toBe(3600);
+    expect(c.maxFailedLogins).toBe(3);
+    expect(c.lockoutSeconds).toBe(120);
+  });
+
+  it("clamps the session TTL to the 24h ceiling and rejects invalid values", () => {
+    expect(loadAdminConfig({ ADMIN_SESSION_TTL_SECONDS: "999999999" }).sessionTtlSeconds).toBe(
+      MAX_SESSION_TTL_SECONDS,
+    );
+    // Invalid / non-positive inputs fall back to the defaults.
+    const bad = loadAdminConfig({ ADMIN_MAX_FAILED_LOGINS: "abc", ADMIN_LOCKOUT_SECONDS: "-5" });
+    expect(bad.maxFailedLogins).toBe(5);
+    expect(bad.lockoutSeconds).toBe(15 * 60);
   });
 });

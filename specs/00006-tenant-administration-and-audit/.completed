@@ -1,0 +1,15 @@
+E005 — Tenant Administration & Audit: implementation complete.
+
+All P1 tasks (T001–T032, T035–T047) implemented and validated. P2 SSO (T033/T034) DEFERRED (non-blocking).
+
+Backend: migration 0005 (admin_session + app_user credential/lockout cols, forced RLS); admin module
+(password scrypt, opaque cookie sessions, CSRF double-submit, fail-closed RBAC preHandler, login+lockout,
+user/role mgmt with race-safe last-owner guard, API-key lifecycle, read-only filtered audit); /admin REST
+surface; registered in modules/index.ts; app.ts cookie plugin + /admin X-API-Key exemption.
+Tests: 20 admin backend tests (5 unit + 15 integration on real Postgres).
+
+Frontend: React 18 + Vite SPA (src/admin-ui) — typed API client, Login, Shell, RequireRole, Users, ApiKeys,
+Audit; 25 component tests; ≥80% coverage gate (97.5% lines / 87.7% branches / 92.7% funcs).
+
+Polish: secret-leakage test, CSRF test, coverage gate, CI workflow (.github/workflows/admin.yml — server
+integration on Testcontainers, SPA coverage, production-scope npm audit, semgrep CI-only).

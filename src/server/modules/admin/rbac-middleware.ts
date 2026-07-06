@@ -63,6 +63,14 @@ export function requireRole(pool: pg.Pool, minRole: Role) {
 
     const role = await highestRole(pool, session.tenantId, session.userId);
     if (!role) {
+      // No role at all is also a deny-by-default outcome (FR-005) — record it as a security event.
+      await withTenant(pool, session.tenantId, (q) =>
+        recordSecurityEvent(q, {
+          actor: session.userId,
+          action: "authz.denied",
+          target: `${req.method} ${req.url}`,
+        }),
+      );
       await reply.code(403).send({ code: "forbidden", message: "no role assigned" });
       return;
     }

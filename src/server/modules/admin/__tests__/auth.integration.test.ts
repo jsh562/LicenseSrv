@@ -101,6 +101,17 @@ describe("admin auth spine (integration, real Postgres)", () => {
     expect(now).toEqual({ ok: false, reason: "locked" });
   });
 
+  it("honors an operator-configured lockout threshold (FR-018 configurability)", async () => {
+    const email = "config-lock@acme.test";
+    await seedUser(tenantA, email, "right-pw", "viewer");
+    // With a custom policy of 2, the account locks on the 2nd failure (not the default 5).
+    const policy = { maxFailedLogins: 2, lockoutSeconds: 60 };
+    const first = await login(pool, SECRET, { tenantSlug: "acme", email, password: "wrong" }, TTL, policy);
+    expect(first).toEqual({ ok: false, reason: "invalid" });
+    const second = await login(pool, SECRET, { tenantSlug: "acme", email, password: "wrong" }, TTL, policy);
+    expect(second).toEqual({ ok: false, reason: "locked" });
+  });
+
   it("isolates admin_session by tenant under RLS", async () => {
     const r = await login(pool, SECRET, { tenantSlug: "acme", email: "admin@acme.test", password: "pw-correct-horse" }, TTL);
     expect(r.ok).toBe(true);

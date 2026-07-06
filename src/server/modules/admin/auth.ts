@@ -11,8 +11,19 @@ import type { Role } from "../../auth/rbac.js";
 import { verifyPassword } from "./password.js";
 import { createSession, revokeSession } from "./session.js";
 
+/** Default lockout threshold + window (FR-018) — both operator-configurable via AdminConfig. */
 export const MAX_FAILED_LOGINS = 5;
 export const LOCKOUT_SECONDS = 15 * 60;
+
+/** Operator-configurable brute-force lockout policy (FR-018). */
+export interface LockoutPolicy {
+  maxFailedLogins: number;
+  lockoutSeconds: number;
+}
+export const DEFAULT_LOCKOUT: LockoutPolicy = {
+  maxFailedLogins: MAX_FAILED_LOGINS,
+  lockoutSeconds: LOCKOUT_SECONDS,
+};
 
 export type LoginOutcome =
   | {
@@ -52,6 +63,7 @@ export async function login(
   secret: string,
   input: { tenantSlug: string; email: string; password: string },
   ttlSeconds: number,
+  lockout: LockoutPolicy = DEFAULT_LOCKOUT,
 ): Promise<LoginOutcome> {
   const tenantId = await tenantIdBySlug(pool, input.tenantSlug);
   if (!tenantId) return { ok: false, reason: "invalid" };
@@ -78,13 +90,13 @@ export async function login(
 
     if (!good) {
       const fails = user.failed_login_count + 1;
-      const lock = fails >= MAX_FAILED_LOGINS;
+      const lock = fails >= lockout.maxFailedLogins;
       await q(
         `UPDATE app_user
             SET failed_login_count = $2,
                 locked_until = CASE WHEN $3 THEN now() + ($4::int * interval '1 second') ELSE locked_until END
           WHERE id = $1`,
-        [user.id, fails, lock, LOCKOUT_SECONDS],
+        [user.id, fails, lock, lockout.lockoutSeconds],
       );
       await recordSecurityEvent(q, {
         actor: user.id,

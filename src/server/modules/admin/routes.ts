@@ -10,7 +10,7 @@ import { z } from "zod";
 import type { Role, Scope } from "../../auth/rbac.js";
 import { createApiKey, listApiKeys, revokeApiKey, rotateApiKey } from "./apikeys.js";
 import { listAuditEntries } from "./audit.js";
-import { login, logout, LOCKOUT_SECONDS } from "./auth.js";
+import { login, logout } from "./auth.js";
 import { CSRF_COOKIE, issueCsrfToken } from "./csrf.js";
 import { requireRole } from "./rbac-middleware.js";
 import { SESSION_COOKIE } from "./session.js";
@@ -56,6 +56,9 @@ function err(reply: FastifyReply, status: number, code: string, message: string)
 export interface AdminRouteConfig {
   /** Session lifetime in seconds (AD-003; default 8h, bounded ≤ 24h by index.ts). */
   sessionTtlSeconds: number;
+  /** Brute-force lockout threshold + window (FR-018), operator-configurable via index.ts. */
+  maxFailedLogins: number;
+  lockoutSeconds: number;
   /** The shared HMAC secret for email + API-key hashing (same secret as the machine auth path). */
   secret: string;
 }
@@ -77,10 +80,13 @@ export function registerAdminRoutes(app: FastifyInstance, pool: pg.Pool, config:
   app.post("/admin/auth/login", async (req, reply) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) return err(reply, 400, "validation_error", "invalid login payload");
-    const outcome = await login(pool, config.secret, parsed.data, ttl);
+    const outcome = await login(pool, config.secret, parsed.data, ttl, {
+      maxFailedLogins: config.maxFailedLogins,
+      lockoutSeconds: config.lockoutSeconds,
+    });
     if (!outcome.ok) {
       if (outcome.reason === "locked") {
-        void reply.header("Retry-After", String(LOCKOUT_SECONDS));
+        void reply.header("Retry-After", String(config.lockoutSeconds));
         return err(reply, 429, "account_locked", "too many failed attempts; try again later");
       }
       return err(reply, 401, "invalid_credentials", "invalid credentials");

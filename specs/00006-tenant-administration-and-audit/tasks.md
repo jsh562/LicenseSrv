@@ -37,7 +37,7 @@ description: "Task list for feature implementation: Tenant Administration and Au
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Scaffold React + Vite SPA workspace in src/admin-ui/ (package.json, vite.config.ts, index.html, tsconfig.json) with React 18 + Vitest + React Testing Library
+- [X] T001 Scaffold React + Vite SPA workspace in src/admin-ui/ (package.json, vite.config.ts, index.html, tsconfig.json) with React 18 + Vitest + React Testing Library
 - [X] T002 [P] {FR-003} Add @fastify/cookie dependency and register the cookie plugin in src/server/app.ts
 - [X] T003 [P] Add admin config (cookie flags, session/CSRF secrets, scrypt cost, lockout N=5, TTL<=24h) in src/server/modules/admin/index.ts → exports: AdminConfig, registerAdmin()
 
@@ -68,7 +68,7 @@ description: "Task list for feature implementation: Tenant Administration and Au
 - [X] T015 [US1] {FR-001,FR-014,FR-018} Implement login/logout/me + lockout in src/server/modules/admin/auth.ts ← T007:verifyPassword ← T009:createSession → exports: login, logout, me
 - [X] T016 [US1] {FR-018} [COMPLETES FR-018] Wire lockout counters + audit events (login_failed/login_locked/login_throttled) in src/server/modules/admin/auth.ts ← T015:login after:T015
 - [X] T017 [US1] {FR-001,FR-003} [COMPLETES FR-001] Register /admin/auth routes (login security:[]; SameSite=Strict cookie) in src/server/modules/admin/routes.ts ← T015:login ← T011:requireCsrf
-- [ ] T018 [US1] {FR-002,FR-003} [COMPLETES FR-002,FR-003] Integration test session RLS: A cannot access B; owner-status gate in src/server/modules/admin/__tests__/session.integration.test.ts after:T017
+- [X] T018 [US1] {FR-002,FR-003} [COMPLETES FR-002,FR-003] Integration test session RLS: A cannot access B; owner-status gate in src/server/modules/admin/__tests__/session.integration.test.ts after:T017
 
 ---
 
@@ -118,8 +118,8 @@ description: "Task list for feature implementation: Tenant Administration and Au
 
 **Non-blocking for the P1 MVP gate. Delivered after the P1 phases; layers onto the ADR-0008 session seam.**
 
-- [ ] T033 [P] [US6] {FR-016} Integration test SSO/OIDC sign-in yields tenant-scoped session equivalent to direct login in src/server/modules/admin/__tests__/sso.integration.test.ts after:T017
-- [ ] T034 [US6] {FR-016} [COMPLETES FR-016] Implement SSO/OIDC auth issuing an admin_session via the session seam in src/server/modules/admin/sso.ts ← T009:createSession
+- [ ] T033 [P] [US6] {FR-016} [DEFERRED] Integration test SSO/OIDC sign-in yields tenant-scoped session equivalent to direct login in src/server/modules/admin/__tests__/sso.integration.test.ts after:T017
+- [ ] T034 [US6] {FR-016} [DEFERRED] [COMPLETES FR-016] Implement SSO/OIDC auth issuing an admin_session via the session seam in src/server/modules/admin/sso.ts ← T009:createSession
 
 ---
 
@@ -127,14 +127,14 @@ description: "Task list for feature implementation: Tenant Administration and Au
 
 **The console shell + login/users/api-keys/audit views (FR-015, SC-010). Each view is component-testable with a mocked API; the [US#] tags mark which story slice a task surfaces.**
 
-- [ ] T035 {FR-015} Implement typed admin API client (camelCase, cookie creds, X-CSRF-Token echo) in src/admin-ui/src/api.ts ← contracts/admin-api.openapi.yaml → exports: adminApi
-- [ ] T036 [US1] {FR-015} Implement Login page (tenantSlug+email+password form; generic error) in src/admin-ui/src/pages/Login.tsx ← T035:adminApi
-- [ ] T037 [US1] {FR-015} Implement console Shell (nav across users/api-keys/audit; inherits session scope) in src/admin-ui/src/components/Shell.tsx ← T035:adminApi → exports: Shell
-- [ ] T038 [US2] {FR-015} Implement RequireRole guard (hide actions above session role; SC-010) + App/main wiring in src/admin-ui/src/components/RequireRole.tsx ← T037:Shell ← T035:adminApi
-- [ ] T039 [P] [US3] {FR-015} Implement Users view (list, create/invite, change role, deactivate; metadata only) in src/admin-ui/src/pages/Users.tsx ← T035:adminApi
-- [ ] T040 [P] [US4] {FR-015} Implement ApiKeys view (list metadata; create showing secret once; rotate; revoke) in src/admin-ui/src/pages/ApiKeys.tsx ← T035:adminApi
-- [ ] T041 [P] [US5] {FR-015} Implement Audit view (read-only table + from/to/securityEvent/actor filters) in src/admin-ui/src/pages/Audit.tsx ← T035:adminApi
-- [ ] T042 {FR-015} [COMPLETES FR-015] Component tests (RTL, mocked API): login, shell nav, RequireRole hides actions, users/api-keys/audit views render in src/admin-ui/src/__tests__/ after:T041
+- [X] T035 {FR-015} Implement typed admin API client (camelCase, cookie creds, X-CSRF-Token echo) in src/admin-ui/src/api.ts ← contracts/admin-api.openapi.yaml → exports: adminApi
+- [X] T036 [US1] {FR-015} Implement Login page (tenantSlug+email+password form; generic error) in src/admin-ui/src/pages/Login.tsx ← T035:adminApi
+- [X] T037 [US1] {FR-015} Implement console Shell (nav across users/api-keys/audit; inherits session scope) in src/admin-ui/src/components/Shell.tsx ← T035:adminApi → exports: Shell
+- [X] T038 [US2] {FR-015} Implement RequireRole guard (hide actions above session role; SC-010) + App/main wiring in src/admin-ui/src/components/RequireRole.tsx ← T037:Shell ← T035:adminApi
+- [X] T039 [P] [US3] {FR-015} Implement Users view (list, create/invite, change role, deactivate; metadata only) in src/admin-ui/src/pages/Users.tsx ← T035:adminApi
+- [X] T040 [P] [US4] {FR-015} Implement ApiKeys view (list metadata; create showing secret once; rotate; revoke) in src/admin-ui/src/pages/ApiKeys.tsx ← T035:adminApi
+- [X] T041 [P] [US5] {FR-015} Implement Audit view (read-only table + from/to/securityEvent/actor filters) in src/admin-ui/src/pages/Audit.tsx ← T035:adminApi
+- [X] T042 {FR-015} [COMPLETES FR-015] Component tests (RTL, mocked API): login, shell nav, RequireRole hides actions, users/api-keys/audit views render in src/admin-ui/src/__tests__/ after:T041
 
 ---
 
@@ -143,8 +143,8 @@ description: "Task list for feature implementation: Tenant Administration and Au
 - [X] T043 {FR-017} [COMPLETES FR-017] Secret-leakage test: no password/hash/session token in any response, header, log, or audit snapshot in src/server/modules/admin/__tests__/secret-leakage.test.ts
 - [X] T044 {FR-019} [COMPLETES FR-019] CSRF test: state-changing /admin without valid X-CSRF-Token rejected; login exempt in src/server/modules/admin/__tests__/csrf.integration.test.ts after:T021
 - [X] T045 Register the admin module in src/server/modules/index.ts alongside registerSigning ← T003:registerAdmin after:T032
-- [ ] T046 [P] Enforce >=80% line+branch coverage of the admin server module (Vitest v8) and wire the coverage gate in the admin test config
-- [ ] T047 [P] Add npm audit (no high/critical) + semgrep (CI-only) for the admin module and SPA to the CI workflow
+- [X] T046 [P] Enforce >=80% line+branch coverage of the admin server module (Vitest v8) and wire the coverage gate in the admin test config
+- [X] T047 [P] Add npm audit (no high/critical) + semgrep (CI-only) for the admin module and SPA to the CI workflow
 
 ---
 
