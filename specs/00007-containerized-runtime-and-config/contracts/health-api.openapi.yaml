@@ -1,0 +1,94 @@
+openapi: 3.1.0
+info:
+  title: License API — Internal Health Probes (E006)
+  version: 0.1.0
+  description: >
+    Unauthenticated health endpoints under the reserved /internal/ path (exempt from the machine
+    X-API-Key preHandler in app.ts). Liveness gates the process (a failing liveness → orchestrator
+    restarts the container). Readiness gates traffic (a failing readiness → orchestrator withholds
+    traffic without restarting) and reflects required-dependency health (database, and the signer
+    custody where signing is required). Startup indicates initial boot completed. Payloads are
+    dependency-status only — never a secret or tenant detail.
+servers:
+  - url: /
+paths:
+  /internal/health/live:
+    get:
+      operationId: liveness
+      summary: Liveness — the process is alive
+      description: Independent of external dependencies. Returns 200 as long as the process is running.
+      responses:
+        "200":
+          description: Process alive
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+              example: { status: alive }
+  /internal/health/ready:
+    get:
+      operationId: readiness
+      summary: Readiness — can currently serve traffic
+      description: >
+        Returns 200 only when every required dependency is reachable (database SELECT 1, and the
+        composed signer readiness where applicable). Returns 503 when any required dependency is
+        degraded, so the orchestrator withholds traffic without killing the container.
+      responses:
+        "200":
+          description: Ready to serve
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+              example:
+                status: ready
+                checks:
+                  - { name: database, status: up }
+                  - { name: signer, status: up }
+        "503":
+          description: Not ready — a required dependency is degraded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+              example:
+                status: not-ready
+                checks:
+                  - { name: database, status: down }
+                  - { name: signer, status: up }
+  /internal/health/startup:
+    get:
+      operationId: startup
+      summary: Startup — initial boot completed
+      description: Returns 200 once the server has bound its listener; used to defer live/ready checks during boot.
+      responses:
+        "200":
+          description: Startup complete
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+              example: { status: started }
+        "503":
+          description: Still starting
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+              example: { status: starting }
+components:
+  schemas:
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+    Check:
+      type: object
+      required: [name, status]
+      properties:
+        name: { type: string, description: dependency name (e.g. database, signer) }
+        status: { type: string, enum: [up, down] }
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ready, not-ready] }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/Check" }
