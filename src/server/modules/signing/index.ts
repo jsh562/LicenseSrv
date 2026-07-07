@@ -11,6 +11,13 @@ import { KeystoreSigner } from "./keystore-signer.js";
 import { registerSigningRoutes } from "./routes.js";
 import type { Signer } from "./signer.js";
 
+// Aggregate health readiness (E006) composes the signer's readiness via this app decorator.
+declare module "fastify" {
+  interface FastifyInstance {
+    signerReady?: () => boolean;
+  }
+}
+
 /** Default rotation overlap window: 30 days (TR-019 — bounded, operator-configurable). */
 export const DEFAULT_OVERLAP_SECONDS = 2_592_000;
 
@@ -83,13 +90,21 @@ export function createSigningModule(pool: pg.Pool, config: SigningConfig): Signi
  * internal readiness probe that reflects custody state (T029 — readiness, not liveness).
  */
 export function registerSigning(app: FastifyInstance, deps: AppDeps): void {
-  const module = createSigningModule(deps.pool, loadSigningConfig());
+  const config = loadSigningConfig();
+  const module = createSigningModule(deps.pool, config);
 
   // Readiness (not liveness): custody-locked / backend-down -> not ready. Under /internal/ (no auth).
   app.get("/internal/ready/signing", async (_req, reply) => {
     if (module.ready()) return reply.code(200).send({ status: "ready" });
     return reply.code(503).send({ status: "not-ready", reason: "signer custody locked" });
   });
+
+  // Compose signer readiness into the aggregate /internal/health/ready probe ONLY when a signer is
+  // actually configured (custodian shares provided) — a deployment not yet signing must not be held
+  // perpetually not-ready by a locked keystore (E006, OR-013: "where a signer is configured").
+  if (config.custodianShares.length >= 2) {
+    app.decorate("signerReady", () => module.ready());
+  }
 
   registerSigningRoutes(app, deps.pool, module);
 }

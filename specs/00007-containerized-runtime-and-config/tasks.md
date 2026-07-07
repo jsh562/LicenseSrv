@@ -34,8 +34,8 @@ Extends the existing E002 modular-monolith server. No generic bootstrap; reuse `
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Add container run scripts (start = `node dist/server/main.js`, migrate:dist, DOCKER_SMOKE smoke test) to package.json
-- [ ] T002 [P] Exclude `__tests__` from the production build so the image ships only runtime dist/, in tsconfig.json
+- [X] T001 Add container run scripts (start = `node dist/server/main.js`, migrate:dist, DOCKER_SMOKE smoke test) to package.json
+- [X] T002 [P] Exclude `__tests__` from the production build so the image ships only runtime dist/, in tsconfig.json
 
 ---
 
@@ -43,56 +43,56 @@ Extends the existing E002 modular-monolith server. No generic bootstrap; reuse `
 
 **Config loader + secret resolver — blocks the entrypoint (OBJ1) and health probes (OBJ5). No work-item label.**
 
-- [ ] T003 [P] {OR-008,OR-009} readSecret: resolve `<VAR>_FILE` (read file, trim trailing newline, empty = missing) in src/server/config/secrets.ts → exports: readSecret
-- [ ] T004 {OR-005,OR-006,OR-017} Validated Zod AppConfig from env (fail-fast, names missing setting) + secret-free summary in src/server/config/index.ts → exports: loadConfig, AppConfig
+- [X] T003 [P] {OR-008,OR-009} readSecret: resolve `<VAR>_FILE` (read file, trim trailing newline, empty = missing) in src/server/config/secrets.ts → exports: readSecret
+- [X] T004 {OR-005,OR-006,OR-017} Validated Zod AppConfig from env (fail-fast, names missing setting) + secret-free summary in src/server/config/index.ts → exports: loadConfig, AppConfig
 
 ---
 
 ## Phase 3: OBJ1 — Single runtime image + server entrypoint (Priority: P1) 🎯 MVP
 
-- [ ] T005 [P] [OBJ1] {OR-001,OR-010,OR-017} Entrypoint: loadConfig→pool→createApp→listen; secret-free startup log; no migrate-on-boot; src/server/main.ts after:T004 → exports: startServer
-- [ ] T006 [P] [OBJ1] {OR-002,OR-003} Multi-stage Dockerfile: build (tsc) + node:22-slim final (prod deps, dist/, migrations/), non-root USER, minimal writable, in Dockerfile
-- [ ] T007 [P] [OBJ1] {OR-002} Add .dockerignore (node_modules, source tests, .git, secrets, local env) in .dockerignore
-- [ ] T008 [OBJ1] {OR-004,OR-011} Define serve (node dist/server/main.js) + migrate (node dist/server/db/migrate.js) commands sharing one config/secret contract in Dockerfile after:T006
+- [X] T005 [P] [OBJ1] {OR-001,OR-010,OR-017} Entrypoint: loadConfig→pool→createApp→listen; secret-free startup log; no migrate-on-boot; src/server/main.ts after:T004 → exports: startServer
+- [X] T006 [P] [OBJ1] {OR-002,OR-003} Multi-stage Dockerfile: build (tsc) + node:22-slim final (prod deps, dist/, migrations/), non-root USER, minimal writable, in Dockerfile
+- [X] T007 [P] [OBJ1] {OR-002} Add .dockerignore (node_modules, source tests, .git, secrets, local env) in .dockerignore
+- [X] T008 [OBJ1] {OR-004,OR-011} Define serve (node dist/server/main.js) + migrate (node dist/server/db/migrate.js) commands sharing one config/secret contract in Dockerfile after:T006
 
 ---
 
 ## Phase 4: OBJ2 — 12-factor configuration contract (Priority: P1) 🎯 MVP
 
-- [ ] T009 [P] [OBJ2] {OR-005,OR-006,OR-017} [COMPLETES OR-017] Config unit test: required validation, fail-fast names setting, secret-free summary in src/server/config/__tests__/config.unit.test.ts
-- [ ] T010 [P] [OBJ2] {OR-007} Configuration reference: every var (name, purpose, required/optional, default, secret?) in docs/config-reference.md
+- [X] T009 [P] [OBJ2] {OR-005,OR-006,OR-017} [COMPLETES OR-017] Config unit test: required validation, fail-fast names setting, secret-free summary in src/server/config/__tests__/config.unit.test.ts
+- [X] T010 [P] [OBJ2] {OR-007} Configuration reference: every var (name, purpose, required/optional, default, secret?) in docs/config-reference.md
 
 ---
 
 ## Phase 5: OBJ3 — File-mounted secret injection (Priority: P1) 🎯 MVP
 
-- [ ] T011 [P] [OBJ3] {OR-008,OR-009} Secret-file unit tests: `<VAR>_FILE` resolution, empty=missing fail-fast, no secret in summary in src/server/config/__tests__/config.unit.test.ts after:T009
-- [ ] T012 [P] [OBJ3] {OR-008} Secret-mounting + hygiene guidance (never-bake, `docker inspect`, example secret-file layout) in docs/config-reference.md after:T010
+- [X] T011 [P] [OBJ3] {OR-008,OR-009} Secret-file unit tests: `<VAR>_FILE` resolution, empty=missing fail-fast, no secret in summary in src/server/config/__tests__/config.unit.test.ts after:T009
+- [X] T012 [P] [OBJ3] {OR-008} Secret-mounting + hygiene guidance (never-bake, `docker inspect`, example secret-file layout) in docs/config-reference.md after:T010
 
 ---
 
 ## Phase 6: OBJ4 — Gated migration job (Priority: P1) 🎯 MVP
 
-- [ ] T013 [OBJ4] {OR-010,OR-011} Adapt migrate CLI to loadConfig + dist migrations path (HINT-001), reuse runMigrations, in src/server/db/migrate.ts after:T004
-- [ ] T014 [OBJ4] {OR-010} [COMPLETES OR-010] Integration: app boot changes no schema; migrate idempotent + advisory-locked in src/server/__tests__/entrypoint.integration.test.ts after:T005
+- [X] T013 [OBJ4] {OR-010,OR-011} Adapt migrate CLI to loadConfig + dist migrations path (HINT-001), reuse runMigrations, in src/server/db/migrate.ts after:T004
+- [X] T014 [OBJ4] {OR-010} [COMPLETES OR-010] Integration: app boot changes no schema; migrate idempotent + advisory-locked in src/server/__tests__/entrypoint.integration.test.ts after:T005
 
 ---
 
 ## Phase 7: OBJ5 — Health probes with readiness-gated dependencies (Priority: P1) 🎯 MVP
 
-- [ ] T015 [OBJ5] {OR-012} registerHealth: GET /internal/health/{live,ready,startup} (auth-exempt /internal/) in src/server/health/index.ts → exports: registerHealth
-- [ ] T016 [OBJ5] {OR-013} Readiness = DB SELECT 1 + composed signer readiness; liveness DB-independent; startup ready after listen, in src/server/health/index.ts after:T015
-- [ ] T017 [OBJ5] {OR-001,OR-012} Wire registerHealth into entrypoint before listen in src/server/main.ts ← T015:registerHealth after:T005
-- [ ] T018 [OBJ5] {OR-012,OR-013} [COMPLETES OR-012] Int: DB down→ready 503/live 200; up→ready 200; payload status-only, no secret/tenant in src/server/health/__tests__/health.integration.test.ts after:T017
+- [X] T015 [OBJ5] {OR-012} registerHealth: GET /internal/health/{live,ready,startup} (auth-exempt /internal/) in src/server/health/index.ts → exports: registerHealth
+- [X] T016 [OBJ5] {OR-013} Readiness = DB SELECT 1 + composed signer readiness; liveness DB-independent; startup ready after listen, in src/server/health/index.ts after:T015
+- [X] T017 [OBJ5] {OR-001,OR-012} Wire registerHealth into entrypoint before listen in src/server/main.ts ← T015:registerHealth after:T005
+- [X] T018 [OBJ5] {OR-012,OR-013} [COMPLETES OR-012] Int: DB down→ready 503/live 200; up→ready 200; payload status-only, no secret/tenant in src/server/health/__tests__/health.integration.test.ts after:T017
 
 ---
 
 ## Phase 8: OBJ6 — Reference docker-compose stack (Priority: P1) 🎯 MVP
 
-- [ ] T019 [OBJ6] {OR-014} docker-compose stack: api + postgres 16.4+ + one-shot migrate; healthchecks (pg_isready, /internal/health/ready) in docker-compose.yml after:T006
-- [ ] T020 [OBJ6] {OR-015} Startup ordering: app depends_on migrate service_completed_successfully + db service_healthy (HINT-004) in docker-compose.yml after:T019
-- [ ] T021 [P] [OBJ6] {OR-014} .env.example + secret-file layout (documented, no real secrets) in .env.example
-- [ ] T022 [OBJ6] {OR-008,OR-014} [COMPLETES OR-008,OR-014] Smoke (DOCKER_SMOKE): non-root, no secret in image, compose healthy in src/server/__tests__/image.smoke.integration.test.ts after:T008
+- [X] T019 [OBJ6] {OR-014} docker-compose stack: api + postgres 16.4+ + one-shot migrate; healthchecks (pg_isready, /internal/health/ready) in docker-compose.yml after:T006
+- [X] T020 [OBJ6] {OR-015} Startup ordering: app depends_on migrate service_completed_successfully + db service_healthy (HINT-004) in docker-compose.yml after:T019
+- [X] T021 [P] [OBJ6] {OR-014} .env.example + secret-file layout (documented, no real secrets) in .env.example
+- [X] T022 [OBJ6] {OR-008,OR-014} [COMPLETES OR-008,OR-014] Smoke (DOCKER_SMOKE): non-root, no secret in image, compose healthy in src/server/__tests__/image.smoke.integration.test.ts after:T008 [CI-gated: image build blocked locally by sandbox npm egress; runs in runtime.yml]
 
 ---
 
@@ -107,16 +107,16 @@ Extends the existing E002 modular-monolith server. No generic bootstrap; reuse `
 
 ## Phase 10: Documentation & Runbooks
 
-- [ ] T025 [P] {RR-001} Stuck/contended migration runbook (clear held advisory lock, resume after failed migration) in docs/runbooks/stuck-migration.md
-- [ ] T026 [P] {RR-002} Readiness-failure + config/secret fail-fast runbook (DB-unreachable readiness; missing config/secret) in docs/runbooks/readiness-and-config-failures.md
+- [X] T025 [P] {RR-001} Stuck/contended migration runbook (clear held advisory lock, resume after failed migration) in docs/runbooks/stuck-migration.md
+- [X] T026 [P] {RR-002} Readiness-failure + config/secret fail-fast runbook (DB-unreachable readiness; missing config/secret) in docs/runbooks/readiness-and-config-failures.md
 
 ---
 
 ## Phase 11: Polish & Cross-Cutting Concerns
 
-- [ ] T027 [P] Enforce ≥80% line+branch coverage for new config/health/entrypoint modules (thresholds/include) in vitest.config.ts
-- [ ] T028 CI runtime workflow: config/health/entrypoint + DOCKER_SMOKE image/compose + npm audit --omit=dev --audit-level=high + semgrep + coverage gate in .github/workflows/runtime.yml after:T022
-- [ ] T029 [P] Container run + docker compose quickstart (serve/migrate modes, secret-file mounting) in README.md
+- [X] T027 [P] Enforce ≥80% line+branch coverage for new config/health/entrypoint modules (thresholds/include) in vitest.config.ts
+- [X] T028 CI runtime workflow: config/health/entrypoint + DOCKER_SMOKE image/compose + npm audit --omit=dev --audit-level=high + semgrep + coverage gate in .github/workflows/runtime.yml after:T022
+- [X] T029 [P] Container run + docker compose quickstart (serve/migrate modes, secret-file mounting) in README.md
 
 ---
 

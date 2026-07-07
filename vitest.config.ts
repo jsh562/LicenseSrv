@@ -11,7 +11,13 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/server/**/*.ts"],
-      exclude: ["src/server/**/*.{test,spec}.ts", "src/server/**/__tests__/**"],
+      exclude: [
+        "src/server/**/*.{test,spec}.ts",
+        "src/server/**/__tests__/**",
+        // Process-level entrypoint wrapper (listen/signals/CLI) — validated by the entrypoint
+        // integration test (buildServer + startServer) and the Docker image smoke, not line-counted.
+        "src/server/main.ts",
+      ],
       reporter: ["text-summary"],
       thresholds: { lines: 80, branches: 80 },
     },

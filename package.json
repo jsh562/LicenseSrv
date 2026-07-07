@@ -12,7 +12,10 @@
     "lint": "eslint src/server",
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
-    "migrate": "tsx src/server/db/migrate.ts"
+    "test:docker": "vitest run src/server/__tests__/image.smoke.integration.test.ts",
+    "migrate": "tsx src/server/db/migrate.ts",
+    "migrate:dist": "node dist/server/db/migrate.js",
+    "start": "node dist/server/main.js"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

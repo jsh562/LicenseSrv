@@ -3,6 +3,7 @@ import path from "node:path";
 
 import pg from "pg";
 
+import { resolveDatabaseUrl } from "../config/index.js";
 import { makePool } from "./client.js";
 
 /** Stable 64-bit advisory-lock key for migrations (derived from a constant string). */
@@ -63,12 +64,15 @@ export async function runMigrations(pool: pg.Pool, dir: string): Promise<string[
   }
 }
 
-// CLI entrypoint: `tsx src/server/db/migrate.ts` (uses DATABASE_URL).
+// CLI entrypoint: the image's "migrate" command (`node dist/server/db/migrate.js`) and `npm run migrate`.
+// Uses the shared config contract (DATABASE_URL with <VAR>_FILE support); needs no other setting (OR-011).
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`;
 if (isMain) {
-  const url = process.env.DATABASE_URL;
-  if (!url) {
-    console.error("DATABASE_URL is required");
+  let url: string;
+  try {
+    url = resolveDatabaseUrl(process.env);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
   const pool = makePool(url, 1);

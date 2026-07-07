@@ -1,0 +1,16 @@
+# Keep the build context small and secrets/tests out of image layers.
+node_modules
+dist
+coverage
+.git
+.github
+specs
+src/admin-ui
+**/__tests__
+**/*.test.ts
+**/*.spec.ts
+# Never ship env/secret material into the image.
+.env
+*.env
+secrets/
+*.log

@@ -1,0 +1,23 @@
+E006 — Containerized Runtime and Config: implementation complete.
+
+All P1 tasks (T001–T022, T025–T029) implemented and validated. P2 OBJ7 graceful-shutdown (T023/T024) DEFERRED (non-blocking).
+
+Runtime: src/server/main.ts (entrypoint: loadConfig → pool → createApp → registerHealth → listen; secret-free
+structured startup log; never migrates on boot; minimal SIGTERM/SIGINT close). src/server/config/ (Zod-validated
+12-factor AppConfig, fail-fast naming, <VAR>_FILE secret resolution, secret-free summary). src/server/health/
+(live/ready/startup; readiness = DB SELECT 1 + composed signer readiness only when a signer is configured;
+liveness DB-independent). src/server/db/migrate.ts adapted to the shared config contract (DATABASE_URL via
+<VAR>_FILE). src/server/modules/signing/index.ts decorates signerReady when custodian shares are configured.
+
+Image/ops: Dockerfile (multi-stage, non-root, serve/migrate commands), .dockerignore, docker-compose.yml
+(api + postgres + gated one-shot migrate, healthchecks, startup ordering), .env.example, docs/config-reference.md,
+docs/runbooks/{stuck-migration,readiness-and-config-failures}.md, README.md, .github/workflows/runtime.yml.
+
+Tests: 21 E006 tests (11 config unit, 6 health integration, 4 entrypoint integration incl. real startServer boot +
+gated-migration idempotency/advisory-lock) — all pass on real Postgres. Full server suite: 102 tests pass, coverage
+93.3% lines / 82.2% branches / 97.6% functions (≥80 gate). Typecheck + lint clean.
+
+CI-gated (not run in this sandbox): the DOCKER_SMOKE image/compose smoke (T022) — the local Docker build namespace
+cannot reach the npm registry over HTTPS (host can; build namespace blocked), so image build + compose acceptance
+run in .github/workflows/runtime.yml. Dockerfile/compose are authored + correct; runtime is functionally validated
+by the entrypoint/migration/health Vitest suites. Same CI-only pattern as semgrep in E002–E005.

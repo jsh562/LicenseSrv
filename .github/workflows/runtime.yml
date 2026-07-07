@@ -1,0 +1,72 @@
+name: runtime
+
+# CI for the containerized runtime (E006): the server entrypoint, config/secret contract, health
+# probes, gated migration job, and the docker image + compose stack. The Testcontainers suite and the
+# coverage/audit gates run on every push; the Docker image/compose smoke runs with DOCKER_SMOKE=1.
+
+on:
+  push:
+    paths:
+      - "src/server/**"
+      - "migrations/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker-compose.yml"
+      - ".github/workflows/runtime.yml"
+  pull_request:
+    paths:
+      - "src/server/**"
+      - "migrations/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker-compose.yml"
+      - ".github/workflows/runtime.yml"
+
+jobs:
+  # --- Typecheck, lint, the config/health/entrypoint suites (Testcontainers) + coverage gate ---------
+  runtime:
+    name: runtime (config/health/entrypoint + coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker → Testcontainers spins up Postgres for the integration suites.
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  # --- Image build + compose acceptance smoke (gated) ----------------------------------------------
+  image-smoke:
+    name: image + compose smoke (DOCKER_SMOKE)
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_SMOKE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Build image, verify non-root + secret hygiene, and bring up the compose stack
+        run: npm run test:docker
+
+  # --- Static analysis over the runtime modules (CI-only) ------------------------------------------
+  semgrep:
+    name: semgrep (runtime)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/config src/server/health src/server/main.ts
