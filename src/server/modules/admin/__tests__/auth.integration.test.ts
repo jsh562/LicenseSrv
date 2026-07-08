@@ -15,7 +15,7 @@ import { runMigrations } from "../../../db/migrate.js";
 import { provisionTenant } from "../../../db/repository.js";
 import { login, logout, MAX_FAILED_LOGINS } from "../auth.js";
 import { hashPassword } from "../password.js";
-import { resolveSession } from "../session.js";
+import { resolveSession } from "../../../console/session.js";
 
 const MIGRATIONS_DIR = path.resolve(process.cwd(), "migrations");
 const SECRET = "test-secret";

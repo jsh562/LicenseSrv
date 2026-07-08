@@ -6,9 +6,10 @@ import { useState } from "react";
 import { adminApi, type Principal } from "../api";
 import { ApiKeys } from "../pages/ApiKeys";
 import { Audit } from "../pages/Audit";
+import { Catalog } from "../pages/catalog/Catalog";
 import { Users } from "../pages/Users";
 
-type Tab = "users" | "api-keys" | "audit";
+type Tab = "users" | "api-keys" | "audit" | "catalog";
 
 export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () => void }): JSX.Element {
   const [tab, setTab] = useState<Tab>("users");
@@ -34,6 +35,9 @@ export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () =>
           <button type="button" aria-current={tab === "audit"} onClick={() => setTab("audit")}>
             Audit
           </button>
+          <button type="button" aria-current={tab === "catalog"} onClick={() => setTab("catalog")}>
+            Catalog
+          </button>
         </nav>
         <div className="session">
           <span>{who.role}</span>
@@ -46,6 +50,7 @@ export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () =>
         {tab === "users" && <Users sessionRole={who.role} />}
         {tab === "api-keys" && <ApiKeys sessionRole={who.role} />}
         {tab === "audit" && <Audit />}
+        {tab === "catalog" && <Catalog sessionRole={who.role} />}
       </main>
     </div>
   );

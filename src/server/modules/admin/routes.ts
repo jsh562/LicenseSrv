@@ -11,9 +11,9 @@ import type { Role, Scope } from "../../auth/rbac.js";
 import { createApiKey, listApiKeys, revokeApiKey, rotateApiKey } from "./apikeys.js";
 import { listAuditEntries } from "./audit.js";
 import { login, logout } from "./auth.js";
-import { CSRF_COOKIE, issueCsrfToken } from "./csrf.js";
-import { requireRole } from "./rbac-middleware.js";
-import { SESSION_COOKIE } from "./session.js";
+import { CSRF_COOKIE, issueCsrfToken } from "../../console/csrf.js";
+import { requireRole } from "../../console/rbac-middleware.js";
+import { SESSION_COOKIE } from "../../console/session.js";
 import { createUser, listUsers, updateUser } from "./users.js";
 
 const roleSchema = z.enum(["owner", "admin", "viewer"]);

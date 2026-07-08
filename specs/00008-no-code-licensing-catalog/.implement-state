@@ -1,0 +1,29 @@
+# E007 — Implement/QC checkpoint
+
+Iteration boundary: BACKEND COMPLETE + validated; React SPA + polish + QC remain.
+
+## DONE + VALIDATED (12 catalog tests: 5 unit + 7 integration on real Postgres; full server suite 114 pass, coverage 92.6% L / 82.0% B / 96.4% F ≥80)
+- T001 coverage globs (satisfied by existing src/server/** + src/admin-ui/src/** includes).
+- T002/T003 migration 0006_catalog.sql (product/plan/entitlement/plan_entitlement + composite FKs + UNIQUE + CHECKs + indexes + forced RLS + tenant_isolation + grants).
+- T004 validation.ts (CatalogError, catalogKeySchema, assertValueMatchesType, asDuplicateKey). T005 index.ts (CatalogConfig, loadCatalogConfig, registerCatalog). T006 migration RLS covered by isolation test.
+- US1 T007/T008/T009/T010 products.ts + routes (create/dup-409/list-active-default/patch-key-immutable/archive-cascade).
+- US2 T011/T012/T013 plans.ts + routes (default seat 1, seat<1 400, productId, archive).
+- US3 T014/T015/T016/T017 entitlements.ts + routes (bool/int, dup 409, type-locked 409, isReferenced guard).
+- US4 T018/T019/T020/T021/T022/T023/T024 values.ts + effective.ts + routes (type-check 400, archived-freeze 409, upsert 200, detach 204, effective active-only read model = E008 seam).
+- US5 T025/T026/T027 RBAC (viewer 403 + authz.denied security_event, CSRF-missing 403) + tenant isolation (cross-tenant 404, RLS 0 rows).
+- T037 audit coverage (catalog.{product,plan,entitlement}.created + value.set). T038 registerCatalog in modules/index.ts.
+
+## ARCHITECTURE NOTE (this iteration)
+Promoted the shared human-session RBAC out of modules/admin into src/server/console/{session,csrf,rbac-middleware}.ts so console modules (admin E005, catalog E007, future E008/E009) reuse ONE requireRole/session/CSRF without a cross-module import (ADR-0005). Updated admin imports + tests; all E005 admin tests still pass. E005 spec/plan unchanged (implementation-level relocation).
+
+Files: migrations/0006_catalog.sql; src/server/modules/catalog/{validation,index,products,plans,entitlements,values,effective,routes}.ts; src/server/modules/catalog/__tests__/{values.unit,catalog.integration}.test.ts; src/server/console/{session,csrf,rbac-middleware}.ts (moved from admin); src/server/modules/{index.ts (registerCatalog), admin/routes.ts, admin/auth.ts, admin/__tests__/* (console imports)}.
+
+## REMAINING
+- Phase 9 Frontend SPA (T030 catalogApi client, T031 Shell Catalog nav tab, T032 Products view, T033 Plans view, T034 Entitlements view, T035 PlanValues view, T036 RTL tests). Extend src/admin-ui/src/api.ts + Shell.tsx + new src/admin-ui/src/pages/catalog/*.
+- Phase 10 polish: T039 ≥80% coverage gate incl. SPA catalog views; T040 npm audit + semgrep CI (extend/add workflow).
+- Phase 8 US6 export (T028/T029) — P2, DEFERRED (non-blocking), like prior epics.
+- Then QC → qc-report.md + .qc-passed.
+
+## Notes
+- Consolidated test filenames: values.unit.test.ts + catalog.integration.test.ts cover the per-task filenames (products/archive/plans/entitlements/values/effective/rbac/isolation/audit integration); intent met.
+- Bug fixed this iteration: list default treated undefined status as "all"; fixed to default active-only (only ?status=all returns both).

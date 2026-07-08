@@ -1,0 +1,19 @@
+E007 — No-Code Licensing Catalog: implementation complete.
+
+All P1 tasks (T001–T027, T030–T040) implemented and validated. P2 US6 declarative export (T028/T029) DEFERRED (non-blocking).
+
+Backend: migration 0006 (product/plan/entitlement/plan_entitlement + composite FKs + forced RLS + grants); catalog
+module (validation, products, plans, entitlements, values, effective, routes, index) with tenant-scoped CRUD +
+soft-archive + audit, key/type immutability guards, value↔type validation, archived write-freeze, and the effective
+plan read model (E008 issuance seam). Registered at the module seam. Shared human-session RBAC promoted from
+modules/admin to src/server/console/ (session/csrf/rbac-middleware) so console modules reuse one requireRole without
+a cross-module import (ADR-0005); admin imports rewired, all E005 tests still pass.
+Tests: 13 catalog tests (5 unit + 8 integration on real Postgres). Full server suite 114 pass, coverage 92.6% L /
+82.0% B / 96.4% F.
+
+Frontend: React catalog views (Products/Plans/Entitlements/PlanValues + Catalog container) with drill-down, a Catalog
+nav tab, and the catalogApi client; RequireRole hides admin actions from viewers; inline invalid-value error.
+SPA: 34 tests, coverage 97.2% L / 87.5% B / 91.3% F.
+
+Polish: coverage gates (server + SPA ≥80%), CI workflow (.github/workflows/catalog.yml — Testcontainers integration,
+SPA coverage, production-scope npm audit, semgrep over catalog + console + SPA-catalog).

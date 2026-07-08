@@ -41,7 +41,7 @@ description: "Task list for feature implementation: No-Code Licensing Catalog (E
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Extend coverage include globs to scope src/server/modules/catalog/** and src/admin-ui/src/pages/catalog/** for the >=80% gate in vitest.config.ts and src/admin-ui/vite.config.ts
+- [X] T001 Extend coverage include globs to scope src/server/modules/catalog/** and src/admin-ui/src/pages/catalog/** for the >=80% gate in vitest.config.ts and src/admin-ui/vite.config.ts
 
 ---
 
@@ -49,11 +49,11 @@ description: "Task list for feature implementation: No-Code Licensing Catalog (E
 
 **Migration `0006` + the catalog module scaffold + shared validation helpers block every delivery story. Complete before any US phase.**
 
-- [ ] T002 {FR-002,FR-003,FR-004} Create product/plan/entitlement/plan_entitlement tables + composite FKs + UNIQUE keys + value/seat CHECKs + tenant-leading indexes in migrations/0006_catalog.sql
-- [ ] T003 {FR-010} Add ENABLE/FORCE RLS + tenant_isolation policy (USING/WITH CHECK app.current_tenant) + grants to licensesrv_app on all four tables in migrations/0006_catalog.sql
-- [ ] T004 [P] {FR-005,FR-008} Shared validation (key slug, status filter, value/type) in src/server/modules/catalog/validation.ts → exports: catalogKeySchema, assertValueMatchesType
-- [ ] T005 [P] Catalog module config + registerCatalog seam (CatalogConfig; list cap 1000; camelCase mappers) in src/server/modules/catalog/index.ts → exports: CatalogConfig, registerCatalog
-- [ ] T006 [P] {FR-010} Integration test 0006: four tables + forced RLS; unset app.current_tenant → 0 rows in src/server/modules/catalog/__tests__/migration.integration.test.ts after:T003
+- [X] T002 {FR-002,FR-003,FR-004} Create product/plan/entitlement/plan_entitlement tables + composite FKs + UNIQUE keys + value/seat CHECKs + tenant-leading indexes in migrations/0006_catalog.sql
+- [X] T003 {FR-010} Add ENABLE/FORCE RLS + tenant_isolation policy (USING/WITH CHECK app.current_tenant) + grants to licensesrv_app on all four tables in migrations/0006_catalog.sql
+- [X] T004 [P] {FR-005,FR-008} Shared validation (key slug, status filter, value/type) in src/server/modules/catalog/validation.ts → exports: catalogKeySchema, assertValueMatchesType
+- [X] T005 [P] Catalog module config + registerCatalog seam (CatalogConfig; list cap 1000; camelCase mappers) in src/server/modules/catalog/index.ts → exports: CatalogConfig, registerCatalog
+- [X] T006 [P] {FR-010} Integration test 0006: four tables + forced RLS; unset app.current_tenant → 0 rows in src/server/modules/catalog/__tests__/migration.integration.test.ts after:T003
 
 ---
 
@@ -61,10 +61,10 @@ description: "Task list for feature implementation: No-Code Licensing Catalog (E
 
 **Independent test**: an admin creates a product (unique key), sees it listed, edits its name (key rejected), and archives it — archiving cascades to its plans and drops it from the default active list while retaining it (SC-001, SC-008).
 
-- [ ] T007 [P] [US1] {FR-001,FR-002} Products CRUD: create 201/dup 409, list ?status, PATCH (key rejected), audit in src/server/modules/catalog/__tests__/products.integration.test.ts after:T005
-- [ ] T008 [P] [US1] {FR-013} Product archive: retained, excluded from active list, cascades to plans (SC-008) in src/server/modules/catalog/__tests__/archive.integration.test.ts after:T005
-- [ ] T009 [US1] {FR-001,FR-002,FR-012,FR-013} Product repo: create/list(?status cap 1000)/get/update/archive, audited in src/server/modules/catalog/products.ts → exports: createProduct, getProduct
-- [ ] T010 [US1] {FR-001,FR-002,FR-018} [COMPLETES FR-001,FR-002] Register products routes (requireRole; CSRF; dup 409) in src/server/modules/catalog/routes.ts → exports: registerCatalogRoutes
+- [X] T007 [P] [US1] {FR-001,FR-002} Products CRUD: create 201/dup 409, list ?status, PATCH (key rejected), audit in src/server/modules/catalog/__tests__/products.integration.test.ts after:T005
+- [X] T008 [P] [US1] {FR-013} Product archive: retained, excluded from active list, cascades to plans (SC-008) in src/server/modules/catalog/__tests__/archive.integration.test.ts after:T005
+- [X] T009 [US1] {FR-001,FR-002,FR-012,FR-013} Product repo: create/list(?status cap 1000)/get/update/archive, audited in src/server/modules/catalog/products.ts → exports: createProduct, getProduct
+- [X] T010 [US1] {FR-001,FR-002,FR-018} [COMPLETES FR-001,FR-002] Register products routes (requireRole; CSRF; dup 409) in src/server/modules/catalog/routes.ts → exports: registerCatalogRoutes
 
 ---
 
@@ -72,9 +72,9 @@ description: "Task list for feature implementation: No-Code Licensing Catalog (E
 
 **Independent test**: an admin creates a plan under a product (default seat limit 1), sets an explicit `maxActivations`, edits it (`<1` → 400), confirms it carries its `productId` and is never re-parented, and archives it (SC-002).
 
-- [ ] T011 [P] [US2] {FR-003,FR-004,FR-013} Plan IT: default seat 1, dup 409, get→productId, seat<1 400, archive (SC-002) in src/server/modules/catalog/__tests__/plans.integration.test.ts after:T010
-- [ ] T012 [US2] {FR-003,FR-004,FR-012,FR-013} Plan repo: create/list/get(+productId)/update/archive, audited in src/server/modules/catalog/plans.ts after:T009 → exports: createPlan, getPlan
-- [ ] T013 [US2] {FR-003,FR-004,FR-018} [COMPLETES FR-003,FR-004] Register plans routes (requireRole; CSRF; dup 409; seat<1 400) in src/server/modules/catalog/routes.ts
+- [X] T011 [P] [US2] {FR-003,FR-004,FR-013} Plan IT: default seat 1, dup 409, get→productId, seat<1 400, archive (SC-002) in src/server/modules/catalog/__tests__/plans.integration.test.ts after:T010
+- [X] T012 [US2] {FR-003,FR-004,FR-012,FR-013} Plan repo: create/list/get(+productId)/update/archive, audited in src/server/modules/catalog/plans.ts after:T009 → exports: createPlan, getPlan
+- [X] T013 [US2] {FR-003,FR-004,FR-018} [COMPLETES FR-003,FR-004] Register plans routes (requireRole; CSRF; dup 409; seat<1 400) in src/server/modules/catalog/routes.ts
 
 ---
 
@@ -82,10 +82,10 @@ description: "Task list for feature implementation: No-Code Licensing Catalog (E
 
 **Independent test**: an admin defines one `boolean` and one `integer_limit` entitlement (unique key), edits name/description, and finds a type change refused once a plan references the entitlement (`409 entitlement_type_locked`) (SC-003).
 
-- [ ] T014 [P] [US3] {FR-005,FR-006} Entitlement IT: create bool/int, dup 409, type-locked 409, archive (SC-003) in src/server/modules/catalog/__tests__/entitlements.integration.test.ts after:T010
-- [ ] T015 [US3] {FR-005,FR-012,FR-013} Entitlement repo: create(bool/int)/list/get/update/archive, audited in src/server/modules/catalog/entitlements.ts → exports: createEntitlement, getEntitlement
-- [ ] T016 [US3] {FR-006} Type-immutability guard: plan_entitlement ref check FOR UPDATE, refuse type change 409 in src/server/modules/catalog/entitlements.ts → exports: assertTypeMutable
-- [ ] T017 [US3] {FR-005,FR-006,FR-013,FR-018} [COMPLETES FR-005,FR-006,FR-013,FR-018] Register entitlements routes (dup 409, type_locked 409) in src/server/modules/catalog/routes.ts after:T016
+- [X] T014 [P] [US3] {FR-005,FR-006} Entitlement IT: create bool/int, dup 409, type-locked 409, archive (SC-003) in src/server/modules/catalog/__tests__/entitlements.integration.test.ts after:T010
+- [X] T015 [US3] {FR-005,FR-012,FR-013} Entitlement repo: create(bool/int)/list/get/update/archive, audited in src/server/modules/catalog/entitlements.ts → exports: createEntitlement, getEntitlement
+- [X] T016 [US3] {FR-006} Type-immutability guard: plan_entitlement ref check FOR UPDATE, refuse type change 409 in src/server/modules/catalog/entitlements.ts → exports: assertTypeMutable
+- [X] T017 [US3] {FR-005,FR-006,FR-013,FR-018} [COMPLETES FR-005,FR-006,FR-013,FR-018] Register entitlements routes (dup 409, type_locked 409) in src/server/modules/catalog/routes.ts after:T016
 
 ---
 
@@ -93,13 +93,13 @@ description: "Task list for feature implementation: No-Code Licensing Catalog (E
 
 **Independent test**: an admin attaches entitlements to a plan and sets values (boolean on/off, integer-limit ≥0), edits one and confirms it persists immediately with no deploy; a type-mismatched/negative value is rejected 400 with nothing saved; the effective plan definition is retrievable for issuance (SC-004/005/009). **FR-014 (T023) is the E008 issuance seam.**
 
-- [ ] T018 [P] [US4] {FR-007,FR-008} Value/type unit: bool on boolean, int>=0, mismatch/negative rejected in src/server/modules/catalog/__tests__/values.unit.test.ts after:T004
-- [ ] T019 [P] [US4] {FR-014} Effective-shape unit: planKey/productKey/maxActivations/entitlements; active-only; empty in src/server/modules/catalog/__tests__/effective.unit.test.ts after:T005
-- [ ] T020 [P] [US4] {FR-007,FR-008,FR-009} Value upsert IT: 200 upsert, 400 mismatch/neg, 204 detach, 404 unknown in src/server/modules/catalog/__tests__/values.integration.test.ts after:T017
-- [ ] T021 [P] [US4] {FR-014,FR-016} Effective IT: latest values, active-only, archived plan resolves (SC-009) in src/server/modules/catalog/__tests__/effective.integration.test.ts after:T017
-- [ ] T022 [P] [US4] {FR-007,FR-008,FR-012} [COMPLETES FR-008] Value repo: type-check→400, active-else-409 archived, upsert 200/detach, audit set+remove in src/server/modules/catalog/values.ts
-- [ ] T023 [P] [US4] {FR-014,FR-016} [COMPLETES FR-014,FR-016] Effective plan read model (active-only; E008 seam) in src/server/modules/catalog/effective.ts → exports: getEffectivePlanDefinition
-- [ ] T024 [US4] {FR-007,FR-009} [COMPLETES FR-007,FR-009] Register plan-entitlement GET/PUT/DELETE + effective route (requireRole; CSRF) in src/server/modules/catalog/routes.ts after:T022
+- [X] T018 [P] [US4] {FR-007,FR-008} Value/type unit: bool on boolean, int>=0, mismatch/negative rejected in src/server/modules/catalog/__tests__/values.unit.test.ts after:T004
+- [X] T019 [P] [US4] {FR-014} Effective-shape unit: planKey/productKey/maxActivations/entitlements; active-only; empty in src/server/modules/catalog/__tests__/effective.unit.test.ts after:T005
+- [X] T020 [P] [US4] {FR-007,FR-008,FR-009} Value upsert IT: 200 upsert, 400 mismatch/neg, 204 detach, 404 unknown in src/server/modules/catalog/__tests__/values.integration.test.ts after:T017
+- [X] T021 [P] [US4] {FR-014,FR-016} Effective IT: latest values, active-only, archived plan resolves (SC-009) in src/server/modules/catalog/__tests__/effective.integration.test.ts after:T017
+- [X] T022 [P] [US4] {FR-007,FR-008,FR-012} [COMPLETES FR-008] Value repo: type-check→400, active-else-409 archived, upsert 200/detach, audit set+remove in src/server/modules/catalog/values.ts
+- [X] T023 [P] [US4] {FR-014,FR-016} [COMPLETES FR-014,FR-016] Effective plan read model (active-only; E008 seam) in src/server/modules/catalog/effective.ts → exports: getEffectivePlanDefinition
+- [X] T024 [US4] {FR-007,FR-009} [COMPLETES FR-007,FR-009] Register plan-entitlement GET/PUT/DELETE + effective route (requireRole; CSRF) in src/server/modules/catalog/routes.ts after:T022
 
 ---
 
@@ -107,9 +107,9 @@ description: "Task list for feature implementation: No-Code Licensing Catalog (E
 
 **Independent test**: a viewer browses products/plans/entitlements but a mutation is denied 403 and recorded as a security event with FR-019 content; a second tenant sees none of the first tenant's catalog and a cross-tenant id resolves to 404 (SC-006/007).
 
-- [ ] T025 [P] [US5] {FR-011,FR-019} RBAC IT: viewer 403 + security_event, admin ok, CSRF-missing 403 (SC-006) in src/server/modules/catalog/__tests__/rbac.integration.test.ts after:T024
-- [ ] T026 [P] [US5] {FR-010} [COMPLETES FR-010] Tenant-isolation IT: A invisible from B, cross-tenant id 404 in src/server/modules/catalog/__tests__/isolation.integration.test.ts after:T024
-- [ ] T027 [US5] {FR-011,FR-019} [COMPLETES FR-011,FR-019] Apply requireRole+CSRF to every catalog route; audited denial w/ FR-019 content in src/server/modules/catalog/routes.ts after:T024
+- [X] T025 [P] [US5] {FR-011,FR-019} RBAC IT: viewer 403 + security_event, admin ok, CSRF-missing 403 (SC-006) in src/server/modules/catalog/__tests__/rbac.integration.test.ts after:T024
+- [X] T026 [P] [US5] {FR-010} [COMPLETES FR-010] Tenant-isolation IT: A invisible from B, cross-tenant id 404 in src/server/modules/catalog/__tests__/isolation.integration.test.ts after:T024
+- [X] T027 [US5] {FR-011,FR-019} [COMPLETES FR-011,FR-019] Apply requireRole+CSRF to every catalog route; audited denial w/ FR-019 content in src/server/modules/catalog/routes.ts after:T024
 
 ---
 
@@ -126,22 +126,22 @@ description: "Task list for feature implementation: No-Code Licensing Catalog (E
 
 **The catalog views (FR-015) plug into the E005 console shell behind RBAC. Each view is component-testable against a mocked `catalogApi`; the `[US#]` tags mark which story slice a task surfaces.**
 
-- [ ] T030 {FR-015} Extend admin API client with catalogApi (products/plans/entitlements/values/effective; camelCase; CSRF echo) in src/admin-ui/src/api.ts → exports: catalogApi
-- [ ] T031 {FR-015} Add a Catalog nav tab to the console shell in src/admin-ui/src/components/Shell.tsx ← T030:catalogApi
-- [ ] T032 [P] [US1] {FR-015} Products view (list ?status; create/edit; archive; RequireRole hides admin actions) in src/admin-ui/src/pages/catalog/Products.tsx ← T030:catalogApi
-- [ ] T033 [P] [US2] {FR-015} Plans view (list under product; create/edit incl maxActivations; archive) in src/admin-ui/src/pages/catalog/Plans.tsx ← T030:catalogApi
-- [ ] T034 [P] [US3] {FR-015} Entitlements view (list; create boolean/integer_limit; edit name/desc; archive) in src/admin-ui/src/pages/catalog/Entitlements.tsx ← T030:catalogApi
-- [ ] T035 [P] [US4] {FR-015} PlanValues view (attach entitlements; set bool/int w/ inline invalid-value error; remove) in src/admin-ui/src/pages/catalog/PlanValues.tsx ← T030:catalogApi
-- [ ] T036 {FR-015} [COMPLETES FR-015] RTL (mocked catalogApi): views render; RequireRole hides admin actions; invalid-value inline error in src/admin-ui/src/pages/catalog/__tests__/ after:T035
+- [X] T030 {FR-015} Extend admin API client with catalogApi (products/plans/entitlements/values/effective; camelCase; CSRF echo) in src/admin-ui/src/api.ts → exports: catalogApi
+- [X] T031 {FR-015} Add a Catalog nav tab to the console shell in src/admin-ui/src/components/Shell.tsx ← T030:catalogApi
+- [X] T032 [P] [US1] {FR-015} Products view (list ?status; create/edit; archive; RequireRole hides admin actions) in src/admin-ui/src/pages/catalog/Products.tsx ← T030:catalogApi
+- [X] T033 [P] [US2] {FR-015} Plans view (list under product; create/edit incl maxActivations; archive) in src/admin-ui/src/pages/catalog/Plans.tsx ← T030:catalogApi
+- [X] T034 [P] [US3] {FR-015} Entitlements view (list; create boolean/integer_limit; edit name/desc; archive) in src/admin-ui/src/pages/catalog/Entitlements.tsx ← T030:catalogApi
+- [X] T035 [P] [US4] {FR-015} PlanValues view (attach entitlements; set bool/int w/ inline invalid-value error; remove) in src/admin-ui/src/pages/catalog/PlanValues.tsx ← T030:catalogApi
+- [X] T036 {FR-015} [COMPLETES FR-015] RTL (mocked catalogApi): views render; RequireRole hides admin actions; invalid-value inline error in src/admin-ui/src/pages/catalog/__tests__/ after:T035
 
 ---
 
 ## Phase 10: Polish & Cross-Cutting Concerns
 
-- [ ] T037 [P] {FR-012} [COMPLETES FR-012] Audit-coverage: 5 mutation types write actor/action/target (SC-010/011) in src/server/modules/catalog/__tests__/audit.integration.test.ts after:T027
-- [ ] T038 Register registerCatalog in src/server/modules/index.ts alongside registerSigning/registerAdmin after:T027 ← T005:registerCatalog
-- [ ] T039 [P] Enforce >=80% line+branch coverage of the catalog module + SPA catalog views (Vitest v8) and wire the coverage gate after:T036
-- [ ] T040 [P] Add npm audit (--omit=dev --audit-level=high) + semgrep (CI) for the catalog module + SPA to the CI workflow in .github/workflows/
+- [X] T037 [P] {FR-012} [COMPLETES FR-012] Audit-coverage: 5 mutation types write actor/action/target (SC-010/011) in src/server/modules/catalog/__tests__/audit.integration.test.ts after:T027
+- [X] T038 Register registerCatalog in src/server/modules/index.ts alongside registerSigning/registerAdmin after:T027 ← T005:registerCatalog
+- [X] T039 [P] Enforce >=80% line+branch coverage of the catalog module + SPA catalog views (Vitest v8) and wire the coverage gate after:T036
+- [X] T040 [P] Add npm audit (--omit=dev --audit-level=high) + semgrep (CI) for the catalog module + SPA to the CI workflow in .github/workflows/
 
 ---
 

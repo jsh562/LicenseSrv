@@ -1,0 +1,73 @@
+name: catalog
+
+# CI for the no-code licensing catalog (E007): the server catalog module + shared console-auth and the
+# React SPA catalog views. Gates: typecheck + lint, the real-Postgres integration suite (Testcontainers)
+# with the >=80% coverage gate, the SPA component suite + coverage, a production-scope dependency audit,
+# and a semgrep scan over the catalog + console + SPA-catalog sources.
+
+on:
+  push:
+    paths:
+      - "src/server/modules/catalog/**"
+      - "src/server/console/**"
+      - "src/admin-ui/src/pages/catalog/**"
+      - "migrations/0006_catalog.sql"
+      - ".github/workflows/catalog.yml"
+  pull_request:
+    paths:
+      - "src/server/modules/catalog/**"
+      - "src/server/console/**"
+      - "src/admin-ui/src/pages/catalog/**"
+      - "migrations/0006_catalog.sql"
+      - ".github/workflows/catalog.yml"
+
+jobs:
+  server:
+    name: server (catalog module + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker → Testcontainers spins up Postgres 16 for the catalog integration suite.
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  spa:
+    name: spa (catalog views)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/admin-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/admin-ui/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Component tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: SPA production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  semgrep:
+    name: semgrep (catalog + console + SPA)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/catalog src/server/console src/admin-ui/src/pages/catalog

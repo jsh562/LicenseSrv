@@ -9,7 +9,7 @@ import { privileged, withTenant } from "../../db/client.js";
 import { hmacKey } from "../../db/hash.js";
 import type { Role } from "../../auth/rbac.js";
 import { verifyPassword } from "./password.js";
-import { createSession, revokeSession } from "./session.js";
+import { createSession, revokeSession } from "../../console/session.js";
 
 /** Default lockout threshold + window (FR-018) — both operator-configurable via AdminConfig. */
 export const MAX_FAILED_LOGINS = 5;

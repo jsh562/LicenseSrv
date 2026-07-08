@@ -1,12 +1,14 @@
-// Session + RBAC preHandler (FR-002/004/005, AD-004). Resolves the session cookie to a tenant-scoped
+// Shared session + RBAC preHandler (E005 FR-002/004/005, AD-004). Promoted to src/server/console/ so
+// every console feature module (admin, catalog, …) gates its /admin routes through one implementation
+// without importing another feature module (ADR-0005). Resolves the session cookie to a tenant-scoped
 // principal + role, enforces minRole fail-closed, checks CSRF on state-changing requests, and records
 // denials as security events. On success it sets req.admin and the route runs under that tenant scope.
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type pg from "pg";
 
-import { recordSecurityEvent } from "../../audit/index.js";
-import { authorize, type Role } from "../../auth/rbac.js";
-import { withTenant } from "../../db/client.js";
+import { recordSecurityEvent } from "../audit/index.js";
+import { authorize, type Role } from "../auth/rbac.js";
+import { withTenant } from "../db/client.js";
 import { CSRF_COOKIE, CSRF_HEADER, csrfValid } from "./csrf.js";
 import { resolveSession, SESSION_COOKIE } from "./session.js";
 
@@ -53,9 +55,17 @@ export function requireRole(pool: pg.Pool, minRole: Role) {
       return;
     }
 
-    // CSRF gate on state-changing methods (cookie-authenticated) — before any effect.
+    // CSRF gate on state-changing methods (cookie-authenticated) — before any effect. A CSRF failure on
+    // an authenticated session is a security-relevant denial, so it is audited like an authz denial.
     if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
       if (!csrfValid(req.cookies?.[CSRF_COOKIE], headerValue(req.headers[CSRF_HEADER]))) {
+        await withTenant(pool, session.tenantId, (q) =>
+          recordSecurityEvent(q, {
+            actor: session.userId,
+            action: "authz.denied",
+            target: `${req.method} ${req.url} (csrf)`,
+          }),
+        );
         await reply.code(403).send({ code: "forbidden", message: "invalid or missing CSRF token" });
         return;
       }

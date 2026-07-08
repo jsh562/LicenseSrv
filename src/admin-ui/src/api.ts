@@ -133,3 +133,90 @@ export const adminApi = {
 };
 
 export type AdminApi = typeof adminApi;
+
+// --- Catalog (E007) -------------------------------------------------------------------------------
+
+export type CatalogStatus = "active" | "archived";
+export type EntitlementType = "boolean" | "integer_limit";
+export type StatusFilter = "active" | "archived" | "all";
+
+export interface Product {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  status: CatalogStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface Plan {
+  id: string;
+  productId: string;
+  key: string;
+  name: string;
+  description: string | null;
+  maxActivations: number;
+  status: CatalogStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface Entitlement {
+  id: string;
+  key: string;
+  name: string;
+  type: EntitlementType;
+  description: string | null;
+  status: CatalogStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface PlanEntitlementValue {
+  entitlementId: string;
+  key: string;
+  type: EntitlementType;
+  value: boolean | number;
+}
+export interface EffectivePlanDefinition {
+  planKey: string;
+  productKey: string;
+  maxActivations: number;
+  entitlements: Array<{ key: string; type: EntitlementType; value: boolean | number }>;
+}
+
+function statusQs(status?: StatusFilter): string {
+  return status ? `?status=${status}` : "";
+}
+
+/** The catalog API surface (mirrors src/server/modules/catalog/routes.ts). */
+export const catalogApi = {
+  listProducts: (status?: StatusFilter) =>
+    request<{ products: Product[] }>("GET", `/admin/catalog/products${statusQs(status)}`).then((r) => r.products),
+  createProduct: (input: { key: string; name: string; description?: string }) =>
+    request<Product>("POST", "/admin/catalog/products", input),
+  archiveProduct: (id: string) => request<Product>("POST", `/admin/catalog/products/${id}/archive`),
+
+  listPlans: (productId: string, status?: StatusFilter) =>
+    request<{ plans: Plan[] }>("GET", `/admin/catalog/products/${productId}/plans${statusQs(status)}`).then((r) => r.plans),
+  createPlan: (productId: string, input: { key: string; name: string; description?: string; maxActivations?: number }) =>
+    request<Plan>("POST", `/admin/catalog/products/${productId}/plans`, input),
+  archivePlan: (id: string) => request<Plan>("POST", `/admin/catalog/plans/${id}/archive`),
+
+  listEntitlements: (status?: StatusFilter) =>
+    request<{ entitlements: Entitlement[] }>("GET", `/admin/catalog/entitlements${statusQs(status)}`).then((r) => r.entitlements),
+  createEntitlement: (input: { key: string; name: string; type: EntitlementType; description?: string }) =>
+    request<Entitlement>("POST", "/admin/catalog/entitlements", input),
+  archiveEntitlement: (id: string) => request<Entitlement>("POST", `/admin/catalog/entitlements/${id}/archive`),
+
+  listPlanEntitlements: (planId: string) =>
+    request<{ entitlements: PlanEntitlementValue[] }>("GET", `/admin/catalog/plans/${planId}/entitlements`).then((r) => r.entitlements),
+  setPlanValue: (planId: string, entitlementId: string, value: boolean | number) =>
+    request<PlanEntitlementValue>("PUT", `/admin/catalog/plans/${planId}/entitlements/${entitlementId}`, { value }),
+  removePlanValue: (planId: string, entitlementId: string) =>
+    request<void>("DELETE", `/admin/catalog/plans/${planId}/entitlements/${entitlementId}`),
+
+  // The effective plan definition — the read model E008 issuance consumes.
+  getEffective: (planId: string) =>
+    request<EffectivePlanDefinition>("GET", `/admin/catalog/plans/${planId}/effective`),
+};
+
+export type CatalogApi = typeof catalogApi;

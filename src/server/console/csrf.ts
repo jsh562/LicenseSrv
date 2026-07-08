@@ -1,7 +1,8 @@
-// CSRF protection for cookie-authenticated state-changing requests (FR-019, AD-006). Double-submit
-// token: the server issues a random token in a JS-readable cookie; the SPA echoes it in the
-// X-CSRF-Token header on every mutating /admin request. The server accepts only when the two match.
-// SameSite=Strict on the session cookie is necessary but not sufficient; this is the second gate.
+// Shared CSRF protection for cookie-authenticated state-changing requests (E005 FR-019, AD-006).
+// Promoted to src/server/console/ so every console module reuses one double-submit implementation.
+// The server issues a random token in a JS-readable cookie; the SPA echoes it in the X-CSRF-Token header
+// on every mutating request. The server accepts only when the two match. SameSite=Strict on the session
+// cookie is necessary but not sufficient; this is the second gate.
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
 export const CSRF_COOKIE = "admin_csrf";

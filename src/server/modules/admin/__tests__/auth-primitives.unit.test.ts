@@ -2,10 +2,10 @@
 // double-submit check — the pure, no-DB security primitives of the admin auth spine.
 import { describe, expect, it } from "vitest";
 
-import { csrfValid, issueCsrfToken } from "../csrf.js";
+import { csrfValid, issueCsrfToken } from "../../../console/csrf.js";
 import { DEFAULT_SESSION_TTL_SECONDS, loadAdminConfig, MAX_SESSION_TTL_SECONDS } from "../index.js";
 import { hashPassword, verifyPassword } from "../password.js";
-import { generateToken, tokenHash } from "../session.js";
+import { generateToken, tokenHash } from "../../../console/session.js";
 
 describe("scrypt password hashing (FR-017)", () => {
   it("verifies the correct password and rejects a wrong one", () => {

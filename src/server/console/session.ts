@@ -1,13 +1,15 @@
-// Server-side admin sessions (FR-001/003, AD-003). The browser holds an opaque random token in an
-// httpOnly+Secure+SameSite cookie; the server stores only its SHA-256 hash in admin_session. Auth
-// resolves a session by token_hash via a PRIVILEGED pre-tenant lookup (mirroring resolveApiKey),
-// verifying the session is unexpired/unrevoked and the user is still active — then the caller drops
-// to the session's tenant scope. The raw token never leaves the cookie.
+// Shared human-console sessions (E005 FR-001/003, AD-003). Promoted from the admin module to
+// src/server/console/ so every console feature module (admin, catalog, …) reuses one session mechanism
+// without importing another feature module. The browser holds an opaque random token in an
+// httpOnly+Secure+SameSite cookie; the server stores only its SHA-256 hash in admin_session. Auth resolves
+// a session by token_hash via a PRIVILEGED pre-tenant lookup (mirroring resolveApiKey), verifying the
+// session is unexpired/unrevoked and the user is still active — then the caller drops to the session's
+// tenant scope. The raw token never leaves the cookie.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import type pg from "pg";
 
-import { privileged, withTenant } from "../../db/client.js";
+import { privileged, withTenant } from "../db/client.js";
 
 export const SESSION_COOKIE = "admin_session";
 
