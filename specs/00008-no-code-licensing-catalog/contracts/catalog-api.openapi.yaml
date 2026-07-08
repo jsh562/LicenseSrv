@@ -1,0 +1,1287 @@
+openapi: 3.1.0
+info:
+  title: No-Code Licensing Catalog — Admin Console API
+  version: 0.1.0
+  description: >
+    REST surface for epic E007 (No-Code Licensing Catalog). Extends the E005 admin-console
+    human surface (see `admin-api.openapi.yaml`) with tenant-scoped, no-code management of
+    PRODUCTS, PLANS, feature ENTITLEMENTS, and per-plan entitlement VALUES, plus a read-only
+    EFFECTIVE PLAN DEFINITION consumed by license issuance (E008). Covers FR-001..016.
+
+
+    AUTH MODEL (same as E005; distinct from the machine API). Every route authenticates a HUMAN
+    session via the opaque, httpOnly + Secure + SameSite session COOKIE (`admin_session`)
+    established by `POST /admin/auth/login` (defined in the E005 contract). It deliberately does
+    NOT use the `X-API-Key` header of the machine API — that header authenticates integrations,
+    this cookie authenticates people.
+
+
+    TENANT SCOPING (FR-010). Every entity is implicitly scoped to the session's tenant. There is
+    no tenant path/query parameter — the tenant is resolved from the session and can never be
+    widened by the caller. Product keys are unique per tenant; plan keys per product; entitlement
+    keys per tenant. A session for tenant A can never read or mutate tenant B's catalog.
+
+
+    RBAC (FR-011, fail-closed). Roles are `owner > admin > viewer` (mirrors src/server/auth/rbac.ts).
+    READ (GET) requires `viewer` or higher; every MUTATION (POST/PATCH/PUT/DELETE, including
+    archive) requires `admin` or higher. The minimum role for each operation is declared via the
+    `x-rbac` extension (`minRole`) and enforced server-side. A denied privileged action is recorded
+    as an auditable security event; every authorized mutation is written to the append-only audit
+    log with actor, action, and target (FR-012).
+
+
+    CSRF. `SameSite=Strict` on the session cookie is necessary but not sufficient, so every
+    state-changing request (POST/PATCH/PUT/DELETE) additionally carries a double-submit
+    `X-CSRF-Token` header that MUST equal the non-httpOnly CSRF cookie issued at login. GET
+    (read) operations do not require it.
+
+
+    ARCHIVE, NOT DELETE (FR-013/016). Catalog entries are soft-retired via `archive` so that
+    already-issued licenses remain interpretable; there is no hard-delete of a product, plan, or
+    entitlement. Archiving a product cascades to its plans. The one DELETE in this contract removes
+    a per-plan entitlement ATTACHMENT (a plan_entitlement value binding) — it detaches a feature
+    from a plan for FUTURE issuance and never deletes the entitlement definition itself. Catalog
+    edits affect only future issuance; previously issued licenses are never mutated (FR-016).
+
+
+    IDENTIFIERS (AD-002). Every entity `id`, and every `productId`/`planId`/`entitlementId` path
+    and body reference, is a server-generated UUID unique within the tenant (`PK (tenant_id, id)`).
+    UUID (`format: uuid`) is the authoritative wire format; the `prd_`/`pln_`/`ent_` prefixes used in
+    earlier drafts are illustrative only and are NOT emitted or accepted. Stable business KEYS
+    (`CatalogKey`, a lowercase slug) are a separate concept from ids and are what the read model
+    exposes as `planKey`/`productKey`/entitlement `key`.
+
+
+    LIST BOUNDING (AD-009). The per-tenant catalog is small (tens–hundreds of entities), so
+    `listProducts`/`listPlans`/`listEntitlements` return the full tenant-scoped set ordered by
+    `createdAt`, unbounded up to a sane hard cap of 1000 items; there is no offset/cursor pagination
+    in E007. If a tenant ever exceeds the cap the list is truncated to the cap (pagination is a
+    deferred enhancement, not required for the MVP).
+
+
+    STATUS CODES. Each operation enumerates only the codes it can actually return. `400` is
+    deliberately omitted from GET-by-id and `archive` operations (they carry no request body or
+    query to validate) and `409` from all reads (a read has no uniqueness/referential conflict);
+    these omissions are intentional, not oversights. A missing or mismatched `X-CSRF-Token` on any
+    mutation is rejected fail-closed with `403 forbidden` (same as E005).
+
+
+    Field naming is camelCase throughout (Node/TypeScript idiom for this human console surface),
+    matching the E005 admin contract.
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: products
+    description: Product catalog root — the tenant-scoped container for plans (FR-001/002).
+  - name: plans
+    description: Plans (packages) under a product; carry the seat limit issuance depends on (FR-003/004).
+  - name: entitlements
+    description: Feature entitlement definitions — boolean or integer-limit, keyed for embedding in tokens (FR-005/006).
+  - name: plan-entitlements
+    description: Per-plan entitlement value bindings — what each plan grants and at what value (FR-007/008).
+  - name: effective
+    description: Read model — the resolved effective plan definition license issuance (E008) consumes (FR-014).
+
+# Global default: every operation requires a valid E005 human session cookie.
+security:
+  - sessionCookie: []
+
+paths:
+  # --- Products -------------------------------------------------------------------------------------
+  /admin/catalog/products:
+    get:
+      tags: [products]
+      operationId: listProducts
+      summary: List products (tenant-scoped)
+      description: >
+        List the tenant's products (FR-001). Supports `?status=active|archived|all` (default
+        `active`, which excludes archived products from active selection — FR-013). READ is
+        allowed for `viewer` and above.
+      x-rbac: { minRole: viewer }
+      parameters:
+        - $ref: '#/components/parameters/StatusFilter'
+      responses:
+        '200':
+          description: The tenant's products.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductList' }
+              examples:
+                two:
+                  value:
+                    products:
+                      - id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                        key: "acme_cad"
+                        name: "Acme CAD"
+                        description: "CAD suite"
+                        status: active
+                        createdAt: "2026-07-01T09:00:00Z"
+                      - id: "550e8400-e29b-41d4-a716-446655440000"
+                        key: "acme_legacy"
+                        name: "Acme Legacy"
+                        description: null
+                        status: archived
+                        createdAt: "2026-01-10T00:00:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [products]
+      operationId: createProduct
+      summary: Create a product
+      description: >
+        Create a product with a human `name` and a stable `key` unique within the tenant (FR-002).
+        The key is immutable after creation. A duplicate key → `409 duplicate_key`. Creation is
+        audited (FR-012). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateProductRequest' }
+            examples:
+              standard:
+                value: { key: "acme_cad", name: "Acme CAD", description: "CAD suite" }
+      responses:
+        '201':
+          description: Product created.
+          headers:
+            Location:
+              description: Canonical path of the created product.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+              examples:
+                created:
+                  value:
+                    id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    key: "acme_cad"
+                    name: "Acme CAD"
+                    description: "CAD suite"
+                    status: active
+                    createdAt: "2026-07-07T10:00:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/catalog/products/{productId}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [products]
+      operationId: getProduct
+      summary: Get a product
+      description: Return a single product within the session's tenant (FR-001). READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The product.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [products]
+      operationId: updateProduct
+      summary: Edit a product's name/description (key is immutable)
+      description: >
+        Change a product's `name` and/or `description` (FR-001). At least one field must be
+        present. The `key` is IMMUTABLE and cannot be changed. The edit takes effect immediately
+        with no code change (FR-009) and is audited (FR-012). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateProductRequest' }
+            examples:
+              rename:
+                value: { name: "Acme CAD Pro" }
+      responses:
+        '200':
+          description: Updated product.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/catalog/products/{productId}/archive:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    post:
+      tags: [products]
+      operationId: archiveProduct
+      summary: Archive (soft-retire) a product — cascades to its plans
+      description: >
+        Soft-retire a product: it is RETAINED so already-issued licenses remain interpretable, but
+        excluded from active selection (FR-013). Archiving a product CASCADES — all of its plans are
+        archived too (Edge Cases). This is the supported alternative to hard deletion; there is no
+        hard-delete of a referenced product. Idempotent: archiving an already-archived product
+        returns the archived resource. Audited (FR-012). RBAC: `admin` or higher.
+
+
+        Effect on subsequent reads: the archived product and its cascaded plans drop out of the
+        default (`status=active`) list responses (visible only via `?status=archived|all`), and can
+        no longer receive new per-plan value attachments (`409 archived`). Their effective-plan
+        definition remains readable so already-issued licenses stay interpretable.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Product archived (status `archived`); its plans were archived too.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+              examples:
+                archived:
+                  value:
+                    id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    key: "acme_cad"
+                    name: "Acme CAD"
+                    description: "CAD suite"
+                    status: archived
+                    createdAt: "2026-07-07T10:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --- Plans (under a product) ----------------------------------------------------------------------
+  /admin/catalog/products/{productId}/plans:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [plans]
+      operationId: listPlans
+      summary: List the plans of a product
+      description: >
+        List the plans under a product (FR-003). Supports `?status=active|archived|all`
+        (default `active`). READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      parameters:
+        - $ref: '#/components/parameters/StatusFilter'
+      responses:
+        '200':
+          description: The product's plans.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanList' }
+              examples:
+                two:
+                  value:
+                    plans:
+                      - id: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                        productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                        key: "standard"
+                        name: "Standard"
+                        description: null
+                        maxActivations: 1
+                        status: active
+                        createdAt: "2026-07-07T10:05:00Z"
+                      - id: "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+                        productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                        key: "pro"
+                        name: "Pro"
+                        description: "Everything"
+                        maxActivations: 5
+                        status: active
+                        createdAt: "2026-07-07T10:06:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [plans]
+      operationId: createPlan
+      summary: Create a plan under a product
+      description: >
+        Create a plan under the parent product with a `key` unique within that product (FR-003).
+        `maxActivations` (the seat limit) defaults to 1 and accepts any positive integer (FR-004).
+        A duplicate key within the product → `409 duplicate_key`. Creation is audited (FR-012).
+        RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePlanRequest' }
+            examples:
+              standard:
+                summary: Default seat limit (1)
+                value: { key: "standard", name: "Standard" }
+              proWithSeats:
+                summary: Explicit seat limit
+                value: { key: "pro", name: "Pro", description: "Everything", maxActivations: 5 }
+      responses:
+        '201':
+          description: Plan created under the product.
+          headers:
+            Location:
+              description: Canonical path of the created plan.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+              examples:
+                created:
+                  value:
+                    id: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    key: "standard"
+                    name: "Standard"
+                    description: null
+                    maxActivations: 1
+                    status: active
+                    createdAt: "2026-07-07T10:05:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/catalog/plans/{planId}:
+    parameters:
+      - $ref: '#/components/parameters/PlanId'
+    get:
+      tags: [plans]
+      operationId: getPlan
+      summary: Get a plan
+      description: >
+        Return a single plan within the session's tenant, including its `productId` — a plan
+        belongs to exactly one product and is never associated with another (FR-003). READ:
+        `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The plan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [plans]
+      operationId: updatePlan
+      summary: Edit a plan's name/description/maxActivations (key + product immutable)
+      description: >
+        Change a plan's `name`, `description`, and/or `maxActivations` (seat limit) (FR-003/004).
+        At least one field must be present. `key` and the owning product are IMMUTABLE. A
+        `maxActivations` below 1 → `400 validation_error`. The edit takes effect immediately for
+        future issuance with no code change (FR-009/016) and is audited (FR-012). RBAC: `admin` or
+        higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdatePlanRequest' }
+            examples:
+              raiseSeats:
+                value: { maxActivations: 10 }
+      responses:
+        '200':
+          description: Updated plan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/catalog/plans/{planId}/archive:
+    parameters:
+      - $ref: '#/components/parameters/PlanId'
+    post:
+      tags: [plans]
+      operationId: archivePlan
+      summary: Archive (soft-retire) a plan
+      description: >
+        Soft-retire a plan: retained so already-issued licenses remain interpretable, but excluded
+        from active selection (FR-013). No hard-delete of a referenced plan. Idempotent. Audited
+        (FR-012). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Plan archived (status `archived`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --- Entitlements (tenant-scoped feature definitions) ---------------------------------------------
+  /admin/catalog/entitlements:
+    get:
+      tags: [entitlements]
+      operationId: listEntitlements
+      summary: List entitlement definitions (tenant-scoped)
+      description: >
+        List the tenant's entitlement definitions (FR-005). Supports `?status=active|archived|all`
+        (default `active`). READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      parameters:
+        - $ref: '#/components/parameters/StatusFilter'
+      responses:
+        '200':
+          description: The tenant's entitlements.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EntitlementList' }
+              examples:
+                two:
+                  value:
+                    entitlements:
+                      - id: "16fd2706-8baf-433b-82eb-8c7fada847da"
+                        key: "export_pdf"
+                        name: "Export to PDF"
+                        type: boolean
+                        description: null
+                        status: active
+                        createdAt: "2026-07-07T10:10:00Z"
+                      - id: "d9428888-122b-11e1-b85c-61cb3f4f4e8f"
+                        key: "max_projects"
+                        name: "Max projects"
+                        type: integer_limit
+                        description: "Project cap"
+                        status: active
+                        createdAt: "2026-07-07T10:11:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [entitlements]
+      operationId: createEntitlement
+      summary: Define a feature entitlement (boolean or integer-limit)
+      description: >
+        Define an entitlement with a `type` of `boolean` or `integer_limit` and a stable `key`
+        unique within the tenant (FR-005). The key becomes the canonical feature key embedded in
+        issued licenses, so it is IMMUTABLE after creation. A duplicate key → `409 duplicate_key`.
+        Creation is audited (FR-012). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateEntitlementRequest' }
+            examples:
+              boolean:
+                value: { key: "export_pdf", name: "Export to PDF", type: boolean }
+              integerLimit:
+                value: { key: "max_projects", name: "Max projects", type: integer_limit, description: "Project cap" }
+      responses:
+        '201':
+          description: Entitlement defined.
+          headers:
+            Location:
+              description: Canonical path of the created entitlement.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+              examples:
+                created:
+                  value:
+                    id: "16fd2706-8baf-433b-82eb-8c7fada847da"
+                    key: "export_pdf"
+                    name: "Export to PDF"
+                    type: boolean
+                    description: null
+                    status: active
+                    createdAt: "2026-07-07T10:10:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/catalog/entitlements/{entitlementId}:
+    parameters:
+      - $ref: '#/components/parameters/EntitlementId'
+    get:
+      tags: [entitlements]
+      operationId: getEntitlement
+      summary: Get an entitlement definition
+      description: Return a single entitlement within the session's tenant (FR-005). READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The entitlement.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [entitlements]
+      operationId: updateEntitlement
+      summary: Edit an entitlement's name/description (key + type immutable once referenced)
+      description: >
+        Change an entitlement's `name` and/or `description` (FR-005). At least one field must be
+        present. The `key` is IMMUTABLE (it is embedded in issued licenses). The `type` is FIXED
+        once any plan references the entitlement: attempting to change `type` on a REFERENCED
+        entitlement is refused with `409 entitlement_type_locked` (FR-006). The edit is audited
+        (FR-012). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateEntitlementRequest' }
+            examples:
+              rename:
+                value: { name: "Export as PDF" }
+      responses:
+        '200':
+          description: Updated entitlement.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            A `type` change was attempted on an entitlement already referenced by a plan; the type
+            is immutable once referenced (FR-006).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                typeLocked:
+                  value:
+                    code: entitlement_type_locked
+                    message: "This entitlement's type cannot change because a plan already references it."
+                    details: { entitlementId: "16fd2706-8baf-433b-82eb-8c7fada847da", referencedByPlans: 2 }
+
+  /admin/catalog/entitlements/{entitlementId}/archive:
+    parameters:
+      - $ref: '#/components/parameters/EntitlementId'
+    post:
+      tags: [entitlements]
+      operationId: archiveEntitlement
+      summary: Archive (soft-retire) an entitlement
+      description: >
+        Soft-retire an entitlement: retained so already-issued licenses that embed its key remain
+        interpretable, but excluded from active selection (FR-013). No hard-delete of a referenced
+        entitlement. Idempotent. Audited (FR-012). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Entitlement archived (status `archived`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlement' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --- Per-plan entitlement values ------------------------------------------------------------------
+  /admin/catalog/plans/{planId}/entitlements:
+    parameters:
+      - $ref: '#/components/parameters/PlanId'
+    get:
+      tags: [plan-entitlements]
+      operationId: listPlanEntitlements
+      summary: List a plan's per-plan entitlement values
+      description: >
+        List the entitlements attached to a plan and each configured value (FR-007). A plan with
+        zero entitlements returns an empty array (a valid plan that grants no gated features).
+        READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The plan's entitlement value bindings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanEntitlementList' }
+              examples:
+                mixed:
+                  value:
+                    planEntitlements:
+                      - entitlementId: "16fd2706-8baf-433b-82eb-8c7fada847da"
+                        key: "export_pdf"
+                        name: "Export to PDF"
+                        type: boolean
+                        value: true
+                      - entitlementId: "d9428888-122b-11e1-b85c-61cb3f4f4e8f"
+                        key: "max_projects"
+                        name: "Max projects"
+                        type: integer_limit
+                        value: 50
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/catalog/plans/{planId}/entitlements/{entitlementId}:
+    parameters:
+      - $ref: '#/components/parameters/PlanId'
+      - $ref: '#/components/parameters/EntitlementId'
+    put:
+      tags: [plan-entitlements]
+      operationId: setPlanEntitlementValue
+      summary: Attach an entitlement to a plan and set its value (upsert)
+      description: >
+        Attach the entitlement to the plan and set its per-plan `value`, or update the value if it
+        is already attached (idempotent upsert) (FR-007). The `value` MUST match the entitlement's
+        type: a boolean for a `boolean` entitlement, a NON-NEGATIVE integer for an `integer_limit`
+        entitlement. A type mismatch (e.g. a boolean on an integer-limit entitlement, or vice-versa)
+        or a negative/non-integer limit is rejected with `400 validation_error` and a field-level
+        message (FR-008); nothing is saved. This is an IDEMPOTENT UPSERT keyed by
+        `(plan, entitlement)`: it returns `200` in BOTH cases — a first-time attach and an update of
+        an existing value — never `201`; re-sending the same value is a no-op that still returns
+        `200` with the current binding. The plan AND the entitlement MUST both be `active`: attaching
+        (or re-valuing) against an ARCHIVED plan or an ARCHIVED entitlement is refused with `409
+        archived` (archived entities are excluded from active selection, FR-013). The change takes
+        effect immediately for FUTURE issuance only, with no code change or deploy (FR-009/016), and
+        is audited (FR-012). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetPlanEntitlementValueRequest' }
+            examples:
+              booleanOn:
+                summary: Turn a boolean entitlement on
+                value: { value: true }
+              integerLimit:
+                summary: Set an integer limit
+                value: { value: 50 }
+      responses:
+        '200':
+          description: >
+            Entitlement attached / value set on the plan. Returned for BOTH a first-time attach and
+            an update of an existing value (idempotent upsert — never `201`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanEntitlement' }
+              examples:
+                set:
+                  value:
+                    entitlementId: "d9428888-122b-11e1-b85c-61cb3f4f4e8f"
+                    key: "max_projects"
+                    name: "Max projects"
+                    type: integer_limit
+                    value: 50
+        '400':
+          description: >
+            The value does not match the entitlement's type, or the integer limit is negative /
+            non-integer (FR-008).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                typeMismatch:
+                  value:
+                    code: validation_error
+                    message: "This entitlement is an integer limit; the value must be a non-negative integer."
+                    details: { field: value, expectedType: integer_limit, value: true }
+                negative:
+                  value:
+                    code: validation_error
+                    message: "An integer-limit value must be zero or greater."
+                    details: { field: value, value: -5 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            The plan or the entitlement is `archived`; archived entities are excluded from active
+            selection and cannot receive new value attachments or updates (FR-013). Reactivate is not
+            in scope for E007.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                archivedPlan:
+                  value:
+                    code: archived
+                    message: "Cannot set an entitlement value on an archived plan."
+                    details: { planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7", status: archived }
+                archivedEntitlement:
+                  value:
+                    code: archived
+                    message: "Cannot attach an archived entitlement to a plan."
+                    details: { entitlementId: "16fd2706-8baf-433b-82eb-8c7fada847da", status: archived }
+    delete:
+      tags: [plan-entitlements]
+      operationId: removePlanEntitlement
+      summary: Remove an entitlement attachment from a plan
+      description: >
+        Detach the entitlement from the plan (remove the per-plan value binding) so the plan no
+        longer grants that feature in FUTURE issuance (FR-007). This removes only the plan↔
+        entitlement ATTACHMENT — it does NOT delete the entitlement definition (use archive for
+        that) and does not affect already-issued licenses (FR-016). Audited (FR-012). RBAC: `admin`
+        or higher.
+
+
+        204-vs-404 boundary (idempotent): `204` is returned whenever BOTH the `planId` and the
+        `entitlementId` name real entities in the session's tenant — whether or not an attachment
+        currently exists (removing an already-absent attachment is a successful no-op). `404` is
+        returned ONLY when the `planId` or the `entitlementId` is itself unknown in the tenant (an
+        unknown or cross-tenant plan/entitlement). A merely-detached attachment is never a `404`.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: >
+            Attachment removed, or was already absent — both are success (the plan and entitlement
+            both exist in this tenant).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: The `planId` or `entitlementId` is unknown in this tenant (not merely a missing attachment).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unknownPlan:
+                  value:
+                    code: not_found
+                    message: "No such plan in this tenant."
+                    details: { planId: "00000000-0000-4000-8000-000000000000" }
+
+  # --- Effective plan definition (issuance read model) ----------------------------------------------
+  /admin/catalog/plans/{planId}/effective:
+    parameters:
+      - $ref: '#/components/parameters/PlanId'
+    get:
+      tags: [effective]
+      operationId: getEffectivePlanDefinition
+      summary: Get the effective plan definition (the E008 issuance read model)
+      description: >
+        Return the resolved EFFECTIVE PLAN DEFINITION for a plan: its `planKey`, the owning
+        `productKey`, the `maxActivations` seat limit (default 1), and the flattened list of
+        `entitlements` — each `{ key, type, value }` — reflecting the latest saved per-plan values
+        (FR-014, SC-009). This is the READ MODEL license issuance (E008) consumes to snapshot
+        entitlements into a signed token; entitlement `key`s are the canonical feature keys embedded
+        in E001 tokens. It returns static values only (no computed/guarded rules — those are E017).
+
+
+        ARCHIVED entities: the `entitlements` list contains ONLY active entitlement attachments —
+        attachments to an archived entitlement (or attachments that have been detached) are EXCLUDED,
+        because issuance must snapshot only active grants (FR-013/016). An archived PLAN still returns
+        its effective definition here (a read, so already-issued licenses stay interpretable) even
+        though it is excluded from active selection in list reads; callers that must not issue against
+        a retired plan should check the plan's `status` first. READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      x-issuance-read-model: true
+      responses:
+        '200':
+          description: The effective plan definition for issuance.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EffectivePlanDefinition' }
+              examples:
+                pro:
+                  value:
+                    planKey: "pro"
+                    productKey: "acme_cad"
+                    maxActivations: 5
+                    entitlements:
+                      - key: "export_pdf"
+                        type: boolean
+                        value: true
+                      - key: "max_projects"
+                        type: integer_limit
+                        value: 50
+                empty:
+                  summary: A plan that grants no gated features (valid)
+                  value:
+                    planKey: "standard"
+                    productKey: "acme_cad"
+                    maxActivations: 1
+                    entitlements: []
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        HUMAN session credential (NOT the machine `X-API-Key`). The opaque `admin_session` cookie
+        established by the E005 `POST /admin/auth/login`, set with `HttpOnly` + `Secure` +
+        `SameSite=Strict`, scoped to `Path=/admin`, with a bounded `Max-Age`. Server-side revocable;
+        never a JWT and never returned in any response body. Every catalog operation requires it.
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: >
+        Double-submit CSRF token. MUST equal the value of the non-HttpOnly CSRF cookie issued
+        alongside the session, and is REQUIRED on every state-changing `/admin/catalog` request
+        (POST/PATCH/PUT/DELETE). `SameSite=Strict` on the session cookie is necessary but not
+        sufficient across all browsers/flows, so this header is required as defense-in-depth; a
+        missing or mismatched token is rejected fail-closed with `403 forbidden` (code `forbidden`,
+        the shared Forbidden response), matching the E005 console, and the mutation is refused. GET
+        (read) operations do not require it.
+      schema: { type: string }
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      description: A product identifier (UUID) within the session's tenant.
+      schema: { type: string, format: uuid }
+      example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+    PlanId:
+      name: planId
+      in: path
+      required: true
+      description: A plan identifier (UUID) within the session's tenant.
+      schema: { type: string, format: uuid }
+      example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+    EntitlementId:
+      name: entitlementId
+      in: path
+      required: true
+      description: An entitlement identifier (UUID) within the session's tenant.
+      schema: { type: string, format: uuid }
+      example: "16fd2706-8baf-433b-82eb-8c7fada847da"
+    StatusFilter:
+      name: status
+      in: query
+      required: false
+      description: >
+        Which lifecycle states to include. `active` (default) excludes archived entries from active
+        selection (FR-013); `archived` returns only archived entries; `all` returns both.
+      schema:
+        type: string
+        enum: [active, archived, all]
+        default: active
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }`. `code` is a stable,
+        enumerated machine-readable value; `message` is human-readable; `details` is optional
+        structured context. No credential material ever appears in any field, and no field ever
+        discloses the existence of another tenant's entity — cross-tenant access resolves to `404
+        not_found` (never `403`), so an out-of-tenant id is indistinguishable from a non-existent one.
+        The `in_use` code is RESERVED for a refused hard-delete of a referenced entity; E007 exposes
+        NO hard-delete route (archive is the only retirement path, and `DELETE` of a per-plan
+        entitlement detaches an attachment, never a definition), so no current operation returns it —
+        it is the FK `NO ACTION` + app-guard backstop code, kept enumerated so plan and contract stay
+        consistent (plan §Error Handling).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code (snake_case). Enumerated; new codes require a contract change.
+          enum:
+            - validation_error          # 400 (malformed body, bad filter, type mismatch, negative limit)
+            - unauthenticated           # 401 (no/expired/revoked session)
+            - forbidden                 # 403 (RBAC deny or CSRF failure, fail-closed)
+            - not_found                 # 404 (unknown entity in this tenant)
+            - duplicate_key             # 409 (product/plan/entitlement key already exists in scope)
+            - entitlement_type_locked   # 409 (type change on a referenced entitlement, FR-006)
+            - archived                  # 409 (per-plan value attach targets an archived plan or entitlement — excluded from active selection, FR-013)
+            - in_use                    # 409 (RESERVED backstop: hard-delete of a referenced entity is refused; no E007 route returns it — archive instead)
+          example: forbidden
+        message:
+          type: string
+          description: Human-readable summary. Never contains any credential material.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value, expectedType? }`;
+            `duplicate_key` → `{ field, value }`;
+            `entitlement_type_locked` → `{ entitlementId, referencedByPlans }`;
+            `archived` → `{ planId?, entitlementId?, status: "archived" }`;
+            `not_found` → the missing id (e.g. `{ planId }`).
+            It never carries credential material or cross-tenant existence disclosure.
+
+    CatalogStatus:
+      type: string
+      description: >
+        Lifecycle status of a catalog entity. `active` = selectable for new plans/issuance;
+        `archived` = soft-retired, retained for interpreting already-issued licenses but excluded
+        from active selection (FR-013).
+      enum: [active, archived]
+
+    EntitlementType:
+      type: string
+      description: >
+        The kind of feature entitlement. `boolean` = an on/off feature; `integer_limit` = a
+        non-negative numeric cap. Fixed once any plan references the entitlement (FR-006).
+      enum: [boolean, integer_limit]
+
+    CatalogKey:
+      type: string
+      description: >
+        A stable, immutable key. For entitlements this becomes the canonical feature key embedded in
+        issued licenses, so it must never change once referenced (Risks: key churn). Lowercase
+        slug: starts with a letter, then lowercase letters/digits/underscores.
+      pattern: '^[a-z][a-z0-9_]*$'
+      minLength: 1
+      maxLength: 64
+      example: "export_pdf"
+
+    # --- Products ---
+    Product:
+      type: object
+      description: A tenant-scoped catalog root that contains plans (FR-001/002).
+      required: [id, key, name, status, createdAt]
+      properties:
+        id: { type: string, format: uuid, description: "Server-generated UUID, unique within the tenant (PK (tenant_id, id), AD-002).", example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" }
+        key:
+          allOf: [{ $ref: '#/components/schemas/CatalogKey' }]
+          description: Stable key, unique within the tenant. Immutable after creation.
+        name: { type: string, example: "Acme CAD" }
+        description:
+          type: [string, "null"]
+          description: Optional human description.
+        status: { $ref: '#/components/schemas/CatalogStatus' }
+        createdAt: { type: string, format: date-time }
+
+    ProductList:
+      type: object
+      required: [products]
+      properties:
+        products:
+          type: array
+          description: >
+            The tenant's products, ordered by `createdAt`. Bounded, not paginated: the full set is
+            returned up to a hard cap of 1000 items (see LIST BOUNDING, AD-009). `maxItems: 1000`.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/Product' }
+
+    CreateProductRequest:
+      type: object
+      description: Create a product. `key` is unique per tenant and immutable thereafter.
+      additionalProperties: false
+      required: [key, name]
+      properties:
+        key: { $ref: '#/components/schemas/CatalogKey' }
+        name: { type: string, minLength: 1, maxLength: 200, example: "Acme CAD" }
+        description: { type: string, maxLength: 2000 }
+
+    UpdateProductRequest:
+      type: object
+      description: Edit a product's name and/or description. `key` is immutable and not accepted here.
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: [string, "null"], maxLength: 2000 }
+
+    # --- Plans ---
+    Plan:
+      type: object
+      description: A package under exactly one product; carries the seat limit issuance depends on (FR-003/004).
+      required: [id, productId, key, name, maxActivations, status, createdAt]
+      properties:
+        id: { type: string, format: uuid, description: "Server-generated UUID, unique within the tenant (AD-002).", example: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+        productId:
+          type: string
+          format: uuid
+          description: The owning product's UUID. A plan belongs to exactly one product and is never re-parented (FR-003).
+          example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        key:
+          allOf: [{ $ref: '#/components/schemas/CatalogKey' }]
+          description: Stable key, unique within the parent product. Immutable after creation.
+        name: { type: string, example: "Standard" }
+        description: { type: [string, "null"] }
+        maxActivations:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Seat limit — the maximum machine activations a license under this plan may hold (FR-004). Defaults to 1.
+          example: 5
+        status: { $ref: '#/components/schemas/CatalogStatus' }
+        createdAt: { type: string, format: date-time }
+
+    PlanList:
+      type: object
+      required: [plans]
+      properties:
+        plans:
+          type: array
+          description: >
+            The product's plans, ordered by `createdAt`. Bounded, not paginated: the full set up to a
+            hard cap of 1000 items (LIST BOUNDING, AD-009). `maxItems: 1000`.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/Plan' }
+
+    CreatePlanRequest:
+      type: object
+      description: Create a plan under a product. `maxActivations` defaults to 1 if omitted (FR-004).
+      additionalProperties: false
+      required: [key, name]
+      properties:
+        key: { $ref: '#/components/schemas/CatalogKey' }
+        name: { type: string, minLength: 1, maxLength: 200, example: "Standard" }
+        description: { type: string, maxLength: 2000 }
+        maxActivations:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Optional seat limit (positive integer); defaults to 1 when omitted.
+
+    UpdatePlanRequest:
+      type: object
+      description: Edit a plan's name, description, and/or seat limit. `key` and owning product are immutable.
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: [string, "null"], maxLength: 2000 }
+        maxActivations:
+          type: integer
+          minimum: 1
+          description: New seat limit (positive integer). Below 1 → 400 validation_error.
+
+    # --- Entitlements ---
+    Entitlement:
+      type: object
+      description: A tenant-scoped feature definition, boolean or integer-limit (FR-005).
+      required: [id, key, name, type, status, createdAt]
+      properties:
+        id: { type: string, format: uuid, description: "Server-generated UUID, unique within the tenant (AD-002).", example: "16fd2706-8baf-433b-82eb-8c7fada847da" }
+        key:
+          allOf: [{ $ref: '#/components/schemas/CatalogKey' }]
+          description: Stable key, unique within the tenant; the feature key embedded in issued licenses. Immutable.
+        name: { type: string, example: "Export to PDF" }
+        type: { $ref: '#/components/schemas/EntitlementType' }
+        description: { type: [string, "null"] }
+        status: { $ref: '#/components/schemas/CatalogStatus' }
+        createdAt: { type: string, format: date-time }
+
+    EntitlementList:
+      type: object
+      required: [entitlements]
+      properties:
+        entitlements:
+          type: array
+          description: >
+            The tenant's entitlement definitions, ordered by `createdAt`. Bounded, not paginated: the
+            full set up to a hard cap of 1000 items (LIST BOUNDING, AD-009). `maxItems: 1000`.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/Entitlement' }
+
+    CreateEntitlementRequest:
+      type: object
+      description: Define an entitlement. `type` and `key` are immutable once any plan references it (FR-006).
+      additionalProperties: false
+      required: [key, name, type]
+      properties:
+        key: { $ref: '#/components/schemas/CatalogKey' }
+        name: { type: string, minLength: 1, maxLength: 200, example: "Export to PDF" }
+        type: { $ref: '#/components/schemas/EntitlementType' }
+        description: { type: string, maxLength: 2000 }
+
+    UpdateEntitlementRequest:
+      type: object
+      description: >
+        Edit an entitlement's name and/or description. `key` is immutable and not accepted. `type`
+        MAY be sent while the entitlement is UNREFERENCED, but attempting to change it once any plan
+        references the entitlement is refused with `409 entitlement_type_locked` (FR-006).
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: [string, "null"], maxLength: 2000 }
+        type:
+          allOf: [{ $ref: '#/components/schemas/EntitlementType' }]
+          description: Only honored while the entitlement is unreferenced; a change on a referenced entitlement → 409.
+
+    # --- Per-plan entitlement values ---
+    EntitlementValue:
+      description: >
+        A per-plan entitlement value. MUST match the entitlement's type: a boolean for a `boolean`
+        entitlement, or a non-negative integer for an `integer_limit` entitlement (FR-007/008).
+      oneOf:
+        - type: boolean
+          description: For a `boolean` entitlement.
+        - type: integer
+          minimum: 0
+          description: For an `integer_limit` entitlement (non-negative).
+      example: 50
+
+    PlanEntitlement:
+      type: object
+      description: A per-plan value binding — one entitlement attached to a plan with its configured value (FR-007).
+      required: [entitlementId, key, type, value]
+      properties:
+        entitlementId: { type: string, format: uuid, example: "d9428888-122b-11e1-b85c-61cb3f4f4e8f" }
+        key:
+          allOf: [{ $ref: '#/components/schemas/CatalogKey' }]
+          description: The attached entitlement's key (the feature key embedded in issued licenses).
+        name:
+          type: string
+          description: The attached entitlement's display name (convenience for the console).
+          example: "Max projects"
+        type: { $ref: '#/components/schemas/EntitlementType' }
+        value: { $ref: '#/components/schemas/EntitlementValue' }
+
+    PlanEntitlementList:
+      type: object
+      required: [planEntitlements]
+      properties:
+        planEntitlements:
+          type: array
+          description: May be empty — a plan with zero entitlements is valid (grants no gated features).
+          items: { $ref: '#/components/schemas/PlanEntitlement' }
+
+    SetPlanEntitlementValueRequest:
+      type: object
+      description: >
+        Set (attach or update) the per-plan value for an entitlement. The value must match the
+        entitlement's type; a mismatch or a negative integer → 400 validation_error (FR-008).
+      additionalProperties: false
+      required: [value]
+      properties:
+        value: { $ref: '#/components/schemas/EntitlementValue' }
+
+    # --- Effective plan definition (issuance read model) ---
+    EffectiveEntitlement:
+      type: object
+      description: One resolved entitlement in the effective plan definition — key, type, and static value.
+      required: [key, type, value]
+      properties:
+        key:
+          allOf: [{ $ref: '#/components/schemas/CatalogKey' }]
+          description: The canonical feature key embedded in the issued token (E001).
+        type: { $ref: '#/components/schemas/EntitlementType' }
+        value: { $ref: '#/components/schemas/EntitlementValue' }
+
+    EffectivePlanDefinition:
+      type: object
+      description: >
+        The resolved read model license issuance (E008) consumes: the plan and product keys, the
+        seat limit, and the flattened entitlement key/type/value list from the latest saved per-plan
+        values (FR-014, SC-009). Static values only — no computed/guarded rules (E017).
+      required: [planKey, productKey, maxActivations, entitlements]
+      properties:
+        planKey:
+          allOf: [{ $ref: '#/components/schemas/CatalogKey' }]
+          description: The plan's stable key.
+        productKey:
+          allOf: [{ $ref: '#/components/schemas/CatalogKey' }]
+          description: The owning product's stable key.
+        maxActivations:
+          type: integer
+          minimum: 1
+          description: The plan's seat limit (default 1).
+          example: 5
+        entitlements:
+          type: array
+          description: >
+            The plan's effective entitlements — ACTIVE attachments only (archived/detached ones are
+            excluded). Empty if the plan grants no gated features (a valid effective plan).
+          items: { $ref: '#/components/schemas/EffectiveEntitlement' }
+
+  responses:
+    BadRequest:
+      description: >
+        Validation error in the request — malformed body, bad `status` filter, an entitlement value
+        that does not match its type, or a negative/non-integer limit (FR-008).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invalidStatus:
+              value:
+                code: validation_error
+                message: "status must be one of active, archived, all."
+                details: { field: status, value: "retired" }
+    Unauthorized:
+      description: No valid session — the `admin_session` cookie is missing, expired, or revoked.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noSession:
+              value: { code: unauthenticated, message: "Authentication required." }
+    Forbidden:
+      description: >
+        The request is authenticated but refused fail-closed, for either of two reasons: (1) the
+        session's role is below the operation's `x-rbac.minRole` (a viewer attempting a mutation), or
+        (2) the mutation's `X-CSRF-Token` is missing or does not match the CSRF cookie. Both are
+        recorded as an auditable security event (FR-011). Same `403 forbidden` shape as E005.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the admin role."
+                details: { minRole: admin, role: viewer }
+            csrfFailure:
+              value:
+                code: forbidden
+                message: "Missing or invalid CSRF token."
+                details: { reason: csrf }
+    NotFound:
+      description: The referenced product, plan, or entitlement does not exist within the session's tenant.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownPlan:
+              value:
+                code: not_found
+                message: "No such plan in this tenant."
+                details: { planId: "00000000-0000-4000-8000-000000000000" }
+    Conflict:
+      description: >
+        A uniqueness or referential conflict — a duplicate key (product key per tenant, plan key per
+        product, or entitlement key per tenant), or a `type` change attempted on a referenced
+        entitlement (FR-006).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            duplicateKey:
+              value:
+                code: duplicate_key
+                message: "A product with that key already exists in this tenant."
+                details: { field: key, value: "acme_cad" }
+            typeLocked:
+              value:
+                code: entitlement_type_locked
+                message: "This entitlement's type cannot change because a plan already references it."
+                details: { entitlementId: "16fd2706-8baf-433b-82eb-8c7fada847da", referencedByPlans: 2 }
