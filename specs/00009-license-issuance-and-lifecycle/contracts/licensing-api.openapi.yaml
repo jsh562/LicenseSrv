@@ -1,0 +1,1063 @@
+openapi: 3.1.0
+info:
+  title: License Issuance & Lifecycle — Admin Console API
+  version: 0.1.0
+  description: >
+    REST surface for epic E008 (License Issuance and Lifecycle). Extends the E005 admin-console
+    human surface (see `admin-api.openapi.yaml`) and the E007 catalog surface (see
+    `catalog-api.openapi.yaml`) with tenant-scoped CUSTOMER registration and LICENSE issuance +
+    lifecycle: issue a signed, offline-verifiable license under a product + plan for a customer,
+    then revoke / suspend / reinstate / transfer / reissue it, browse the registry, and re-fetch a
+    license's signed key. Covers FR-001..019.
+
+
+    AUTH MODEL (same as E005/E007; distinct from the machine API). Every route authenticates a
+    HUMAN session via the opaque, httpOnly + Secure + SameSite session COOKIE (`admin_session`)
+    established by `POST /admin/auth/login` (defined in the E005 contract). It deliberately does NOT
+    use the `X-API-Key` header of the machine API — that header authenticates integrations, this
+    cookie authenticates people.
+
+
+    TENANT SCOPING (FR-015). Every customer and license is implicitly scoped to the session's
+    tenant. There is no tenant path/query parameter — the tenant is resolved from the session and
+    can never be widened by the caller. A session for tenant A can never read or mutate tenant B's
+    customers or licenses; a cross-tenant id resolves to `404 not_found`, never `403`, so an
+    out-of-tenant id is indistinguishable from a non-existent one.
+
+
+    RBAC (FR-016, fail-closed). Roles are `owner > admin > viewer` (mirrors src/server/auth/rbac.ts).
+    READ (GET) requires `viewer` or higher; every MUTATION (POST/DELETE — issue, revoke, suspend,
+    reinstate, transfer, reissue, create/delete customer) requires `admin` or higher. The minimum
+    role for each operation is declared via the `x-rbac` extension (`minRole`) and enforced
+    server-side. A denied privileged action is recorded as an auditable security event; every
+    authorized issuance/lifecycle action is written to the append-only audit log with actor, action,
+    and target (FR-014).
+
+
+    CSRF. `SameSite=Strict` on the session cookie is necessary but not sufficient, so every
+    state-changing request (POST/DELETE) additionally carries a double-submit `X-CSRF-Token` header
+    that MUST equal the non-httpOnly CSRF cookie issued at login. GET (read) operations do not
+    require it.
+
+
+    SECRECY INVARIANT (FR-003, SC-010). The product's SIGNING KEY is NEVER exposed — not in any
+    response body, header, example, log, or audit entry. What issuance returns is the signed LICENSE
+    KEY: the offline-verifiable public token (E001 `LIC1` format, Ed25519-signed by the product's
+    key). The token is returned in exactly three places — the `POST /admin/licenses` (issue) 201
+    body, the `POST /admin/licenses/{licenseId}/reissue` 200 body, and the
+    `GET /admin/licenses/{licenseId}/key` 200 body — and never appears in list or metadata reads.
+    The `keyId` field names WHICH signing key signed the token; it is an opaque identifier, not key
+    material.
+
+
+    SNAPSHOT SEMANTICS (FR-002/006). At issue time the license bakes in a point-in-time SNAPSHOT of
+    the plan's effective definition — the `entitlements` key/value map and the `maxActivations` seat
+    limit — plus the product/plan/customer identity. Later catalog edits (E007) NEVER change an
+    already-issued license. `reissue` re-signs the SAME snapshot with the current signing key after a
+    rotation (E004); it changes the token and `keyId` only, never the license identity, terms,
+    entitlements, or expiry.
+
+
+    LIFECYCLE STATE MACHINE (FR-007/008/009/010). A license is `active`, `suspended`, or `revoked`.
+    Allowed transitions: `active → suspended` (suspend), `suspended → active` (reinstate),
+    `active|suspended → revoked` (revoke, TERMINAL). `revoked` is terminal — a revoked license can
+    NEVER be reinstated, transferred, or reissued. Transfer (reassign to another customer) is allowed
+    from `active` or `suspended` within a per-license transfer limit and does not change status. Any
+    disallowed transition is refused fail-closed with `409 invalid_transition` and leaves the license
+    unchanged. Revoking an already-revoked license is an idempotent no-op that returns `200` (not an
+    error).
+
+
+    OFFLINE REVOCATION GAP (disclosed MVP limitation, not a defect). A revoked/suspended license's
+    already-distributed token still verifies OFFLINE until it expires; revocation/suspension takes
+    effect at activation/online time (E009/E013). This is disclosed to buyers and mitigated later by
+    short-TTL tokens + online renewal (E013). The lifecycle status exposed here is the source of truth
+    downstream enforcement acts on.
+
+
+    IDENTIFIERS (AD-002). Every entity `id`, and every `customerId`/`licenseId`/`planId`/`productId`/
+    `keyId` reference, is a server-generated UUID unique within the tenant. UUID (`format: uuid`) is
+    the authoritative wire format. A customer `ref` is a separate, human-supplied stable label
+    (unique per tenant), NOT the id.
+
+
+    LIST BOUNDING (AD-009). Registry lists return the tenant-scoped set ordered by `createdAt` /
+    `issuedAt`, bounded to a hard cap of 1000 items; there is no offset/cursor pagination in E008.
+
+
+    STATUS CODES. Each operation enumerates only the codes it can actually return. `503
+    signer_unavailable` is returned ONLY by operations that must sign a token (issue, reissue) when
+    the product has no active signing key or the signer is locked (FR-004); no partial license is
+    created. Field naming is camelCase throughout, matching the E005/E007 console surfaces.
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: customers
+    description: Tenant-scoped, pseudonymous recipients of licenses (FR-011/019). Minimal PII.
+  - name: licenses
+    description: Issue and browse signed, offline-verifiable licenses; retrieve a license's signed key (FR-001/002/003/012).
+  - name: lifecycle
+    description: License state machine — revoke, suspend, reinstate, transfer, reissue (FR-007/008/009/010/018).
+
+# Global default: every operation requires a valid E005 human session cookie.
+security:
+  - sessionCookie: []
+
+paths:
+  # --- Customers ------------------------------------------------------------------------------------
+  /admin/customers:
+    get:
+      tags: [customers]
+      operationId: listCustomers
+      summary: List customers (tenant-scoped)
+      description: >
+        List the tenant's customers (FR-011). READ is allowed for `viewer` and above. Bounded, not
+        paginated (AD-009). Minimal PII only; anonymized customers are retained (their `name`/`email`
+        nulled; the non-PII `ref` is kept) so their licenses remain interpretable (FR-019).
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The tenant's customers.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerList' }
+              examples:
+                two:
+                  value:
+                    customers:
+                      - id: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293"
+                        ref: "acme-corp"
+                        name: "Acme Corp"
+                        email: "licensing@acme.example"
+                        status: active
+                        createdAt: "2026-07-08T09:00:00Z"
+                      - id: "c4d2e3b1-2222-4b3c-9d4e-5f6071829304"
+                        ref: "anon-8f21c0"
+                        name: null
+                        email: null
+                        status: anonymized
+                        createdAt: "2026-02-01T00:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [customers]
+      operationId: createCustomer
+      summary: Register a customer
+      description: >
+        Register a pseudonymous customer with a stable `ref` (unique within the tenant) and optional
+        minimal PII (`name`, `email`) (FR-011). A duplicate `ref` → `409 duplicate_ref`. Creation is
+        audited (FR-014). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCustomerRequest' }
+            examples:
+              full:
+                value: { ref: "acme-corp", name: "Acme Corp", email: "licensing@acme.example" }
+              minimal:
+                summary: Ref only (pseudonymous)
+                value: { ref: "acme-corp" }
+      responses:
+        '201':
+          description: Customer registered.
+          headers:
+            Location:
+              description: Canonical path of the created customer.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Customer' }
+              examples:
+                created:
+                  value:
+                    id: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293"
+                    ref: "acme-corp"
+                    name: "Acme Corp"
+                    email: "licensing@acme.example"
+                    status: active
+                    createdAt: "2026-07-08T10:00:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/DuplicateRef' }
+
+  /admin/customers/{customerId}:
+    parameters:
+      - $ref: '#/components/parameters/CustomerId'
+    get:
+      tags: [customers]
+      operationId: getCustomer
+      summary: Get a customer
+      description: Return a single customer within the session's tenant (FR-011). READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The customer.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Customer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [customers]
+      operationId: eraseCustomer
+      summary: Erase a customer (GDPR data-subject deletion — anonymize or hard-delete)
+      description: >
+        Honor a data-subject deletion request for a customer (FR-019). Behavior depends on
+        referential integrity, and BOTH outcomes return `204`:
+
+        - If the customer holds NO licenses, the record is HARD-DELETED.
+
+        - If the customer holds one or more licenses, the record is ANONYMIZED instead of deleted —
+          its PII (`name`/`email`) is nulled and `status` becomes `anonymized`, while the non-PII `ref`
+          (a pseudonymous label) is retained — so the licenses that reference it remain interpretable.
+          Anonymization is irreversible.
+
+        The action is audited (FR-014) and records no erased PII. Idempotent from the caller's view:
+        re-erasing an already-anonymized customer is a successful no-op (`204`). RBAC: `admin` or
+        higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: >
+            Customer erased — hard-deleted if it held no licenses, otherwise anonymized in place
+            (FR-019). No body either way.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --- Licenses -------------------------------------------------------------------------------------
+  /admin/licenses:
+    get:
+      tags: [licenses]
+      operationId: listLicenses
+      summary: Browse the license registry (tenant-scoped)
+      description: >
+        List the tenant's licenses — status, customer, plan, expiry, and snapshot metadata (FR-012).
+        Optional filters `?status=active|suspended|revoked`, `?customerId`, and `?planId` narrow the
+        set; they combine (AND). The signed license KEY is NOT included in list rows — retrieve it per
+        license via `GET /admin/licenses/{licenseId}/key` (SC-010). Bounded, not paginated (AD-009).
+        READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      parameters:
+        - $ref: '#/components/parameters/LicenseStatusFilter'
+        - $ref: '#/components/parameters/CustomerIdQuery'
+        - $ref: '#/components/parameters/PlanIdQuery'
+      responses:
+        '200':
+          description: The tenant's licenses (metadata only; no signed key).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LicenseList' }
+              examples:
+                one:
+                  value:
+                    licenses:
+                      - id: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                        productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                        planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                        customerId: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293"
+                        status: active
+                        issuedAt: "2026-07-08T10:15:00Z"
+                        expiresAt: "2027-07-08T10:15:00Z"
+                        maxActivations: 5
+                        entitlements: { export_pdf: true, max_projects: 50 }
+                        keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                        transferCount: 0
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [licenses]
+      operationId: issueLicense
+      summary: Issue a signed license
+      description: >
+        Issue a signed, offline-verifiable license under the plan's product for a customer (FR-001).
+        The plan is resolved to its owning product; the effective plan definition (E007) is SNAPSHOT
+        into the license — the `entitlements` map and `maxActivations` seat limit — along with the
+        product/plan/customer identity, an issue timestamp, the expiry, and a fresh license id
+        (FR-002). `expiresAt` is optional: omit it or send `null` for a PERPETUAL license; otherwise
+        it is the license's expiry (must be in the future). The token is signed by the product's
+        active signing key and returned as `licenseKey` (E001 `LIC1` format) — the SIGNING KEY is
+        never returned (FR-003, SC-010). Issuance meets p95 < 1s including signing (FR-017) and is
+        audited (FR-014). RBAC: `admin` or higher.
+
+
+        Refusals leave NO partial license: `404 not_found` for an unknown plan or customer;
+        `409 plan_not_issuable` if the plan is archived or references an archived entitlement (only
+        active catalog entries are issuable, FR-005); `503 signer_unavailable` if the product has no
+        active signing key or the signer is locked (FR-004).
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IssueLicenseRequest' }
+            examples:
+              timeLimited:
+                summary: One-year term
+                value: { planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7", customerId: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293", expiresAt: "2027-07-08T10:15:00Z" }
+              perpetual:
+                summary: Perpetual (no expiry)
+                value: { planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7", customerId: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293" }
+      responses:
+        '201':
+          description: License issued — includes the signed license key (public token). The signing key is never returned.
+          headers:
+            Location:
+              description: Canonical path of the issued license.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IssuedLicense' }
+              examples:
+                issued:
+                  value:
+                    id: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    customerId: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293"
+                    status: active
+                    issuedAt: "2026-07-08T10:15:00Z"
+                    expiresAt: "2027-07-08T10:15:00Z"
+                    maxActivations: 5
+                    entitlements: { export_pdf: true, max_projects: 50 }
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    transferCount: 0
+                    licenseKey: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.Zm9yZ2VkLXNpZ25hdHVyZS1leGFtcGxl"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/PlanNotIssuable' }
+        '503': { $ref: '#/components/responses/SignerUnavailable' }
+
+  /admin/licenses/{licenseId}:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    get:
+      tags: [licenses]
+      operationId: getLicense
+      summary: Get a license's metadata
+      description: >
+        Return a single license's METADATA within the session's tenant — status, customer, plan,
+        product, issue time, expiry, the `maxActivations` seat limit, the `entitlements` snapshot,
+        `keyId`, and `transferCount` (FR-012/013). The signed license KEY is NOT included here;
+        retrieve it via `GET /admin/licenses/{licenseId}/key` (SC-010). READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The license metadata (no signed key).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/License' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/licenses/{licenseId}/key:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    get:
+      tags: [licenses]
+      operationId: getLicenseKey
+      summary: Retrieve a license's signed key (the LIC1 token)
+      description: >
+        Return the license's signed KEY — the offline-verifiable public token (E001 `LIC1` format)
+        the customer embeds in their software (FR-012). This is the ONLY read that returns the token;
+        the signing key is never returned (SC-010). The token is unchanged since issue/last reissue.
+        READ: `viewer` or higher.
+      x-rbac: { minRole: viewer }
+      responses:
+        '200':
+          description: The signed license key (public token).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LicenseKey' }
+              examples:
+                key:
+                  value:
+                    licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    licenseKey: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.Zm9yZ2VkLXNpZ25hdHVyZS1leGFtcGxl"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --- Lifecycle ------------------------------------------------------------------------------------
+  /admin/licenses/{licenseId}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    post:
+      tags: [lifecycle]
+      operationId: revokeLicense
+      summary: Revoke a license (terminal)
+      description: >
+        Move a license from `active` or `suspended` to the TERMINAL `revoked` state (FR-007). A
+        revoked license can never be reinstated, transferred, or reissued. IDEMPOTENT: revoking an
+        already-revoked license is a no-op that still returns `200` with the revoked license (not an
+        error) — so `revoke` has no `409`. Audited (FR-014). RBAC: `admin` or higher. (Offline
+        revocation gap: an already-distributed token still verifies offline until expiry — E013.)
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: License revoked (status `revoked`). Also returned when it was already revoked (idempotent).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/License' }
+              examples:
+                revoked:
+                  value:
+                    id: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    customerId: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293"
+                    status: revoked
+                    issuedAt: "2026-07-08T10:15:00Z"
+                    expiresAt: "2027-07-08T10:15:00Z"
+                    maxActivations: 5
+                    entitlements: { export_pdf: true, max_projects: 50 }
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    transferCount: 0
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/licenses/{licenseId}/suspend:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    post:
+      tags: [lifecycle]
+      operationId: suspendLicense
+      summary: Suspend an active license
+      description: >
+        Move an `active` license to `suspended` (a temporary hold — e.g. a payment issue) (FR-008). A
+        suspended license cannot be activated (E009). Only `active → suspended` is allowed: suspending
+        a license that is not `active` (already suspended or revoked) → `409 invalid_transition`,
+        leaving it unchanged. Audited (FR-014). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: License suspended (status `suspended`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/License' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /admin/licenses/{licenseId}/reinstate:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    post:
+      tags: [lifecycle]
+      operationId: reinstateLicense
+      summary: Reinstate a suspended license
+      description: >
+        Return a `suspended` license to `active` (FR-008). Only `suspended → active` is allowed:
+        reinstating a license that is not `suspended` (an already-active license, or a terminal
+        revoked one) → `409 invalid_transition`, leaving it unchanged. Audited (FR-014). RBAC:
+        `admin` or higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: License reinstated (status `active`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/License' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /admin/licenses/{licenseId}/transfer:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    post:
+      tags: [lifecycle]
+      operationId: transferLicense
+      summary: Transfer a license to another customer
+      description: >
+        Reassign an `active` or `suspended` license to a different customer within the same tenant
+        (FR-009). On success the license's `customerId` changes, `transferCount` increments, and the
+        action is audited (FR-014); status is unchanged. Subject to a per-license transfer LIMIT
+        (configurable default): a transfer that would exceed it → `409 transfer_limit_exceeded`.
+        Transferring a `revoked` license is refused with `409 invalid_transition` (a terminal license
+        cannot be transferred, FR-007). An unknown target customer → `404 not_found`. RBAC: `admin` or
+        higher.
+      x-rbac: { minRole: admin }
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferLicenseRequest' }
+            examples:
+              reassign:
+                value: { customerId: "d5e3f4c2-4444-4c5d-ae6f-718293a4b5c6" }
+      responses:
+        '200':
+          description: License transferred — `customerId` updated and `transferCount` incremented.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/License' }
+              examples:
+                transferred:
+                  value:
+                    id: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    customerId: "d5e3f4c2-4444-4c5d-ae6f-718293a4b5c6"
+                    status: active
+                    issuedAt: "2026-07-08T10:15:00Z"
+                    expiresAt: "2027-07-08T10:15:00Z"
+                    maxActivations: 5
+                    entitlements: { export_pdf: true, max_projects: 50 }
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    transferCount: 1
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: The license, or the target customer, does not exist within the session's tenant.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unknownCustomer:
+                  value:
+                    code: not_found
+                    message: "No such customer in this tenant."
+                    details: { customerId: "00000000-0000-4000-8000-000000000000" }
+        '409':
+          description: >
+            The transfer is refused: either it would exceed the per-license transfer limit
+            (`transfer_limit_exceeded`), or the license is `revoked` and cannot be transferred
+            (`invalid_transition`, FR-007). The license is left unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                limitExceeded:
+                  value:
+                    code: transfer_limit_exceeded
+                    message: "This license has reached its transfer limit."
+                    details: { transferCount: 3, transferLimit: 3 }
+                revoked:
+                  value:
+                    code: invalid_transition
+                    message: "A revoked license cannot be transferred."
+                    details: { from: revoked, action: transfer }
+
+  /admin/licenses/{licenseId}/reissue:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    post:
+      tags: [lifecycle]
+      operationId: reissueLicense
+      summary: Reissue a license's signed key (re-sign the same terms)
+      description: >
+        Re-sign the SAME license terms with the product's CURRENT signing key after a key rotation
+        (E004), returning a new signed `licenseKey` (FR-018). The license identity, entitlements,
+        seat limit, expiry, and customer are UNCHANGED — only the token and its `keyId` change. A
+        terminal `revoked` license cannot be reissued → `409 invalid_transition` (FR-007). If the
+        product has no active signing key or the signer is locked → `503 signer_unavailable` (no
+        change is made). Audited (FR-014). RBAC: `admin` or higher.
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: License reissued — a new signed key over the same terms (new `keyId`). The signing key is never returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IssuedLicense' }
+              examples:
+                reissued:
+                  value:
+                    id: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    customerId: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293"
+                    status: active
+                    issuedAt: "2026-07-08T10:15:00Z"
+                    expiresAt: "2027-07-08T10:15:00Z"
+                    maxActivations: 5
+                    entitlements: { export_pdf: true, max_projects: 50 }
+                    keyId: "f0e1d2c3-7788-4990-a1b2-c3d4e5f60718"
+                    transferCount: 0
+                    licenseKey: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.cmVpc3N1ZWQtc2lnbmF0dXJlLWV4YW1wbGU"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+        '503': { $ref: '#/components/responses/SignerUnavailable' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        HUMAN session credential (NOT the machine `X-API-Key`). The opaque `admin_session` cookie
+        established by the E005 `POST /admin/auth/login`, set with `HttpOnly` + `Secure` +
+        `SameSite=Strict`, scoped to `Path=/admin`, with a bounded `Max-Age`. Server-side revocable;
+        never a JWT and never returned in any response body. Every operation in this contract requires
+        it.
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: >
+        Double-submit CSRF token. MUST equal the value of the non-HttpOnly CSRF cookie issued
+        alongside the session, and is REQUIRED on every state-changing `/admin` request (POST/DELETE
+        here — issue, revoke, suspend, reinstate, transfer, reissue, create/delete customer).
+        `SameSite=Strict` on the session cookie is necessary but not sufficient across all
+        browsers/flows, so this header is required as defense-in-depth; a missing or mismatched token
+        is rejected fail-closed with `403 forbidden` and the mutation is refused. GET (read)
+        operations do not require it.
+      schema: { type: string }
+    CustomerId:
+      name: customerId
+      in: path
+      required: true
+      description: A customer identifier (UUID) within the session's tenant.
+      schema: { type: string, format: uuid }
+      example: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293"
+    LicenseId:
+      name: licenseId
+      in: path
+      required: true
+      description: A license identifier (UUID) within the session's tenant.
+      schema: { type: string, format: uuid }
+      example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+    LicenseStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: Filter the registry by lifecycle status. Omit to return all statuses.
+      schema:
+        type: string
+        enum: [active, suspended, revoked]
+    CustomerIdQuery:
+      name: customerId
+      in: query
+      required: false
+      description: Filter the registry to licenses held by this customer (UUID). Combines (AND) with other filters.
+      schema: { type: string, format: uuid }
+    PlanIdQuery:
+      name: planId
+      in: query
+      required: false
+      description: Filter the registry to licenses issued under this plan (UUID). Combines (AND) with other filters.
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }`. `code` is a stable,
+        enumerated machine-readable value; `message` is human-readable; `details` is optional
+        structured context. No credential material — and NEVER any signing-key material or signed
+        token — appears in any field, and no field discloses another tenant's existence: cross-tenant
+        access resolves to `404 not_found` (never `403`).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code (snake_case). Enumerated; new codes require a contract change.
+          enum:
+            - validation_error         # 400 (malformed body, bad filter/query, expiry in the past)
+            - unauthenticated          # 401 (no/expired/revoked session)
+            - forbidden                # 403 (RBAC deny or CSRF failure, fail-closed)
+            - not_found                # 404 (unknown license/customer/plan in this tenant)
+            - duplicate_ref            # 409 (customer ref already exists in this tenant)
+            - plan_not_issuable        # 409 (issue under an archived plan or archived entitlement, FR-005)
+            - invalid_transition       # 409 (disallowed lifecycle transition — suspend/reinstate/transfer/reissue, FR-010)
+            - transfer_limit_exceeded  # 409 (transfer would exceed the per-license limit, FR-009)
+            - signer_unavailable       # 503 (no active product signing key, or signer locked, FR-004)
+          example: invalid_transition
+        message:
+          type: string
+          description: Human-readable summary. Never contains credential, signing-key, or token material.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value }`;
+            `duplicate_ref` → `{ field: "ref", value }`;
+            `not_found` → the missing id (e.g. `{ licenseId }` or `{ customerId }`);
+            `plan_not_issuable` → `{ planId, reason: "archived_plan" | "archived_entitlement", entitlementKey? }`;
+            `invalid_transition` → `{ from, action }`;
+            `transfer_limit_exceeded` → `{ transferCount, transferLimit }`;
+            `signer_unavailable` → `{ productId, reason: "no_active_key" | "signer_locked" }`.
+            It never carries credential, signing-key, or token material.
+
+    # --- Shared value types ---
+    LicenseStatus:
+      type: string
+      description: >
+        License lifecycle status (FR-010). `active` = usable; `suspended` = temporary hold (not
+        activatable); `revoked` = TERMINAL (never reinstated/transferred/reissued).
+      enum: [active, suspended, revoked]
+
+    CustomerStatus:
+      type: string
+      description: >
+        Customer status. `active` = normal; `anonymized` = erased under a data-subject deletion
+        request while holding licenses, so the record is retained but its PII is stripped (FR-019).
+      enum: [active, anonymized]
+
+    EntitlementValue:
+      description: >
+        A snapshotted entitlement value — a boolean for an on/off feature, or a non-negative integer
+        for a numeric limit (mirrors the E007 entitlement types).
+      oneOf:
+        - type: boolean
+          description: For a boolean (on/off) entitlement.
+        - type: integer
+          minimum: 0
+          description: For an integer-limit (non-negative) entitlement.
+      example: 50
+
+    EntitlementSnapshot:
+      type: object
+      description: >
+        The point-in-time snapshot of the plan's effective entitlements baked into the license at
+        issue time (FR-002) — a map of entitlement KEY → value. The keys are the canonical feature
+        keys embedded in the E001 token; catalog edits after issue never change this map (FR-006). An
+        empty object is valid (a plan that grants no gated features).
+      additionalProperties: { $ref: '#/components/schemas/EntitlementValue' }
+      propertyNames:
+        pattern: '^[a-z][a-z0-9_]*$'
+      example: { export_pdf: true, max_projects: 50 }
+
+    SignedLicenseKey:
+      type: string
+      description: >
+        The signed LICENSE KEY — the offline-verifiable PUBLIC token in the E001 `LIC1` format,
+        Ed25519-signed by the product's signing key. This is the string the customer embeds in their
+        software; it is safe to distribute. It is NOT the signing key: the private signing key is
+        never present in any response, log, or audit entry (FR-003, SC-010).
+      example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.Zm9yZ2VkLXNpZ25hdHVyZS1leGFtcGxl"
+
+    # --- Customers ---
+    Customer:
+      type: object
+      description: A tenant-scoped, pseudonymous recipient of licenses; minimal PII (FR-011). Has many licenses.
+      required: [id, ref, status, createdAt]
+      properties:
+        id: { type: string, format: uuid, description: "Server-generated UUID, unique within the tenant (AD-002).", example: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293" }
+        ref:
+          type: string
+          description: >
+            Stable, non-PII pseudonymous reference label, unique within the tenant (NOT the id).
+            Retained when the customer is anonymized (only `name`/`email` are cleared) (FR-019).
+          example: "acme-corp"
+        name:
+          type: [string, "null"]
+          description: Optional display name (minimal PII). Null after anonymization.
+        email:
+          type: [string, "null"]
+          format: email
+          description: Optional contact email (minimal PII). Null after anonymization.
+        status: { $ref: '#/components/schemas/CustomerStatus' }
+        createdAt: { type: string, format: date-time }
+
+    CustomerList:
+      type: object
+      required: [customers]
+      properties:
+        customers:
+          type: array
+          description: The tenant's customers, ordered by `createdAt`. Bounded to a hard cap of 1000 (AD-009).
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/Customer' }
+
+    CreateCustomerRequest:
+      type: object
+      description: Register a customer. `ref` is required and unique per tenant; `name`/`email` are optional minimal PII.
+      additionalProperties: false
+      required: [ref]
+      properties:
+        ref: { type: string, minLength: 1, maxLength: 200, example: "acme-corp" }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email, maxLength: 320 }
+
+    # --- Licenses ---
+    License:
+      type: object
+      description: >
+        A tenant-scoped issued license — the METADATA view returned by list and get-by-id. It carries
+        the identity, lifecycle status, term, and the issue-time SNAPSHOT (entitlements + seat limit),
+        but NOT the signed key (retrieve that via the `/key` endpoint, or receive it from issue/
+        reissue via `IssuedLicense`). References exactly one product, plan, and customer.
+      required: [id, productId, planId, customerId, status, issuedAt, expiresAt, maxActivations, entitlements, keyId, transferCount]
+      properties:
+        id: { type: string, format: uuid, description: "Server-generated UUID, unique within the tenant (AD-002).", example: "e5f60718-3333-4c4d-ae5f-60718293a4b5" }
+        productId:
+          type: string
+          format: uuid
+          description: The owning product's UUID (derived from the plan at issue time; immutable).
+          example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        planId:
+          type: string
+          format: uuid
+          description: The plan the license was issued under (immutable; snapshot source).
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        customerId:
+          type: string
+          format: uuid
+          description: The customer that currently holds the license (changes on transfer, FR-009).
+          example: "b3c1f2a0-1111-4a2b-8c3d-4e5f60718293"
+        status: { $ref: '#/components/schemas/LicenseStatus' }
+        issuedAt: { type: string, format: date-time, description: The issue timestamp (immutable). }
+        expiresAt:
+          type: [string, "null"]
+          format: date-time
+          description: The expiry, or `null` for a PERPETUAL license (FR-001).
+        maxActivations:
+          type: integer
+          minimum: 1
+          description: The SNAPSHOT seat limit — the max machine activations this license may hold (FR-002). E009 enforces it.
+          example: 5
+        entitlements: { $ref: '#/components/schemas/EntitlementSnapshot' }
+        keyId:
+          type: string
+          format: uuid
+          description: >
+            The id of the product SIGNING KEY that signed the current token (E004). Opaque identifier
+            only — never key material. Changes on `reissue` after a rotation.
+          example: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+        transferCount:
+          type: integer
+          minimum: 0
+          description: How many times the license has been transferred to a different customer (FR-009).
+          example: 0
+        licenseKey:
+          allOf: [{ $ref: '#/components/schemas/SignedLicenseKey' }]
+          description: >
+            The signed license key (public token). PRESENT ONLY in the issue (201) and reissue (200)
+            responses (see `IssuedLicense`) and in the `/key` response; OMITTED from list and metadata
+            reads. The private signing key is never returned (SC-010).
+
+    IssuedLicense:
+      description: >
+        A license returned WITH its signed key — the response to issue (`POST /admin/licenses`) and
+        reissue (`POST /admin/licenses/{licenseId}/reissue`). Same as `License` but `licenseKey` is
+        guaranteed present. The signing key is never included.
+      allOf:
+        - $ref: '#/components/schemas/License'
+        - type: object
+          required: [licenseKey]
+          properties:
+            licenseKey: { $ref: '#/components/schemas/SignedLicenseKey' }
+
+    LicenseList:
+      type: object
+      required: [licenses]
+      properties:
+        licenses:
+          type: array
+          description: >
+            The tenant's licenses (metadata only; no signed key), ordered by `issuedAt`. Bounded to a
+            hard cap of 1000 (AD-009).
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/License' }
+
+    LicenseKey:
+      type: object
+      description: The signed license key for one license (the `/key` read model). The signing key is never included.
+      required: [licenseId, keyId, licenseKey]
+      properties:
+        licenseId: { type: string, format: uuid, example: "e5f60718-3333-4c4d-ae5f-60718293a4b5" }
+        keyId:
+          type: string
+          format: uuid
+          description: The id of the signing key that signed this token (opaque identifier, not key material).
+          example: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+        licenseKey: { $ref: '#/components/schemas/SignedLicenseKey' }
+
+    IssueLicenseRequest:
+      type: object
+      description: >
+        Issue a license under a plan for a customer. The product is derived from the plan. `expiresAt`
+        is optional — omit it or send `null` for a perpetual license; otherwise it must be a future
+        instant.
+      additionalProperties: false
+      required: [planId, customerId]
+      properties:
+        planId: { type: string, format: uuid, description: The plan to issue under (must be active). }
+        customerId: { type: string, format: uuid, description: The customer that will hold the license. }
+        expiresAt:
+          type: [string, "null"]
+          format: date-time
+          description: Expiry instant, or `null`/omitted for a PERPETUAL license (FR-001). Must be in the future when set.
+
+    TransferLicenseRequest:
+      type: object
+      description: Transfer the license to another customer within the same tenant (FR-009).
+      additionalProperties: false
+      required: [customerId]
+      properties:
+        customerId: { type: string, format: uuid, description: The target customer (must exist in this tenant). }
+
+  responses:
+    BadRequest:
+      description: Validation error — malformed body, a bad filter/query value, or an `expiresAt` in the past.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invalidBody:
+              value:
+                code: validation_error
+                message: "planId is required and must be a UUID."
+                details: { field: planId }
+            expiryPast:
+              value:
+                code: validation_error
+                message: "expiresAt must be in the future."
+                details: { field: expiresAt, value: "2020-01-01T00:00:00Z" }
+    Unauthorized:
+      description: No valid session — the `admin_session` cookie is missing, expired, or revoked.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noSession:
+              value: { code: unauthenticated, message: "Authentication required." }
+    Forbidden:
+      description: >
+        Authenticated but refused fail-closed: either the session's role is below the operation's
+        `x-rbac.minRole` (a viewer attempting a mutation), or a mutation's `X-CSRF-Token` is missing or
+        mismatched. Both are recorded as an auditable security event (FR-016). Same `403 forbidden`
+        shape as E005/E007.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the admin role."
+                details: { minRole: admin, role: viewer }
+            csrfFailure:
+              value:
+                code: forbidden
+                message: "Missing or invalid CSRF token."
+                details: { reason: csrf }
+    NotFound:
+      description: The referenced license, customer, or plan does not exist within the session's tenant.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownLicense:
+              value:
+                code: not_found
+                message: "No such license in this tenant."
+                details: { licenseId: "00000000-0000-4000-8000-000000000000" }
+            unknownCustomer:
+              value:
+                code: not_found
+                message: "No such customer in this tenant."
+                details: { customerId: "00000000-0000-4000-8000-000000000000" }
+    DuplicateRef:
+      description: A customer with the supplied `ref` already exists in this tenant (FR-011).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            duplicateRef:
+              value:
+                code: duplicate_ref
+                message: "A customer with that ref already exists in this tenant."
+                details: { field: ref, value: "acme-corp" }
+    PlanNotIssuable:
+      description: >
+        The plan cannot be issued under: it is archived, or it references an archived entitlement.
+        Only active catalog entries are issuable (FR-005). No license is created.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            archivedPlan:
+              value:
+                code: plan_not_issuable
+                message: "This plan is archived and cannot be issued under."
+                details: { planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7", reason: archived_plan }
+            archivedEntitlement:
+              value:
+                code: plan_not_issuable
+                message: "This plan references an archived entitlement and cannot be issued under."
+                details: { planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7", reason: archived_entitlement, entitlementKey: "export_pdf" }
+    InvalidTransition:
+      description: >
+        The requested lifecycle transition is not allowed from the license's current status (FR-010):
+        suspend requires `active`; reinstate requires `suspended`; reissue requires a non-`revoked`
+        license. The license is left unchanged.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            notActive:
+              value:
+                code: invalid_transition
+                message: "Only an active license can be suspended."
+                details: { from: suspended, action: suspend }
+            notSuspended:
+              value:
+                code: invalid_transition
+                message: "Only a suspended license can be reinstated."
+                details: { from: active, action: reinstate }
+            revoked:
+              value:
+                code: invalid_transition
+                message: "A revoked license cannot be reissued."
+                details: { from: revoked, action: reissue }
+    SignerUnavailable:
+      description: >
+        The product's signer is unavailable — no active signing key, or the signer is locked (FR-004).
+        Issuance/reissue fails clearly and creates/changes nothing (a tier-0 dependency). The signing
+        key itself is never disclosed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noActiveKey:
+              value:
+                code: signer_unavailable
+                message: "The product has no active signing key; issuance is blocked."
+                details: { productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", reason: no_active_key }
+            signerLocked:
+              value:
+                code: signer_unavailable
+                message: "The signer is locked; try again once it is available."
+                details: { productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", reason: signer_locked }
