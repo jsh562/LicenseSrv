@@ -7,9 +7,10 @@ import { adminApi, type Principal } from "../api";
 import { ApiKeys } from "../pages/ApiKeys";
 import { Audit } from "../pages/Audit";
 import { Catalog } from "../pages/catalog/Catalog";
+import { Licensing } from "../pages/licensing/Licensing";
 import { Users } from "../pages/Users";
 
-type Tab = "users" | "api-keys" | "audit" | "catalog";
+type Tab = "users" | "api-keys" | "audit" | "catalog" | "licensing";
 
 export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () => void }): JSX.Element {
   const [tab, setTab] = useState<Tab>("users");
@@ -38,6 +39,9 @@ export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () =>
           <button type="button" aria-current={tab === "catalog"} onClick={() => setTab("catalog")}>
             Catalog
           </button>
+          <button type="button" aria-current={tab === "licensing"} onClick={() => setTab("licensing")}>
+            Licensing
+          </button>
         </nav>
         <div className="session">
           <span>{who.role}</span>
@@ -51,6 +55,7 @@ export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () =>
         {tab === "api-keys" && <ApiKeys sessionRole={who.role} />}
         {tab === "audit" && <Audit />}
         {tab === "catalog" && <Catalog sessionRole={who.role} />}
+        {tab === "licensing" && <Licensing sessionRole={who.role} />}
       </main>
     </div>
   );

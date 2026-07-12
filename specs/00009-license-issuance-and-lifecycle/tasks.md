@@ -42,7 +42,7 @@ description: "Task list for feature implementation: License Issuance and Lifecyc
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Extend coverage include globs to scope src/server/modules/issuance/** and src/admin-ui/src/pages/licensing/** for the >=80% gate in vitest.config.ts and src/admin-ui/vite.config.ts
+- [X] T001 Extend coverage include globs to scope src/server/modules/issuance/** and src/admin-ui/src/pages/licensing/** for the >=80% gate in vitest.config.ts and src/admin-ui/vite.config.ts
 
 ---
 
@@ -50,14 +50,14 @@ description: "Task list for feature implementation: License Issuance and Lifecyc
 
 **Migration `0007` + the issuance module scaffold + the two sibling seam edits (`app.signer` decorator, effective-read-model id extension) + the claims builder block every delivery story. Complete before any US phase. T006 also adds an id-extension case to `src/server/modules/catalog/__tests__/catalog.integration.test.ts`.**
 
-- [ ] T002 {FR-002,FR-015,FR-019} Create customer + license tables (composite FKs, UNIQUE(tenant_id,ref), status/seat/transfer CHECKs, tenant-leading indexes) in migrations/0007_licensing.sql
-- [ ] T003 {FR-015} Add ENABLE/FORCE RLS + tenant_isolation policy + grants to licensesrv_app on customer+license in migrations/0007_licensing.sql
-- [ ] T004 [P] Issuance module scaffold: IssuanceConfig (transferLimit, default 3) + registerIssuance seam in src/server/modules/issuance/index.ts → exports: registerIssuance, IssuanceConfig
-- [ ] T005 [P] {FR-003} Signer DI seam: app.decorate("signer", module.signer) (like signerReady) in src/server/modules/signing/index.ts → exports: app.signer
-- [ ] T006 [P] {FR-002,FR-006} Extend getEffectivePlanDefinition to return productId+planId in src/server/modules/catalog/effective.ts → exports: EffectivePlanDefinition
-- [ ] T007 [P] {FR-002} Unit: claims builder maps snapshot→Claims (perpetual null exp; entitlements {key:value}; nonce) in src/server/modules/issuance/__tests__/claims.unit.test.ts
-- [ ] T008 {FR-002,FR-003} Claims builder: snapshot→E001 Claims (ids, issuedAt=now, exp, maxActivations, ent map, nonce) in src/server/modules/issuance/claims.ts → exports: buildClaims after:T006
-- [ ] T009 [P] {FR-015} IT: 0007 tables + forced RLS; unset app.current_tenant → 0 rows in src/server/modules/issuance/__tests__/migration.integration.test.ts after:T003
+- [X] T002 {FR-002,FR-015,FR-019} Create customer + license tables (composite FKs, UNIQUE(tenant_id,ref), status/seat/transfer CHECKs, tenant-leading indexes) in migrations/0007_licensing.sql
+- [X] T003 {FR-015} Add ENABLE/FORCE RLS + tenant_isolation policy + grants to licensesrv_app on customer+license in migrations/0007_licensing.sql
+- [X] T004 [P] Issuance module scaffold: IssuanceConfig (transferLimit, default 3) + registerIssuance seam in src/server/modules/issuance/index.ts → exports: registerIssuance, IssuanceConfig
+- [X] T005 [P] {FR-003} Signer DI seam: app.decorate("signer", module.signer) (like signerReady) in src/server/modules/signing/index.ts → exports: app.signer
+- [X] T006 [P] {FR-002,FR-006} Extend getEffectivePlanDefinition to return productId+planId in src/server/modules/catalog/effective.ts → exports: EffectivePlanDefinition
+- [X] T007 [P] {FR-002} Unit: claims builder maps snapshot→Claims (perpetual null exp; entitlements {key:value}; nonce) in src/server/modules/issuance/__tests__/claims.unit.test.ts
+- [X] T008 {FR-002,FR-003} Claims builder: snapshot→E001 Claims (ids, issuedAt=now, exp, maxActivations, ent map, nonce) in src/server/modules/issuance/claims.ts → exports: buildClaims after:T006
+- [X] T009 [P] {FR-015} IT: 0007 tables + forced RLS; unset app.current_tenant → 0 rows in src/server/modules/issuance/__tests__/migration.integration.test.ts after:T003
 
 ---
 
@@ -65,11 +65,11 @@ description: "Task list for feature implementation: License Issuance and Lifecyc
 
 **Independent test**: an admin issues a license under an active plan for a customer and receives a signed LIC1 key that verifies offline against the product's key and embeds the entitlements, seat limit, and expiry; a perpetual (no-expiry) license is supported; an archived plan → 409 and an unavailable signer → 503 with no license created (SC-001/002/003). **The integration suite provisions an E004 product signing key + unlocks custody (reuse the E004 signing test setup).**
 
-- [ ] T010 [P] [US1] {FR-001,FR-002,FR-003} IT: issue→LIC1 verifies offline; perpetual+time-limited; embeds ent/seat/expiry (SC-002) in src/server/modules/issuance/__tests__/issue.integration.test.ts
-- [ ] T011 [P] [US1] {FR-005,FR-006} IT: archived 409 plan_not_issuable; snapshot immutable after catalog edit (SC-003) in src/server/modules/issuance/__tests__/snapshot.integration.test.ts
-- [ ] T012 [P] [US1] {FR-004} IT: signer-unavailable (no active key / locked) → 503, no license created in src/server/modules/issuance/__tests__/signer.integration.test.ts
-- [ ] T013 [US1] {FR-001,FR-002,FR-004,FR-005,FR-006,FR-017} [COMPLETES FR-002,FR-006] Issue service (snapshot+claims+sign; archived 409/signer 503) in src/server/modules/issuance/licenses.ts
-- [ ] T014 [US1] {FR-001,FR-003} [COMPLETES FR-001,FR-003] Register POST /admin/licenses issue route (requireRole admin+CSRF; 201/404/409/503) in src/server/modules/issuance/routes.ts
+- [X] T010 [P] [US1] {FR-001,FR-002,FR-003} IT: issue→LIC1 verifies offline; perpetual+time-limited; embeds ent/seat/expiry (SC-002) in src/server/modules/issuance/__tests__/issue.integration.test.ts
+- [X] T011 [P] [US1] {FR-005,FR-006} IT: archived 409 plan_not_issuable; snapshot immutable after catalog edit (SC-003) in src/server/modules/issuance/__tests__/snapshot.integration.test.ts
+- [X] T012 [P] [US1] {FR-004} IT: signer-unavailable (no active key / locked) → 503, no license created in src/server/modules/issuance/__tests__/signer.integration.test.ts
+- [X] T013 [US1] {FR-001,FR-002,FR-004,FR-005,FR-006,FR-017} [COMPLETES FR-002,FR-006] Issue service (snapshot+claims+sign; archived 409/signer 503) in src/server/modules/issuance/licenses.ts
+- [X] T014 [US1] {FR-001,FR-003} [COMPLETES FR-001,FR-003] Register POST /admin/licenses issue route (requireRole admin+CSRF; 201/404/409/503) in src/server/modules/issuance/routes.ts
 
 ---
 
@@ -77,10 +77,10 @@ description: "Task list for feature implementation: License Issuance and Lifecyc
 
 **Independent test**: an admin revokes an active (or suspended) license → terminal `revoked`; re-revoking is an idempotent 200 no-op; a revoked license refuses reinstate/transfer with a clear 409; every action is audited (SC-004/008).
 
-- [ ] T015 [P] [US2] {FR-010} Unit: lifecycle state machine transitions (valid/invalid/terminal; revoke idempotent) (SC-008) in src/server/modules/issuance/__tests__/lifecycle.unit.test.ts
-- [ ] T016 [P] [US2] {FR-007} IT: revoke active/suspended→revoked; idempotent no-op; revoked reinstate/transfer refused 409 (SC-004) in src/server/modules/issuance/__tests__/revoke.integration.test.ts
-- [ ] T017 [US2] {FR-007,FR-010,FR-014} Lifecycle state machine + revoke service (FOR UPDATE, validate, update+audit; idempotent) in src/server/modules/issuance/lifecycle.ts
-- [ ] T018 [US2] {FR-007} [COMPLETES FR-007] Register POST /admin/licenses/{id}/revoke route (requireRole admin+CSRF; 200 idempotent) in src/server/modules/issuance/routes.ts after:T017
+- [X] T015 [P] [US2] {FR-010} Unit: lifecycle state machine transitions (valid/invalid/terminal; revoke idempotent) (SC-008) in src/server/modules/issuance/__tests__/lifecycle.unit.test.ts
+- [X] T016 [P] [US2] {FR-007} IT: revoke active/suspended→revoked; idempotent no-op; revoked reinstate/transfer refused 409 (SC-004) in src/server/modules/issuance/__tests__/revoke.integration.test.ts
+- [X] T017 [US2] {FR-007,FR-010,FR-014} Lifecycle state machine + revoke service (FOR UPDATE, validate, update+audit; idempotent) in src/server/modules/issuance/lifecycle.ts
+- [X] T018 [US2] {FR-007} [COMPLETES FR-007] Register POST /admin/licenses/{id}/revoke route (requireRole admin+CSRF; 200 idempotent) in src/server/modules/issuance/routes.ts after:T017
 
 ---
 
@@ -88,9 +88,9 @@ description: "Task list for feature implementation: License Issuance and Lifecyc
 
 **Independent test**: an admin suspends an active license (`active→suspended`) and later reinstates it (`suspended→active`); suspending a non-active or reinstating a non-suspended license → 409 invalid_transition, leaving it unchanged; both actions audited (SC-005/008).
 
-- [ ] T019 [P] [US3] {FR-008} IT: suspend active→suspended; reinstate suspended→active; not-active/not-suspended 409 (SC-005/008) in src/server/modules/issuance/__tests__/suspend.integration.test.ts
-- [ ] T020 [US3] {FR-008,FR-010,FR-014} Add suspend + reinstate to lifecycle state machine (active↔suspended; audit) in src/server/modules/issuance/lifecycle.ts after:T017
-- [ ] T021 [US3] {FR-008} [COMPLETES FR-008] Register suspend + reinstate routes (requireRole admin+CSRF; 409 invalid_transition) in src/server/modules/issuance/routes.ts after:T020
+- [X] T019 [P] [US3] {FR-008} IT: suspend active→suspended; reinstate suspended→active; not-active/not-suspended 409 (SC-005/008) in src/server/modules/issuance/__tests__/suspend.integration.test.ts
+- [X] T020 [US3] {FR-008,FR-010,FR-014} Add suspend + reinstate to lifecycle state machine (active↔suspended; audit) in src/server/modules/issuance/lifecycle.ts after:T017
+- [X] T021 [US3] {FR-008} [COMPLETES FR-008] Register suspend + reinstate routes (requireRole admin+CSRF; 409 invalid_transition) in src/server/modules/issuance/routes.ts after:T020
 
 ---
 
@@ -98,10 +98,10 @@ description: "Task list for feature implementation: License Issuance and Lifecyc
 
 **Independent test**: an admin transfers an active/suspended license to another customer within its transfer limit — `customerId` changes, `transferCount` increments, action audited; a transfer at/over the limit → 409 transfer_limit_exceeded; a revoked license → 409 invalid_transition; an unknown target customer → 404 (SC-006).
 
-- [ ] T022 [P] [US4] {FR-009} Unit: transfer-limit logic (count<limit ok; at-limit refused) in src/server/modules/issuance/__tests__/transfer.unit.test.ts
-- [ ] T023 [P] [US4] {FR-009} IT: transfer→new customer + count++; at-limit 409; revoked 409; unknown customer 404 (SC-006) in src/server/modules/issuance/__tests__/transfer.integration.test.ts
-- [ ] T024 [US4] {FR-009,FR-010,FR-014} Add transfer to lifecycle (check transfer_count<transferLimit, reassign customer_id, count++, audit) in src/server/modules/issuance/lifecycle.ts after:T017
-- [ ] T025 [US4] {FR-009,FR-010} [COMPLETES FR-009,FR-010] Register transfer route (requireRole admin+CSRF; 409 limit/invalid; 404) in src/server/modules/issuance/routes.ts after:T024
+- [X] T022 [P] [US4] {FR-009} Unit: transfer-limit logic (count<limit ok; at-limit refused) in src/server/modules/issuance/__tests__/transfer.unit.test.ts
+- [X] T023 [P] [US4] {FR-009} IT: transfer→new customer + count++; at-limit 409; revoked 409; unknown customer 404 (SC-006) in src/server/modules/issuance/__tests__/transfer.integration.test.ts
+- [X] T024 [US4] {FR-009,FR-010,FR-014} Add transfer to lifecycle (check transfer_count<transferLimit, reassign customer_id, count++, audit) in src/server/modules/issuance/lifecycle.ts after:T017
+- [X] T025 [US4] {FR-009,FR-010} [COMPLETES FR-009,FR-010] Register transfer route (requireRole admin+CSRF; 409 limit/invalid; 404) in src/server/modules/issuance/routes.ts after:T024
 
 ---
 
@@ -109,14 +109,14 @@ description: "Task list for feature implementation: License Issuance and Lifecyc
 
 **Independent test**: an admin registers/lists customers (dup ref → 409) and erases one (anonymize-if-licensed else hard-delete, 204, no PII in the audit); browses the registry (status/customer/plan/expiry) with `?status/customerId/planId` filters and retrieves a license's signed key; a viewer can read but a mutation is denied 403 + recorded as a security event; a second tenant sees none of the first tenant's licenses/customers and a cross-tenant id resolves to 404 (SC-007/009/010).
 
-- [ ] T026 [P] [US5] {FR-011,FR-019} IT: register(dup 409)/list/get; erase anonymize-vs-hard-delete (204); no-PII erase audit in src/server/modules/issuance/__tests__/customers.integration.test.ts
-- [ ] T027 [P] [US5] {FR-012,FR-013} IT: registry list(filters)+get+get-key LIC1; key absent from list/meta (SC-007/010) in src/server/modules/issuance/__tests__/registry.integration.test.ts
-- [ ] T028 [P] [US5] {FR-015,FR-016} [COMPLETES FR-015] IT: RLS isolation A≠B (cross-tenant 404); viewer 403+security_event (SC-009) in src/server/modules/issuance/__tests__/isolation.integration.test.ts
-- [ ] T029 [P] [US5] {FR-011,FR-014,FR-019} [COMPLETES FR-019] Customers: register/list/get; erase anonymize-if-licensed else hard-delete; audit no-PII in src/server/modules/issuance/customers.ts
-- [ ] T030 [P] [US5] {FR-012,FR-013} Registry reads: list(filters, cap 1000)/get/get-key; expose status in src/server/modules/issuance/licenses.ts after:T013
-- [ ] T031 [US5] {FR-011} [COMPLETES FR-011] Register customer routes GET/POST /admin/customers + GET/DELETE /{id} (requireRole; CSRF; 409 dup) in src/server/modules/issuance/routes.ts after:T029
-- [ ] T032 [US5] {FR-012} [COMPLETES FR-012] Register registry routes GET /admin/licenses[+filters] + GET /{id} + /{id}/key (requireRole viewer) in src/server/modules/issuance/routes.ts after:T030
-- [ ] T033 [US5] {FR-014,FR-016} [COMPLETES FR-016] Apply requireRole+CSRF to all issuance routes; audited denial → security_event in src/server/modules/issuance/routes.ts after:T032
+- [X] T026 [P] [US5] {FR-011,FR-019} IT: register(dup 409)/list/get; erase anonymize-vs-hard-delete (204); no-PII erase audit in src/server/modules/issuance/__tests__/customers.integration.test.ts
+- [X] T027 [P] [US5] {FR-012,FR-013} IT: registry list(filters)+get+get-key LIC1; key absent from list/meta (SC-007/010) in src/server/modules/issuance/__tests__/registry.integration.test.ts
+- [X] T028 [P] [US5] {FR-015,FR-016} [COMPLETES FR-015] IT: RLS isolation A≠B (cross-tenant 404); viewer 403+security_event (SC-009) in src/server/modules/issuance/__tests__/isolation.integration.test.ts
+- [X] T029 [P] [US5] {FR-011,FR-014,FR-019} [COMPLETES FR-019] Customers: register/list/get; erase anonymize-if-licensed else hard-delete; audit no-PII in src/server/modules/issuance/customers.ts
+- [X] T030 [P] [US5] {FR-012,FR-013} Registry reads: list(filters, cap 1000)/get/get-key; expose status in src/server/modules/issuance/licenses.ts after:T013
+- [X] T031 [US5] {FR-011} [COMPLETES FR-011] Register customer routes GET/POST /admin/customers + GET/DELETE /{id} (requireRole; CSRF; 409 dup) in src/server/modules/issuance/routes.ts after:T029
+- [X] T032 [US5] {FR-012} [COMPLETES FR-012] Register registry routes GET /admin/licenses[+filters] + GET /{id} + /{id}/key (requireRole viewer) in src/server/modules/issuance/routes.ts after:T030
+- [X] T033 [US5] {FR-014,FR-016} [COMPLETES FR-016] Apply requireRole+CSRF to all issuance routes; audited denial → security_event in src/server/modules/issuance/routes.ts after:T032
 
 ---
 
@@ -133,22 +133,22 @@ description: "Task list for feature implementation: License Issuance and Lifecyc
 
 **The licensing views plug into the E005 console shell behind RBAC and surface the already-complete backend FRs (see SPA note in Brownfield Notes — `[US#]` labels mark the story slice; no `{FR}` re-tagging). Each view is component-testable against a mocked `licensingApi`.**
 
-- [ ] T036 Extend admin API client with licensingApi (customers+licenses+lifecycle; camelCase; CSRF echo) in src/admin-ui/src/api.ts → exports: licensingApi
-- [ ] T037 Add a Licensing nav tab to the console shell in src/admin-ui/src/components/Shell.tsx ← T036:licensingApi
-- [ ] T038 [P] [US1] Issue view (issue form; signer-unavailable + validation inline errors; RequireRole) in src/admin-ui/src/pages/licensing/Issue.tsx ← T036:licensingApi
-- [ ] T039 [P] [US5] Licenses view (registry list + filters + key retrieval; RequireRole hides admin actions) in src/admin-ui/src/pages/licensing/Licenses.tsx ← T036:licensingApi
-- [ ] T040 [P] [US5] Customers view (register/list; erase) in src/admin-ui/src/pages/licensing/Customers.tsx ← T036:licensingApi
-- [ ] T041 RTL (mocked licensingApi): issue form, registry+key, customers; RequireRole hides admin; signer/invalid-transition inline errors in src/admin-ui/src/pages/licensing/__tests__/ after:T040
+- [X] T036 Extend admin API client with licensingApi (customers+licenses+lifecycle; camelCase; CSRF echo) in src/admin-ui/src/api.ts → exports: licensingApi
+- [X] T037 Add a Licensing nav tab to the console shell in src/admin-ui/src/components/Shell.tsx ← T036:licensingApi
+- [X] T038 [P] [US1] Issue view (issue form; signer-unavailable + validation inline errors; RequireRole) in src/admin-ui/src/pages/licensing/Issue.tsx ← T036:licensingApi
+- [X] T039 [P] [US5] Licenses view (registry list + filters + key retrieval; RequireRole hides admin actions) in src/admin-ui/src/pages/licensing/Licenses.tsx ← T036:licensingApi
+- [X] T040 [P] [US5] Customers view (register/list; erase) in src/admin-ui/src/pages/licensing/Customers.tsx ← T036:licensingApi
+- [X] T041 RTL (mocked licensingApi): issue form, registry+key, customers; RequireRole hides admin; signer/invalid-transition inline errors in src/admin-ui/src/pages/licensing/__tests__/ after:T040
 
 ---
 
 ## Phase 10: Polish & Cross-Cutting Concerns
 
-- [ ] T042 [P] Register registerIssuance alongside signing/catalog in src/server/modules/index.ts ← T004:registerIssuance
-- [ ] T043 [P] {FR-017} [COMPLETES FR-017] Perf: single issuance (snapshot+sign+conformance+insert) well under 1s (SC-001) in src/server/modules/issuance/__tests__/perf.integration.test.ts
-- [ ] T044 [P] {FR-014} [COMPLETES FR-014] Audit IT: all 7 actions write actor/action/target; no signing-key/PII (SC-010) in src/server/modules/issuance/__tests__/audit.integration.test.ts
-- [ ] T045 Enforce >=80% line+branch coverage of issuance module + SPA licensing views in vitest.config.ts + src/admin-ui/vite.config.ts after:T041
-- [ ] T046 [P] Add licensing CI workflow (typecheck+lint, Testcontainers IT+coverage, SPA tests, npm audit --omit=dev --audit-level=high, semgrep) in .github/workflows/licensing.yml
+- [X] T042 [P] Register registerIssuance alongside signing/catalog in src/server/modules/index.ts ← T004:registerIssuance
+- [X] T043 [P] {FR-017} [COMPLETES FR-017] Perf: single issuance (snapshot+sign+conformance+insert) well under 1s (SC-001) in src/server/modules/issuance/__tests__/perf.integration.test.ts
+- [X] T044 [P] {FR-014} [COMPLETES FR-014] Audit IT: all 7 actions write actor/action/target; no signing-key/PII (SC-010) in src/server/modules/issuance/__tests__/audit.integration.test.ts
+- [X] T045 Enforce >=80% line+branch coverage of issuance module + SPA licensing views in vitest.config.ts + src/admin-ui/vite.config.ts after:T041
+- [X] T046 [P] Add licensing CI workflow (typecheck+lint, Testcontainers IT+coverage, SPA tests, npm audit --omit=dev --audit-level=high, semgrep) in .github/workflows/licensing.yml
 
 ---
 
@@ -167,3 +167,9 @@ Setup (Phase 1) → Foundational (Phase 2) → US1 (Phase 3) → US2 (Phase 4) �
 - **Polish (Phase 10)** depends on all P1 stories being complete: module registration at the seam (T042, ← T004), the performance assertion (T043, FR-017), audit-coverage (T044, FR-014), the coverage gate (T045, after:T041), and CI (T046).
 - Tasks marked `[P]` can run in parallel within their phase (distinct files, no intra-batch dependency).
 - A task with `after:T###` or `← T###:Symbol` is never `[P]`-batched with the task it references.
+
+## Delivery Notes
+
+- **Test consolidation**: the per-story integration files named in T009–T044 (`issue/snapshot/signer/revoke/suspend/transfer/customers/registry/isolation/migration/perf/audit .integration.test.ts` and the `lifecycle`/`transfer` unit files) are delivered as two suites — `src/server/modules/issuance/__tests__/claims.unit.test.ts` (pure claims/entitlement mapping) and `.../issuance.integration.test.ts` (all US1–US5 acceptance scenarios + migration RLS isolation, perf, and no-PII audit). Every scenario is present and the >=80% line+branch coverage gate passes; the file names differ from the task text only.
+- **QC remediations (P1 gate)**: FR-005 archived-*entitlement* is enforced at the issuance layer (409 `plan_not_issuable`) — the effective read model now reports `archivedEntitlementKeys` so issuance fails closed rather than silently dropping the entitlement; issuing to an erased/anonymized customer is refused (409 `customer_anonymized`, FR-019); a concurrent plan/customer removal between the pre-checks and the insert maps the FK violation to a clean 404. Each has an added integration test.
+- **US6 (T034/T035)** remains `[DEFERRED]` (P2, non-blocking for the MVP gate).

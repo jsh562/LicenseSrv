@@ -1,0 +1,77 @@
+name: licensing
+
+# CI for license issuance & lifecycle (E008): the server issuance module (which consumes the E004 signer
+# and the E007 effective read model) plus the React SPA licensing views. Gates: typecheck + lint, the
+# real-Postgres integration suite (Testcontainers) with the >=80% coverage gate, the SPA component suite +
+# coverage, a production-scope dependency audit, and a semgrep scan over the issuance + console + SPA sources.
+
+on:
+  push:
+    paths:
+      - "src/server/modules/issuance/**"
+      - "src/server/modules/signing/index.ts"
+      - "src/server/modules/catalog/effective.ts"
+      - "src/server/console/**"
+      - "src/admin-ui/src/pages/licensing/**"
+      - "migrations/0007_licensing.sql"
+      - ".github/workflows/licensing.yml"
+  pull_request:
+    paths:
+      - "src/server/modules/issuance/**"
+      - "src/server/modules/signing/index.ts"
+      - "src/server/modules/catalog/effective.ts"
+      - "src/server/console/**"
+      - "src/admin-ui/src/pages/licensing/**"
+      - "migrations/0007_licensing.sql"
+      - ".github/workflows/licensing.yml"
+
+jobs:
+  server:
+    name: server (issuance module + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker → Testcontainers spins up Postgres 16 for the issuance integration suite.
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  spa:
+    name: spa (licensing views)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/admin-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/admin-ui/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Component tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: SPA production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  semgrep:
+    name: semgrep (issuance + console + SPA)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/issuance src/server/console src/admin-ui/src/pages/licensing

@@ -1,0 +1,13 @@
+E008 — License Issuance & Lifecycle: QC PASSED (P1 MVP).
+
+Verified independently by the QC Auditor (gates) and Story Verifier (US/SC traceability).
+All runnable gates green; 1 MEDIUM + 2 LOW correctness findings fixed inline before this pass.
+
+- Server suite: 131 passed / 3 skipped (real Postgres via Testcontainers). Coverage 92.66% lines /
+  81.70% branches / 95.38% funcs (>=80% line+branch gate PASS).
+- SPA suite: 46 passed. Coverage 95.49% lines / 86.37% branches (>=80% gate PASS).
+- typecheck (server + SPA): PASS. ESLint (incl. module-boundary): PASS. npm audit (server + SPA prod): 0 vulns.
+- PI: signing key never exposed; forced-RLS tenant isolation; append-only audit no-PII; raw-SQL migration 0007.
+- Stories US1–US5 (P1): PASS. SC-001..011: PASS. US6 reissue (T034/T035): DEFERRED (P2, non-blocking).
+
+See qc-report.md for details.

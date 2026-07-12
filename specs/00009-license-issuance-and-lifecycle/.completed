@@ -1,0 +1,20 @@
+E008 — License Issuance & Lifecycle: implementation complete (P1 MVP).
+
+Delivered (all P1 user stories, independently tested):
+- US1 Issue a signed license: snapshot the E007 effective plan definition → build E001 claims → sign via
+  the E004 signer (app.signer decorator seam) → mint + store a LIC1 token. Fail-closed: archived plan 409,
+  signer-unavailable 503 with NO license created. Verified offline against the product key via the Rust core.
+- US2 Revoke (terminal, idempotent). US3 Suspend/Reinstate (active↔suspended, 409 invalid transition).
+  US4 Transfer to another customer (bounded by LICENSE_TRANSFER_LIMIT, default 3; 409 at the limit).
+- US5 Registry + Customers + Key retrieval: bounded list/get with status/customer/plan filters; pseudonymous
+  customer registry (dup ref 409); GDPR erasure (anonymize-if-licensed else hard-delete, FR-019); signed-key
+  retrieval; RBAC (viewer reads, admin mutates) with audited 403 security events; tenant isolation (forced RLS).
+- Frontend: Licensing console views (Issue / Licenses / Customers) behind RBAC, wired to licensingApi.
+- Cross-cutting: migration 0007 (customer + license, composite FKs, forced RLS + grants); audit of all 7
+  actions with no PII / no signing key; single-issuance perf < 1s; licensing CI workflow.
+
+Validation: server suite 128 passed / 3 skipped, coverage 92.8% lines / 81.6% branches / 95.4% funcs.
+SPA suite 46 passed, coverage 95.5% lines / 86.4% branches. typecheck + lint clean.
+
+Deferred (P2, non-blocking for the MVP gate; the E004 overlapping keyring keeps old tokens verifying):
+- US6 Reissue after key rotation — tasks T034/T035 [DEFERRED].

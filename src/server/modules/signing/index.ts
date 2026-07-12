@@ -11,10 +11,13 @@ import { KeystoreSigner } from "./keystore-signer.js";
 import { registerSigningRoutes } from "./routes.js";
 import type { Signer } from "./signer.js";
 
-// Aggregate health readiness (E006) composes the signer's readiness via this app decorator.
+// Aggregate health readiness (E006) composes the signer's readiness via this app decorator; license
+// issuance (E008) + air-gap (E010) consume the published Signer via the `signer` decorator (the single
+// key-using surface — the private key never crosses the module boundary).
 declare module "fastify" {
   interface FastifyInstance {
     signerReady?: () => boolean;
+    signer?: Signer;
   }
 }
 
@@ -105,6 +108,10 @@ export function registerSigning(app: FastifyInstance, deps: AppDeps): void {
   if (config.custodianShares.length >= 2) {
     app.decorate("signerReady", () => module.ready());
   }
+
+  // Publish the signer for issuance (E008) + air-gap (E010) — the single key-using surface (project-plan
+  // Shared Artifact Surface). Consumers call app.signer.sign(tenantId, claims); the private key never leaks.
+  app.decorate("signer", module.signer);
 
   registerSigningRoutes(app, deps.pool, module);
 }

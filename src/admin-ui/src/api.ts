@@ -220,3 +220,74 @@ export const catalogApi = {
 };
 
 export type CatalogApi = typeof catalogApi;
+
+// --- Licensing (E008) -----------------------------------------------------------------------------
+
+export type LicenseStatus = "active" | "suspended" | "revoked";
+export type CustomerStatus = "active" | "anonymized";
+
+export interface Customer {
+  id: string;
+  ref: string;
+  name: string | null;
+  email: string | null;
+  status: CustomerStatus;
+  createdAt: string;
+}
+export interface License {
+  id: string;
+  productId: string;
+  planId: string;
+  customerId: string;
+  status: LicenseStatus;
+  issuedAt: string;
+  expiresAt: string | null;
+  maxActivations: number;
+  entitlements: Record<string, boolean | number>;
+  keyId: string | null;
+  transferCount: number;
+}
+export interface IssuedLicense extends License {
+  /** The signed LIC1 token — returned only on issue + the /key read; never the signing key. */
+  licenseKey: string;
+}
+export interface LicenseFilters {
+  status?: LicenseStatus;
+  customerId?: string;
+  planId?: string;
+}
+
+function licenseQs(f: LicenseFilters): string {
+  const p = new URLSearchParams();
+  if (f.status) p.set("status", f.status);
+  if (f.customerId) p.set("customerId", f.customerId);
+  if (f.planId) p.set("planId", f.planId);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/** The licensing API surface (mirrors src/server/modules/issuance/routes.ts). */
+export const licensingApi = {
+  listCustomers: () =>
+    request<{ customers: Customer[] }>("GET", "/admin/customers").then((r) => r.customers),
+  createCustomer: (input: { ref: string; name?: string; email?: string }) =>
+    request<Customer>("POST", "/admin/customers", input),
+  getCustomer: (id: string) => request<Customer>("GET", `/admin/customers/${id}`),
+  eraseCustomer: (id: string) => request<void>("DELETE", `/admin/customers/${id}`),
+
+  issueLicense: (input: { planId: string; customerId: string; expiresAt?: string | null }) =>
+    request<IssuedLicense>("POST", "/admin/licenses", input),
+  listLicenses: (filters: LicenseFilters = {}) =>
+    request<{ licenses: License[] }>("GET", `/admin/licenses${licenseQs(filters)}`).then((r) => r.licenses),
+  getLicense: (id: string) => request<License>("GET", `/admin/licenses/${id}`),
+  getLicenseKey: (id: string) =>
+    request<{ licenseKey: string }>("GET", `/admin/licenses/${id}/key`).then((r) => r.licenseKey),
+
+  revokeLicense: (id: string) => request<License>("POST", `/admin/licenses/${id}/revoke`),
+  suspendLicense: (id: string) => request<License>("POST", `/admin/licenses/${id}/suspend`),
+  reinstateLicense: (id: string) => request<License>("POST", `/admin/licenses/${id}/reinstate`),
+  transferLicense: (id: string, customerId: string) =>
+    request<License>("POST", `/admin/licenses/${id}/transfer`, { customerId }),
+};
+
+export type LicensingApi = typeof licensingApi;
