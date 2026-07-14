@@ -1,0 +1,881 @@
+openapi: 3.1.0
+info:
+  title: Machine Activation & Seat Enforcement API
+  version: 0.1.0
+  description: >
+    REST surface for epic E009 (Machine Activation and Seat Enforcement). A licensed application
+    activates a machine against an active license (E008), binding a drift-tolerant fingerprint and
+    receiving an offline-verifiable, machine-bound credential; seats are enforced race-safely against
+    the license's snapshotted `maxActivations` limit; and operators browse / reclaim seats from the
+    console. Covers FR-001..024 and SC-001..020.
+
+
+    TWO AUTH PLANES (this contract deliberately spans both surfaces of the platform; each operation
+    declares exactly one).
+
+      * RUNTIME plane — mounted under `/v1/...`, called by the LICENSED APPLICATION (a machine/
+        integration). Authenticated by the tenant/machine API key in the `X-API-Key` header, resolved
+        to a tenant + capability scopes (see src/server/auth/apikey.ts + app.ts). These operations
+        REQUIRE the `activate` scope and fail CLOSED: no resolvable tenant context → `401 unauthorized`;
+        a resolvable key that lacks the `activate` scope → `403 forbidden` (FR-002). There is no CSRF on
+        this plane — it is header-credential, not cookie, auth. Both runtime activation routes (activate
+        and deactivate) are rate-limited to deter seat exhaustion and fingerprint enumeration, keyed per
+        API key + per license (default 60 req/min); an over-limit request is refused `429 rate_limited`
+        with a `Retry-After` header and the limit-exceeded event is audited (FR-013/FR-020).
+
+      * ADMIN plane — mounted under `/admin/...`, called by a HUMAN operator/admin in the console.
+        Authenticated by the opaque `admin_session` cookie (E005) established by `POST /admin/auth/login`
+        (defined in the E005 contract), NOT by `X-API-Key`. RBAC is `owner > admin > viewer`: READ (GET)
+        requires `viewer` or higher; the operator DEACTIVATE (POST) requires `admin` or higher (FR-012).
+        Every state-changing admin call additionally carries a double-submit `X-CSRF-Token` header that
+        MUST equal the non-HttpOnly CSRF cookie issued at login; a missing/mismatched token is refused
+        fail-closed with `403 forbidden`. GET operations do not require it. (Mirrors the E008 console
+        surface `licensing-api.openapi.yaml`.)
+
+
+    TENANT SCOPING (FR-015, fail-closed). Every activation is implicitly scoped to the caller's tenant
+    (the API key's tenant on the runtime plane, the session's tenant on the admin plane). There is no
+    tenant path/query parameter and it can never be widened by the caller. A cross-tenant `licenseId`
+    or `activationId` resolves to `404` (never `403`), so an out-of-tenant id is indistinguishable from
+    a non-existent one (SC-012).
+
+
+    SECRECY & PII INVARIANTS (FR-006, SC-011; project-instructions non-negotiables I & III).
+
+      * The server NEVER receives, stores, logs, or returns a RAW hardware identifier. The client
+        computes salted per-signal HASHES locally and submits only those; the persisted/returned
+        machine identity (`machineId`) is a pseudonymous salted hash derived from the fingerprint.
+      * The product SIGNING KEY is never exposed in any body, header, example, log, or audit entry.
+      * The `machineBoundKey` — the re-signed, offline-verifiable LIC1 credential — is returned ONLY by
+        the activation operation (`POST /v1/activations`, on both the 201 fresh and 200 idempotent-replay
+        responses). It is NEVER present in the admin activation registry or anywhere else. The raw signal
+        hashes are likewise never returned by any read.
+
+
+    OFFLINE VERIFICATION (FR-007, SC-001). The `machineBoundKey` is an E001 `LIC1` token, Ed25519-signed
+    by the product's signing key (reusing the E004 signer), that verifies FULLY OFFLINE (zero network)
+    via the E001 verifier core and only on the bound machine within the fingerprint tolerance. This epic
+    does not add any online re-check (that is E013).
+
+
+    FINGERPRINT & DRIFT (FR-005, FR-016; US3). A machine is bound by N salted signal hashes with a
+    server-configured K-of-N tolerance (default 3-of-5) and a bounded clock-skew window — server defaults,
+    not per-request client choices. A returning machine whose signals match an existing active activation
+    by at least K of N is treated as the SAME activation: its seat is re-used and its credential refreshed,
+    consuming no new seat (idempotent re-activation). A machine sharing fewer than K signals is a NEW
+    machine. A request carrying fewer than the minimum signals needed to form a reliable binding is refused
+    `400 insufficient_signals`.
+
+
+    SEAT ENFORCEMENT (FR-003/004; US1). Active activations per license never exceed the license's
+    snapshotted `maxActivations` seat limit, even under concurrent attempts — for S free seats, exactly S
+    of any number of concurrent activations succeed (SC-002). An activation beyond the limit is refused
+    `409 seat_limit_reached` with `{ seatLimit, seatsUsed }` and records NO partial activation.
+
+
+    ANTI-REPLAY NONCE (FR-009, SC-010). Each activation request carries a single-use `nonce`. A retry
+    carrying the SAME nonce for the same (license, machine) returns the ORIGINAL activation result with
+    `200` (no second seat consumed). A nonce replayed to forge a DIFFERENT activation is rejected
+    `409 nonce_replayed`. No replayed request ever creates a second activation or seat.
+
+
+    AUDIT (FR-014). Every activation, deactivation, and denied/limit-exceeded attempt is written to the
+    append-only audit log with actor, action, and target — never a raw hardware identifier or secret.
+
+
+    IDENTIFIERS. Every `activationId` and `licenseId` is a server-generated UUID unique within the tenant
+    (`format: uuid`). `machineId` is a pseudonymous salted-hash string, not a UUID and not a raw identifier.
+
+
+    LIST BOUNDING. The admin registry returns the license's activations bounded to a hard cap of 1000
+    items; there is no offset/cursor pagination (mirrors E008 AD-009).
+
+
+    ERROR MODEL. Project-standard structured JSON `{ code, message, details? }` with a stable, enumerated
+    snake_case `code`. Every refusal reason has a DISTINCT, testable code. Field naming is camelCase
+    throughout, matching the E005/E007/E008 surfaces.
+
+
+    VERSIONING. The RUNTIME plane is API-versioned under the `/v1` prefix; the ADMIN/console plane is
+    deliberately UNVERSIONED (`/admin/...`) by the established platform convention (the same `/v1` + `/admin`
+    split as the E004 signing surface). The admin surface is a same-origin, session-bound console shipped
+    together with its SPA, so it evolves in lockstep and needs no URL version. A BREAKING change to the
+    runtime plane is introduced under a NEW version prefix (`/v2`), with `/v1` retained until deprecation;
+    admin-plane changes remain backward-compatible within the shipped console release.
+
+
+    MEDIA TYPE. Every request body and every response body is `application/json` (UTF-8) on every operation;
+    there is no content negotiation and no alternate representation — a request that is not JSON is rejected
+    `400 validation_error`.
+
+
+    STATUS PRECEDENCE. When more than one failure could apply, evaluation is strictly ordered:
+    (1) AUTHENTICATION first — an unresolvable credential is `401 unauthorized` (the tenant cannot be
+    resolved, so tenant scoping is never reached); (2) AUTHORIZATION next — a resolved caller lacking the
+    `activate` scope / required RBAC role, or failing CSRF, is `403 forbidden`; (3) RESOURCE RESOLUTION last —
+    a tenant-scoped lookup that misses (unknown or cross-tenant id) is `404`. So 401 precedes 403 precedes
+    404: an unauthenticated caller referencing a cross-tenant id receives `401`, never `404`.
+
+
+    CREDENTIAL NAMING. The single public machine-bound credential appears under three spellings that denote
+    the SAME artifact: the API field `machineBoundKey` (camelCase), the DB column `machine_bound_token`
+    (snake_case; data-model §2), and the prose term "machine-bound credential". This is the platform's
+    API-vs-DB naming convention (camelCase bodies, snake_case columns) — an intentional mapping, not a rename.
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: activation
+    description: >
+      RUNTIME machine activation/deactivation called by the licensed application. API-key auth
+      (`X-API-Key`) with the `activate` scope; no CSRF; rate-limited (FR-001/002/007/009/010/013).
+  - name: activation-registry
+    description: >
+      ADMIN console registry + operator seat reclaim. Human `admin_session` cookie + RBAC
+      (viewer reads, admin deactivates) with CSRF on mutation (FR-010/012).
+
+paths:
+  # --- RUNTIME plane (API key, `activate` scope) --------------------------------------------------
+  /v1/activations:
+    post:
+      tags: [activation]
+      operationId: activateMachine
+      summary: Activate a machine (bind fingerprint, consume a seat, return the machine-bound credential)
+      description: >
+        Activate a machine against an ACTIVE license and return an offline-verifiable, machine-bound
+        credential (FR-001/007; US1). The license is referenced by EITHER its signed `licenseKey`
+        (the E001 `LIC1` issued token) OR its `licenseId` (UUID) — exactly one. The client submits a
+        `fingerprint` of N salted signal hashes (computed locally; raw identifiers never leave the
+        machine, FR-006), a single-use `nonce` (FR-009), and an optional pseudonymous `label`.
+
+
+        Success paths:
+
+          * `201 Created` — a NEW machine is bound: one seat is consumed and the response carries the
+            activation metadata plus the `machineBoundKey` (the re-signed `LIC1` credential that
+            verifies offline only on this machine, FR-007).
+          * `200 OK` — IDEMPOTENT re-use, returning the ORIGINAL activation (no new seat consumed):
+            either the returning machine matched an existing active activation by at least K of N
+            signals (drift tolerance, FR-005/US3), or the request replayed the SAME `nonce` for the
+            same (license, machine) (FR-009). The `machineBoundKey` is refreshed/returned again.
+
+
+        Refusals (no seat consumed, no partial activation recorded):
+
+          * `409 seat_limit_reached` — the license is at its `maxActivations` seat limit; details carry
+            `{ seatLimit, seatsUsed }` (FR-003/004, SC-002/003).
+          * `409 nonce_replayed` — the `nonce` was replayed to forge a DIFFERENT activation (FR-009,
+            SC-010).
+          * `409 license_not_active` — the license is suspended, revoked, or expired (FR-008, SC-004).
+          * `404 license_not_found` — no such license resolves within this tenant (a cross-tenant
+            reference also resolves here, FR-015).
+          * `400 insufficient_signals` — fewer than the minimum signals needed to form a reliable
+            binding (FR-016).
+          * `503 signer_unavailable` — the machine-bound credential could not be signed (an E004 signer
+            fault); the transaction rolls back FAIL-CLOSED and NO seat is consumed (Plan §Error Handling).
+
+
+        Requires the `activate` scope; a key lacking it is refused `403 forbidden` (FR-002). The
+        surface is rate-limited (FR-013) and every attempt (grant or denial) is audited (FR-014).
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: activate }
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ActivateRequest' }
+            examples:
+              byLicenseKey:
+                summary: Activate by signed license key (LIC1 token)
+                value:
+                  licenseKey: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.aXNzdWVkLXRva2VuLWV4YW1wbGU"
+                  fingerprint:
+                    signals:
+                      - "9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+                      - "2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw"
+                      - "Lp3Qz7Yw1Rk9Vn0Ma8Bc4Hd2Js6Uu5Ei1oGz4fRB2yNw"
+                      - "Qm5Rz9Yx2Sk0Wp1Nb7Cc3Hd4Kt8Vv6Fj2pHa5gSC3zOx"
+                      - "Rn6Sa0Zy3Tl1Xq2Oc8Dd4Ie5Lu9Ww7Gk3qIb6hTD4aPy"
+                  nonce: "b1946ac92492d2347c6235b4d2611184"
+                  label: "Design workstation 12"
+              byLicenseId:
+                summary: Activate by license id (UUID)
+                value:
+                  licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                  fingerprint:
+                    signals:
+                      - "9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+                      - "2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw"
+                      - "Lp3Qz7Yw1Rk9Vn0Ma8Bc4Hd2Js6Uu5Ei1oGz4fRB2yNw"
+                  nonce: "c2a57bd03583e3458d7346c5e3722295"
+      responses:
+        '201':
+          description: >
+            A new machine was bound — one seat consumed. Body includes the activation metadata and the
+            `machineBoundKey` (offline-verifiable LIC1 credential). The signing key is never returned.
+          headers:
+            Location:
+              required: true
+              description: >
+                Canonical path of the CREATED activation (`/v1/activations/{activationId}`). REQUIRED on
+                the `201` fresh-bind response; deliberately ABSENT on the `200` idempotent re-use response,
+                which returns an already-existing activation rather than creating one.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActivationResult' }
+              examples:
+                bound:
+                  value:
+                    id: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+                    licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    machineId: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+                    status: active
+                    activatedAt: "2026-07-13T09:15:00Z"
+                    seatLimit: 5
+                    seatsUsed: 3
+                    label: "Design workstation 12"
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    machineBoundKey: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImZwayI6M30.bWFjaGluZS1ib3VuZC1zaWduYXR1cmU"
+        '200':
+          description: >
+            Idempotent re-use — the ORIGINAL activation is returned with no new seat consumed: a
+            K-of-N drift match refreshed an existing machine (FR-005), or the same `nonce` was replayed
+            for the same (license, machine) (FR-009). Body carries the refreshed `machineBoundKey`.
+            On a K-of-N drift re-match the returned identity — `id`, `machineId`, and `activatedAt` — is
+            the ORIGINALLY-bound activation's (the stored `machine_id`), NOT the drifted request's; only
+            `machineBoundKey` is freshly re-signed and `seatsUsed` reflects the current active count.
+            No `Location` header is returned here (the activation already exists; it is not newly created).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActivationResult' }
+              examples:
+                reused:
+                  summary: Returning machine re-used its existing seat
+                  value:
+                    id: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+                    licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    machineId: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+                    status: active
+                    activatedAt: "2026-07-13T09:15:00Z"
+                    seatLimit: 5
+                    seatsUsed: 3
+                    label: "Design workstation 12"
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    machineBoundKey: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImZwayI6M30.cmVmcmVzaGVkLXNpZ25hdHVyZQ"
+        '400':
+          description: >
+            Either the request body is malformed (`validation_error`) or the fingerprint carries fewer
+            than the minimum signals needed to form a reliable binding (`insufficient_signals`, FR-016).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                malformedBody:
+                  value:
+                    code: validation_error
+                    message: "Exactly one of licenseKey or licenseId is required."
+                    details: { field: licenseId }
+                insufficientSignals:
+                  value:
+                    code: insufficient_signals
+                    message: "Too few fingerprint signals to form a reliable machine binding."
+                    details: { signalsProvided: 1, signalsRequired: 3 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '404': { $ref: '#/components/responses/LicenseNotFound' }
+        '409':
+          description: >
+            The activation is refused and NO seat is consumed: the seat limit is reached
+            (`seat_limit_reached`), the `nonce` was replayed to forge a different activation
+            (`nonce_replayed`), or the license is not active (`license_not_active`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                seatLimitReached:
+                  value:
+                    code: seat_limit_reached
+                    message: "This license has reached its activation seat limit."
+                    details: { seatLimit: 5, seatsUsed: 5 }
+                nonceReplayed:
+                  value:
+                    code: nonce_replayed
+                    message: "This activation nonce has already been used for a different activation."
+                    details: { reason: replayed_nonce }
+                licenseNotActive:
+                  value:
+                    code: license_not_active
+                    message: "The license is not active and cannot be activated."
+                    details: { status: suspended }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/SignerUnavailable' }
+
+  /v1/activations/{activationId}:
+    parameters:
+      - $ref: '#/components/parameters/ActivationId'
+    delete:
+      tags: [activation]
+      operationId: deactivateMachine
+      summary: Deactivate this machine's own activation (free the seat)
+      description: >
+        The licensed application deactivates ITS OWN machine, freeing the seat for immediate re-use
+        (FR-010; US2). IDEMPOTENT: returns `204` whether the activation was active or already
+        deactivated, and never drives the active-seat count below zero (FR-011). A `404` is returned
+        ONLY when the `activationId` is unknown within the caller's tenant (a cross-tenant id also
+        resolves here, FR-015). Requires the `activate` scope (FR-002); audited (FR-014). No CSRF —
+        this is API-key, not cookie, auth.
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: activate }
+      x-priority: P1
+      responses:
+        '204':
+          description: >
+            The seat is free — the activation is deactivated, or was already deactivated (idempotent
+            no-op). No body either way.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '404': { $ref: '#/components/responses/ActivationNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  # --- ADMIN plane (console session + RBAC + CSRF) ------------------------------------------------
+  /admin/licenses/{licenseId}/activations:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    get:
+      tags: [activation-registry]
+      operationId: listLicenseActivations
+      summary: Browse a license's activation registry (tenant-scoped)
+      description: >
+        List a license's activations for operators/admins (FR-012; US4): each entry shows the
+        PSEUDONYMOUS `machineId`, `status`, `activatedAt`, `deactivatedAt`, and optional `label`, plus
+        a `seatsUsed`-vs-`seatLimit` summary. The machine-bound credential and the raw signal hashes
+        are NEVER returned here (SC-011) — only `POST /v1/activations` returns a credential. Bounded to
+        a hard cap of 1000 items; not paginated. Tenant-scoped: an unknown or cross-tenant license →
+        `404 not_found` (FR-015, SC-012). READ: `viewer` or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: viewer }
+      x-priority: P1
+      responses:
+        '200':
+          description: The license's activations (pseudonymous; no credential or raw signals) plus seat usage.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActivationRegistry' }
+              examples:
+                mixed:
+                  value:
+                    seatsUsed: 1
+                    seatLimit: 5
+                    activations:
+                      - id: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+                        machineId: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+                        status: active
+                        activatedAt: "2026-07-13T09:15:00Z"
+                        deactivatedAt: null
+                        label: "Design workstation 12"
+                      - id: "b8e2d3c4-1a2b-4d8e-9f2a-1b2c3d4e5f60"
+                        machineId: "Ql8Wo1PqK9rMuS6aXb3lGr5Ic0VtZ2dYnF4hQeA1wL"
+                        status: deactivated
+                        activatedAt: "2026-06-01T12:00:00Z"
+                        deactivatedAt: "2026-07-10T08:30:00Z"
+                        label: null
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/licenses/{licenseId}/activations/{activationId}/deactivate:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+      - $ref: '#/components/parameters/ActivationId'
+    post:
+      tags: [activation-registry]
+      operationId: deactivateLicenseActivation
+      summary: Operator/admin reclaim a machine's seat
+      description: >
+        An operator/admin reclaims a specific machine's seat from the console, deactivating the
+        activation and freeing the seat for immediate re-use (FR-010; US2). IDEMPOTENT: returns `200`
+        whether the activation was active or already deactivated, and never drives the seat count below
+        zero (FR-011). An unknown or cross-tenant `licenseId`/`activationId` → `404 not_found`
+        (FR-015). RBAC: `admin` or higher (a viewer attempt is refused `403 forbidden` and recorded as
+        a security event, SC-009); the mutation carries the double-submit `X-CSRF-Token`. Audited
+        (FR-014). STATUS DIVERGENCE (by plane convention): the runtime `DELETE /v1/activations/{activationId}`
+        returns `204` with no body (a RESTful resource deactivation), whereas this console action returns
+        `200` with a `DeactivationResult` so the operator UI can render the resulting status; both are
+        idempotent and identical in effect.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P1
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: The seat is reclaimed — the activation is deactivated (or was already). Idempotent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeactivationResult' }
+              examples:
+                reclaimed:
+                  value:
+                    id: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+                    status: deactivated
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        RUNTIME plane credential (NOT the human `admin_session` cookie). The tenant/machine API key
+        resolved by the server (src/server/auth/apikey.ts + app.ts) to a tenant + capability scopes.
+        The `/v1` activation operations REQUIRE the `activate` scope and fail closed — no resolvable
+        tenant context → `401 unauthorized`; a key lacking `activate` → `403 forbidden` (FR-002).
+        OpenAPI cannot express the scope in the security requirement for an `apiKey` scheme, so the
+        required scope is declared per operation via `x-rbac.requiredScope` and enforced server-side.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        ADMIN plane credential (NOT the machine `X-API-Key`). The opaque `admin_session` cookie
+        established by the E005 `POST /admin/auth/login`, set `HttpOnly` + `Secure` +
+        `SameSite=Strict`, scoped to `Path=/admin`, with a bounded `Max-Age`. Server-side revocable;
+        never a JWT and never returned in any body. RBAC (`owner > admin > viewer`) is enforced via
+        each admin operation's `x-rbac.minRole`.
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: >
+        Double-submit CSRF token, REQUIRED on every state-changing `/admin` request (the operator
+        deactivate here). MUST equal the value of the non-HttpOnly CSRF cookie issued alongside the
+        session; a missing or mismatched token is refused fail-closed with `403 forbidden` and the
+        mutation is not applied. GET (read) operations do not require it. Not used on the `/v1` runtime
+        plane, which is header-credential (not cookie) auth.
+      schema: { type: string }
+    LicenseId:
+      name: licenseId
+      in: path
+      required: true
+      description: A license identifier (UUID) within the caller's tenant.
+      schema: { type: string, format: uuid }
+      example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+    ActivationId:
+      name: activationId
+      in: path
+      required: true
+      description: An activation identifier (UUID) within the caller's tenant.
+      schema: { type: string, format: uuid }
+      example: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }`. `code` is a stable,
+        enumerated snake_case machine-readable value; `message` is human-readable; `details` is
+        optional structured context whose shape depends on `code`. No field ever carries a raw
+        hardware identifier, signing-key material, a signed token, or a nonce; and no field discloses
+        another tenant's existence — cross-tenant access resolves to `404` (never `403`).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error code (snake_case). Enumerated; new codes require a contract
+            change. Each refusal reason is a DISTINCT, testable code.
+          enum:
+            - validation_error      # 400 — malformed body / bad path or query value
+            - insufficient_signals  # 400 — fewer than the minimum fingerprint signals (FR-016)
+            - unauthorized          # 401 — no resolvable auth (missing/invalid API key or session)
+            - forbidden             # 403 — missing `activate` scope, RBAC deny, or CSRF failure (fail-closed)
+            - not_found             # 404 — unknown license/activation within the tenant (admin plane + runtime deactivate; cross-tenant resolves here)
+            - license_not_found     # 404 — the referenced license does not resolve in this tenant (activate)
+            - seat_limit_reached    # 409 — the license is at its maxActivations seat limit (FR-003/004)
+            - nonce_replayed        # 409 — the nonce was replayed to forge a different activation (FR-009)
+            - license_not_active    # 409 — the license is suspended, revoked, or expired (FR-008)
+            - rate_limited          # 429 — runtime activation surface rate limit exceeded (FR-013/FR-020); response carries Retry-After
+            - signer_unavailable    # 503 — machine-bound credential could not be signed (E004 signer fault); no seat consumed (Plan §Error Handling)
+          example: seat_limit_reached
+        message:
+          type: string
+          description: Human-readable summary. Never contains a raw identifier, key material, token, or nonce.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value? }`;
+            `insufficient_signals` → `{ signalsProvided, signalsRequired }`;
+            `forbidden` → `{ requiredScope }` (runtime) or `{ minRole, role }` / `{ reason: "csrf" }` (admin);
+            `not_found` → the missing id (`{ activationId }` or `{ licenseId }`);
+            `license_not_found` → `{ licenseId? }` (omitted when referenced by opaque key);
+            `seat_limit_reached` → `{ seatLimit, seatsUsed }`;
+            `nonce_replayed` → `{ reason: "replayed_nonce" }` (the nonce value is never echoed);
+            `license_not_active` → `{ status: "suspended" | "revoked" | "expired" }`;
+            `rate_limited` → `{ retryAfterSeconds }` (also surfaced via the `Retry-After` header);
+            `signer_unavailable` → `{ retryAfterSeconds? }` (also surfaced via `Retry-After`).
+            It never carries a raw identifier, key material, token, or nonce.
+
+    # --- Shared value types ---
+    ActivationStatus:
+      type: string
+      description: >
+        Activation lifecycle status. `active` = binding holds and consumes one seat; `deactivated` =
+        the seat is released and reusable. Deactivation is idempotent (FR-011).
+      enum: [active, deactivated]
+
+    SignalHash:
+      type: string
+      description: >
+        One salted hash of a stable hardware signal, computed by the CLIENT (base64url of a 32-byte
+        digest). Raw hardware identifiers are never transmitted, stored, or returned (FR-006). The
+        server matches a returning machine when at least K of N signals match (K-of-N drift tolerance,
+        default 3-of-5, FR-005).
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      example: "9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+
+    Fingerprint:
+      type: object
+      description: >
+        The machine fingerprint — N client-computed salted signal hashes. The K-of-N threshold and the
+        clock-skew window are SERVER defaults (FR-005), not per-request client choices, so they are not
+        part of this payload. A request with fewer signals than the minimum needed for a reliable
+        binding is refused `400 insufficient_signals` (FR-016).
+      additionalProperties: false
+      required: [signals]
+      properties:
+        signals:
+          type: array
+          description: >
+            The salted signal hashes (N of them). Structurally at least 1; a well-formed payload below
+            the server's configured minimum is refused with `insufficient_signals` (a business rule),
+            not a schema error.
+          minItems: 1
+          maxItems: 32
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/SignalHash' }
+
+    LicenseKeyToken:
+      type: string
+      description: >
+        The signed LICENSE KEY the customer holds — the E001 `LIC1` public token issued by E008
+        (`GET /admin/licenses/{licenseId}/key`). Supplied on activation to identify the license; it is
+        NOT the signing key. Provide this OR `licenseId`, not both.
+        VALIDATION MAPPING: a `licenseKey` that is NOT a structurally well-formed LIC1 token (or a
+        malformed `licenseId` UUID) is rejected `400 validation_error` (a schema/shape failure); a
+        well-formed but UNKNOWN or cross-tenant license resolves `404 license_not_found` (a resolution
+        failure that never leaks another tenant's existence, FR-015).
+      example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.aXNzdWVkLXRva2VuLWV4YW1wbGU"
+
+    MachineBoundKey:
+      type: string
+      description: >
+        The re-signed, machine-bound credential returned on activation — an E001 `LIC1` token,
+        Ed25519-signed by the product's signing key, that verifies FULLY OFFLINE (zero network) via the
+        E001 verifier core and ONLY on the bound machine within the fingerprint tolerance (FR-007,
+        SC-001). It is safe to embed on the machine; it is NOT the signing key, which is never returned.
+        Returned ONLY by `POST /v1/activations`; never present in the admin registry.
+      example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImZwayI6M30.bWFjaGluZS1ib3VuZC1zaWduYXR1cmU"
+
+    ActivateRequest:
+      type: object
+      description: >
+        Activate a machine against a license. Reference the license by EITHER `licenseKey` OR
+        `licenseId` (exactly one). Carries the machine `fingerprint`, a single-use `nonce`, and an
+        optional pseudonymous `label`.
+      additionalProperties: false
+      required: [fingerprint, nonce]
+      properties:
+        licenseKey:
+          allOf: [{ $ref: '#/components/schemas/LicenseKeyToken' }]
+          description: The license's signed LIC1 token. Provide this OR `licenseId`, not both.
+        licenseId:
+          type: string
+          format: uuid
+          description: The license id (UUID) within the caller's tenant. Provide this OR `licenseKey`, not both.
+        fingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        nonce:
+          type: string
+          description: >
+            Single-use client-supplied nonce for anti-replay (FR-009). MUST be high-entropy
+            (>=128-bit single-use, FR-021) and is retained for a bounded replay-rejection window
+            (default 24h). A retry with the SAME nonce for the same (license, machine) replays the
+            original result (`200`); a nonce replayed to forge a different activation is rejected
+            (`409 nonce_replayed`). Never echoed in any response or error.
+            UNIQUENESS SCOPE: the nonce is enforced UNIQUE PER TENANT (DB `UNIQUE (tenant_id, nonce)`,
+            data-model §6); on a collision the request is REPLAYED (`200`) only when it targets the same
+            (license, machine) as the stored activation, otherwise REJECTED (`409 nonce_replayed`) — so
+            the per-tenant DB uniqueness and the (license, machine) replay boundary agree.
+          minLength: 16
+          maxLength: 200
+          pattern: '^[A-Za-z0-9_-]+$'
+          example: "b1946ac92492d2347c6235b4d2611184"
+        label:
+          type: string
+          description: Optional pseudonymous, human-friendly label for the machine (never a raw identifier).
+          maxLength: 200
+          example: "Design workstation 12"
+      oneOf:
+        - required: [licenseKey]
+        - required: [licenseId]
+
+    ActivationResult:
+      type: object
+      description: >
+        The activation returned by `POST /v1/activations` (201 fresh or 200 idempotent re-use). Carries
+        the activation metadata, the seat summary, and the `machineBoundKey` credential. This is the
+        ONLY schema that includes `machineBoundKey`; the signing key and raw signals are never included.
+      required: [id, licenseId, machineId, status, activatedAt, seatLimit, seatsUsed, machineBoundKey]
+      properties:
+        id: { type: string, format: uuid, description: "Server-generated activation UUID, unique within the tenant.", example: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f" }
+        licenseId: { type: string, format: uuid, description: The license this activation belongs to. }
+        machineId:
+          type: string
+          description: >
+            Pseudonymous machine identity — a salted hash derived from the fingerprint. Not a raw
+            hardware identifier and not a UUID (FR-006, SC-011).
+          example: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+        status: { $ref: '#/components/schemas/ActivationStatus' }
+        activatedAt: { type: string, format: date-time, description: When the activation was first recorded (immutable). }
+        seatLimit:
+          type: integer
+          minimum: 1
+          description: The license's snapshotted `maxActivations` seat limit (E008), enforced by this epic (FR-003).
+          example: 5
+        seatsUsed:
+          type: integer
+          minimum: 0
+          description: Active activations for the license after this call (never exceeds `seatLimit`, FR-003).
+          example: 3
+        label:
+          type: [string, "null"]
+          description: The optional pseudonymous label supplied at activation, or null.
+          example: "Design workstation 12"
+        keyId:
+          type: string
+          format: uuid
+          description: >
+            The id of the product signing key that signed the `machineBoundKey` (E004). Opaque identifier
+            only — never key material. This is the "opaque signing-key id" FR-018 permits to be returned
+            alongside the public credential: informational, used for keyring selection/rotation.
+          example: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+        machineBoundKey: { $ref: '#/components/schemas/MachineBoundKey' }
+
+    Activation:
+      type: object
+      description: >
+        One activation as shown in the ADMIN registry (FR-012). Pseudonymous and read-only: NO
+        `machineBoundKey`, NO raw signal hashes (SC-011).
+      required: [id, machineId, status, activatedAt, deactivatedAt]
+      properties:
+        id: { type: string, format: uuid, description: "Server-generated activation UUID, unique within the tenant.", example: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f" }
+        machineId:
+          type: string
+          description: Pseudonymous machine identity (salted hash), never a raw hardware identifier (FR-006, SC-011).
+          example: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+        status: { $ref: '#/components/schemas/ActivationStatus' }
+        activatedAt: { type: string, format: date-time, description: When the activation was first recorded. }
+        deactivatedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the activation was deactivated, or null while active.
+        label:
+          type: [string, "null"]
+          description: The optional pseudonymous machine label, or null.
+          example: "Design workstation 12"
+
+    ActivationRegistry:
+      type: object
+      description: >
+        A license's activation registry (FR-012; US4) — the activation list plus a seats-used-vs-limit
+        summary. Bounded to a hard cap of 1000 items; not paginated.
+      required: [activations, seatsUsed, seatLimit]
+      properties:
+        activations:
+          type: array
+          description: >
+            The license's activations (active and deactivated), pseudonymous. Bounded to a hard cap of
+            1000 and not paginated. When a license has MORE than 1000 activations, the MOST RECENT 1000
+            (by `activatedAt` descending) are returned; the `seatsUsed`/`seatLimit` summary below still
+            reflects the TRUE totals (computed independently of the truncated list), so a truncated list
+            never understates real seat usage.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/Activation' }
+        seatsUsed:
+          type: integer
+          minimum: 0
+          description: Count of the license's ACTIVE activations (never exceeds `seatLimit`, FR-003).
+          example: 1
+        seatLimit:
+          type: integer
+          minimum: 1
+          description: The license's snapshotted `maxActivations` seat limit (E008).
+          example: 5
+
+    DeactivationResult:
+      type: object
+      description: The result of an operator/admin seat reclaim — the activation id and its resulting status.
+      required: [id, status]
+      properties:
+        id: { type: string, format: uuid, example: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f" }
+        status: { $ref: '#/components/schemas/ActivationStatus' }
+
+  responses:
+    BadRequest:
+      description: Validation error — malformed body or a bad path/query value.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invalidId:
+              value:
+                code: validation_error
+                message: "activationId must be a UUID."
+                details: { field: activationId }
+    Unauthorized:
+      description: >
+        No resolvable authentication — the runtime `X-API-Key` is missing/invalid, or the admin
+        `admin_session` cookie is missing, expired, or revoked.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noApiKey:
+              summary: Runtime plane — missing/invalid API key
+              value: { code: unauthorized, message: "Missing or invalid API key." }
+            noSession:
+              summary: Admin plane — no valid session
+              value: { code: unauthorized, message: "Authentication required." }
+    ForbiddenScope:
+      description: >
+        Runtime plane, fail-closed — the API key resolved to a tenant but lacks the required `activate`
+        scope (FR-002). The denied attempt is audited (FR-014).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingScope:
+              value:
+                code: forbidden
+                message: "The activate scope is required."
+                details: { requiredScope: activate }
+    Forbidden:
+      description: >
+        Admin plane, fail-closed — either the session's role is below the operation's `x-rbac.minRole`
+        (a viewer attempting the deactivate), or the mutation's `X-CSRF-Token` is missing or mismatched.
+        Both are recorded as an auditable security event (SC-009).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the admin role."
+                details: { minRole: admin, role: viewer }
+            csrfFailure:
+              value:
+                code: forbidden
+                message: "Missing or invalid CSRF token."
+                details: { reason: csrf }
+    NotFound:
+      description: >
+        The referenced license or activation does not exist within the caller's tenant. A cross-tenant
+        id resolves here (never `403`), so it is indistinguishable from a non-existent one (FR-015).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownLicense:
+              value:
+                code: not_found
+                message: "No such license in this tenant."
+                details: { licenseId: "00000000-0000-4000-8000-000000000000" }
+            unknownActivation:
+              value:
+                code: not_found
+                message: "No such activation in this tenant."
+                details: { activationId: "00000000-0000-4000-8000-000000000000" }
+    ActivationNotFound:
+      description: >
+        The `activationId` is unknown within the caller's tenant (a cross-tenant id resolves here too,
+        FR-015). Returned by the runtime deactivate ONLY when the id is unknown; an active or
+        already-deactivated id returns `204` (idempotent, FR-011).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownActivation:
+              value:
+                code: not_found
+                message: "No such activation in this tenant."
+                details: { activationId: "00000000-0000-4000-8000-000000000000" }
+    LicenseNotFound:
+      description: >
+        No license resolves within the caller's tenant for the supplied `licenseKey`/`licenseId` (a
+        cross-tenant reference also resolves here, FR-015). No seat is consumed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownLicense:
+              value:
+                code: license_not_found
+                message: "No such license in this tenant."
+                details: { licenseId: "00000000-0000-4000-8000-000000000000" }
+    RateLimited:
+      description: >
+        The runtime activation surface rate limit was exceeded for this (API key, license) — the request
+        is refused fail-fast, no seat is consumed, and the limit-exceeded event is audited (FR-013/FR-020).
+        The `Retry-After` header gives the seconds to wait before retrying. Covers both the activate and
+        deactivate runtime routes.
+      headers:
+        Retry-After:
+          description: Seconds the client should wait before retrying.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            rateLimited:
+              value:
+                code: rate_limited
+                message: "Too many activation requests; retry after the indicated delay."
+                details: { retryAfterSeconds: 60 }
+    SignerUnavailable:
+      description: >
+        The machine-bound credential could not be signed because the E004 signer is unavailable (a signer
+        fault). The activation transaction rolls back FAIL-CLOSED — no seat is consumed and no activation
+        row is persisted (Plan §Error Handling Strategy). The client MAY retry after a short delay. The
+        signing key is never exposed.
+      headers:
+        Retry-After:
+          description: Seconds the client should wait before retrying.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            signerUnavailable:
+              value:
+                code: signer_unavailable
+                message: "The signing service is temporarily unavailable; no seat was consumed. Retry shortly."
+                details: { retryAfterSeconds: 5 }
