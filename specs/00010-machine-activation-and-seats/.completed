@@ -1,0 +1,25 @@
+Completed: 2026-07-15T00:00:00Z
+
+E009 — Machine Activation & Seat Enforcement: implementation complete (P1 MVP, all 41 tasks).
+
+Delivered (all four P1 user stories, independently tested):
+- US1 Activate (node-lock + race-safe seats): runtime POST /v1/activations (API key + `activate` scope) →
+  SELECT FOR UPDATE license → K-of-N fingerprint resolve → seat count < max_activations → sign-after-seat
+  via the E004 signer → machine-bound LIC1 that verifies OFFLINE (with the machine fingerprint) via the E001
+  core. Fail-closed: seat cap 409, non-active license 409, signer fault 503 (no row). Nonce store-and-replay.
+- US2 Deactivate: app DELETE /v1/activations/{id} (idempotent 204) + operator reclaim via console (200);
+  soft active→deactivated flip frees the seat.
+- US3 Drift tolerance: K-of-N (default 3-of-5) re-uses the seat + re-verifies offline; <K = new machine;
+  too-few signals → 400.
+- US4 Registry: admin GET /admin/licenses/{id}/activations (pseudonymous machines + seats-used/limit, no
+  secrets), RBAC (viewer read / admin reclaim + CSRF), forced-RLS tenant isolation; React Activations view.
+- Cross-cutting: migration 0008 (forced RLS), @fastify/rate-limit (429 + Retry-After + audited), append-only
+  audit with no raw signals/nonce/token/key, single-activation perf < 1s, activation CI workflow.
+
+E004 signer conformance oracle extended (backward-compatible) so a machine-bound token (with `fp`) self-
+verifies; ordinary E008 tokens unaffected.
+
+Validation: server suite 158 passed / 3 skipped, coverage 93.2% lines / 82.1% branches / 95.5% funcs.
+SPA suite 54 passed, coverage 96.8% lines / 87.8% branches. typecheck + lint clean.
+
+No P2/DEFERRED work — all four stories are P1.

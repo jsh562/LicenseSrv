@@ -13,6 +13,7 @@ import {
   type Role,
 } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Activations } from "./Activations";
 
 type StatusFilter = LicenseStatus | "all";
 
@@ -32,6 +33,7 @@ export function Licenses({ sessionRole }: { sessionRole: Role }): JSX.Element {
   const [customerId, setCustomerId] = useState("");
   const [transferTarget, setTransferTarget] = useState("");
   const [keys, setKeys] = useState<Record<string, string>>({});
+  const [viewingSeats, setViewingSeats] = useState<License | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refDisplay = useMemo(() => new Map(customers.map((c) => [c.id, c.ref])), [customers]);
@@ -79,6 +81,10 @@ export function Licenses({ sessionRole }: { sessionRole: Role }): JSX.Element {
       return;
     }
     await act(() => licensingApi.transferLicense(id, transferTarget));
+  }
+
+  if (viewingSeats) {
+    return <Activations license={viewingSeats} sessionRole={sessionRole} onBack={() => setViewingSeats(null)} />;
   }
 
   return (
@@ -134,6 +140,7 @@ export function Licenses({ sessionRole }: { sessionRole: Role }): JSX.Element {
               <td>{l.transferCount}</td>
               <td>
                 <button type="button" onClick={() => void showKey(l.id)}>Get key</button>
+                <button type="button" onClick={() => setViewingSeats(l)}>Activations</button>
                 <RequireRole role={sessionRole} min="admin">
                   {l.status === "active" && (
                     <button type="button" onClick={() => void act(() => licensingApi.suspendLicense(l.id))}>Suspend</button>

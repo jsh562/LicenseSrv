@@ -13,6 +13,8 @@ const core = require("../../../bindings/wasm/pkg/licensesrv.js") as {
     kr: { add(keyId: string, publicKey: Uint8Array): number },
     token: string,
     nowUnix: number,
+    anchorUnix?: number | null,
+    fingerprint?: string[] | null,
   ) => { code: number; free(): void };
 };
 
@@ -121,13 +123,21 @@ export function assembleToken(payload: Buffer, signature: Buffer): string {
 /**
  * Conformance oracle (TR-018): verify a minted token against the REAL Rust verifier-core (via the
  * E003 WASM binding) at `nowUnix`. Returns true iff the core accepts it (code 0). This is the
- * single source of truth for the byte format — a token that fails here MUST NOT be returned.
+ * single source of truth for the byte format — a token that fails here MUST NOT be returned. A
+ * machine-bound token (E009) carries an `fp` claim, so the same fingerprint must be supplied here or
+ * the core rejects it as `FingerprintMissing`; `fingerprint` is null for an ordinary license token.
  */
-export function conformanceVerify(token: string, publicKey: Uint8Array, keyId: string, nowUnix: number): boolean {
+export function conformanceVerify(
+  token: string,
+  publicKey: Uint8Array,
+  keyId: string,
+  nowUnix: number,
+  fingerprint: string[] | null = null,
+): boolean {
   const kr = new core.Keyring();
   try {
     if (kr.add(keyId, publicKey) !== 0) return false;
-    const r = core.verify(kr, token, nowUnix);
+    const r = core.verify(kr, token, nowUnix, null, fingerprint);
     try {
       return r.code === 0;
     } finally {

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
 import type { AppDeps } from "../app.js";
+import { registerActivation } from "./activation/index.js";
 import { registerAdmin } from "./admin/index.js";
 import { registerCatalog } from "./catalog/index.js";
 import { registerIssuance } from "./issuance/index.js";
@@ -19,6 +20,7 @@ const MODULES: ServerModule[] = [
   registerAdmin, // E005 — tenant administration & audit (human session console)
   registerCatalog, // E007 — no-code licensing catalog (products/plans/entitlements)
   registerIssuance, // E008 — license issuance & lifecycle (consumes app.signer + catalog effective read model)
+  registerActivation, // E009 — machine activation & seats (consumes app.signer + E008 license snapshot)
 ];
 
 export function registerModules(app: FastifyInstance, deps: AppDeps): void {

@@ -291,3 +291,32 @@ export const licensingApi = {
 };
 
 export type LicensingApi = typeof licensingApi;
+
+// --- Activation registry (E009) -------------------------------------------------------------------
+
+export type ActivationStatus = "active" | "deactivated";
+
+export interface Activation {
+  id: string;
+  machineId: string;
+  status: ActivationStatus;
+  activatedAt: string;
+  deactivatedAt: string | null;
+  label: string | null;
+}
+export interface ActivationRegistry {
+  activations: Activation[];
+  seatsUsed: number;
+  seatLimit: number;
+}
+
+/** The console's view of the activation registry (mirrors the /admin side of activation routes.ts). The
+ * runtime /v1 activate/deactivate is called by the licensed app/SDK, not the console — so it is not here. */
+export const activationApi = {
+  listActivations: (licenseId: string) =>
+    request<ActivationRegistry>("GET", `/admin/licenses/${licenseId}/activations`),
+  reclaim: (licenseId: string, activationId: string) =>
+    request<{ id: string; status: ActivationStatus }>("POST", `/admin/licenses/${licenseId}/activations/${activationId}/deactivate`),
+};
+
+export type ActivationApi = typeof activationApi;

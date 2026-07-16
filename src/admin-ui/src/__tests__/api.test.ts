@@ -3,7 +3,7 @@
 // fetch (this file must NOT mock ../api — it is the unit under test).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { adminApi, ApiError, catalogApi, readCookie } from "../api";
+import { activationApi, adminApi, ApiError, catalogApi, licensingApi, readCookie } from "../api";
 
 function mockFetch(status: number, body: unknown): ReturnType<typeof vi.fn> {
   const fn = vi.fn().mockResolvedValue({
@@ -127,6 +127,52 @@ describe("catalogApi client", () => {
       ["PUT", "/admin/catalog/plans/pl1/entitlements/e1"],
       ["DELETE", "/admin/catalog/plans/pl1/entitlements/e1"],
       ["GET", "/admin/catalog/plans/pl1/effective"],
+    ]);
+  });
+});
+
+describe("licensingApi client", () => {
+  it("exposes every licensing endpoint at the expected method + path", async () => {
+    const fn = mockFetch(200, { customers: [], licenses: [], licenseKey: "LIC1.x", id: "x", ref: "r", status: "active" });
+    await licensingApi.listCustomers();
+    await licensingApi.createCustomer({ ref: "acct-1" });
+    await licensingApi.getCustomer("c1");
+    await licensingApi.eraseCustomer("c1");
+    await licensingApi.issueLicense({ planId: "pl1", customerId: "c1" });
+    await licensingApi.listLicenses({ status: "active", customerId: "c1", planId: "pl1" });
+    await licensingApi.getLicense("l1");
+    await licensingApi.getLicenseKey("l1");
+    await licensingApi.revokeLicense("l1");
+    await licensingApi.suspendLicense("l1");
+    await licensingApi.reinstateLicense("l1");
+    await licensingApi.transferLicense("l1", "c2");
+    const calls = fn.mock.calls.map((c) => [(c[1] as RequestInit).method, c[0]]);
+    expect(calls).toEqual([
+      ["GET", "/admin/customers"],
+      ["POST", "/admin/customers"],
+      ["GET", "/admin/customers/c1"],
+      ["DELETE", "/admin/customers/c1"],
+      ["POST", "/admin/licenses"],
+      ["GET", "/admin/licenses?status=active&customerId=c1&planId=pl1"],
+      ["GET", "/admin/licenses/l1"],
+      ["GET", "/admin/licenses/l1/key"],
+      ["POST", "/admin/licenses/l1/revoke"],
+      ["POST", "/admin/licenses/l1/suspend"],
+      ["POST", "/admin/licenses/l1/reinstate"],
+      ["POST", "/admin/licenses/l1/transfer"],
+    ]);
+  });
+});
+
+describe("activationApi client", () => {
+  it("exposes the activation registry endpoints at the expected method + path", async () => {
+    const fn = mockFetch(200, { activations: [], seatsUsed: 0, seatLimit: 5, id: "a1", status: "deactivated" });
+    await activationApi.listActivations("l1");
+    await activationApi.reclaim("l1", "a1");
+    const calls = fn.mock.calls.map((c) => [(c[1] as RequestInit).method, c[0]]);
+    expect(calls).toEqual([
+      ["GET", "/admin/licenses/l1/activations"],
+      ["POST", "/admin/licenses/l1/activations/a1/deactivate"],
     ]);
   });
 });

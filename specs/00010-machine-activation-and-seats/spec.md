@@ -233,13 +233,15 @@ console and confirm both appear with machine identity, status, timestamps, and a
   activation is reclaimed by the operator (FR-010) or purged by the retention sweep so seats are not permanently
   consumed; the epic does not auto-migrate prior activations across a rotation.
 - **FR-020**: System MUST rate-limit the runtime activation surface — both the activate and deactivate
-  operations — keyed per API key and per license, refusing requests above a configured threshold (default 60
-  requests per minute per API-key+license) with `429 rate_limited` and a `Retry-After` header, and MUST audit
-  each limit-exceeded event (FR-014); this makes FR-013 concrete.
+  operations — keyed per API key (the runtime credential/actor; the limiter runs before the request body is
+  parsed, so the license id is not yet available), refusing requests above a configured threshold (default 60
+  requests per minute per API key) with `429 rate_limited` and a `Retry-After` header, and MUST audit each
+  limit-exceeded event as a security event (FR-014); this makes FR-013 concrete.
 - **FR-021**: System MUST require each activation nonce to be a single-use, high-entropy value of at least 128
-  bits, and MUST retain used nonces for a bounded replay-rejection window (default 24 hours); within that window
-  a nonce reused for the same (license, machine) replays the original result and a nonce reused to forge a
-  different activation is rejected (FR-009).
+  bits (enforced by a minimum length that guarantees ≥128 bits in any encoding), and MUST reject any reuse: the
+  nonce is stored uniquely per tenant on the activation record and retained for the life of that record (purged
+  by the platform retention path, not a separate shorter TTL), so a nonce reused for the same (license, machine)
+  replays the original result and a nonce reused to forge a different activation is rejected (FR-009).
 - **FR-022**: System MUST bound the machine-bound credential's validity to the license expiry (`exp`) it
   carries; where a separate activation-credential TTL is configured, the effective expiry is `min(license
   expiry, credential TTL)` — whichever is sooner wins.

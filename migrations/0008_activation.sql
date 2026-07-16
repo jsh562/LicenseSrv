@@ -1,4 +1,4 @@
--- E009 machine activation & seat enforcement (FR-001..FR-016). Extends the E002 tenancy substrate and
+-- E009 machine activation & seat enforcement (FR-001..FR-024). Extends the E002 tenancy substrate and
 -- the E008 license table (expand-only, sequential after 0007). One new tenant-owned table: activation.
 -- Same tenant-scoped forced-RLS + composite-FK + audit pattern as 0000_init.sql / 0007_licensing.sql.
 -- No changes to existing tables.

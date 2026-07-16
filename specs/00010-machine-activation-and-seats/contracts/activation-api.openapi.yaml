@@ -20,8 +20,9 @@ info:
         a resolvable key that lacks the `activate` scope → `403 forbidden` (FR-002). There is no CSRF on
         this plane — it is header-credential, not cookie, auth. Both runtime activation routes (activate
         and deactivate) are rate-limited to deter seat exhaustion and fingerprint enumeration, keyed per
-        API key + per license (default 60 req/min); an over-limit request is refused `429 rate_limited`
-        with a `Retry-After` header and the limit-exceeded event is audited (FR-013/FR-020).
+        API key (the limiter runs before the body is parsed, so the license id is not yet known; default
+        60 req/min); an over-limit request is refused `429 rate_limited` with a `Retry-After` header and
+        the limit-exceeded event is audited (FR-013/FR-020).
 
       * ADMIN plane — mounted under `/admin/...`, called by a HUMAN operator/admin in the console.
         Authenticated by the opaque `admin_session` cookie (E005) established by `POST /admin/auth/login`

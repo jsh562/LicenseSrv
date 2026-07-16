@@ -1,0 +1,18 @@
+QC Passed: 2026-07-15T00:00:00Z
+
+E009 — Machine Activation & Seat Enforcement: QC PASSED (P1 MVP).
+
+Verified independently by the QC Auditor (gates) and Story Verifier (US/SC traceability).
+All runnable gates green; 3 FR partials (FR-014 denial audit, FR-020 rate-limit keying, FR-021 nonce
+window) resolved inline before this pass.
+
+- Server suite: 158 passed / 3 skipped (real Postgres via Testcontainers). Coverage 93.19% lines /
+  82.18% branches / 95.47% funcs (>=80% line+branch gate PASS).
+- SPA suite: 54 passed. Coverage 96.82% lines / 87.76% branches (>=80% gate PASS).
+- typecheck (server + SPA): PASS. ESLint: PASS. npm audit (server + SPA prod): 0 vulns.
+- PI: signing key never exposed (E004 conformance change backward-compatible); forced-RLS tenant isolation;
+  append-only audit no-PII/no-key (incl. denials); race-safe seat lock; anti-replay nonce; rate limit 429;
+  raw-SQL migration 0008.
+- Stories US1–US4 (P1): PASS. FR-001..024 + SC-001..020: PASS. No P2/DEFERRED work.
+
+See qc-report.md for details.

@@ -57,8 +57,9 @@ export class KeystoreSigner implements Signer {
       const signature = km.signOver(signingInput);
       const token = assembleToken(payload, signature);
 
-      // Conformance oracle: the minted token MUST verify via the real core before we return it.
-      if (!conformanceVerify(token, ak.publicKey, ak.keyId, stamped.issuedAt)) {
+      // Conformance oracle: the minted token MUST verify via the real core before we return it. A
+      // machine-bound token (E009) carries a fingerprint, which must be supplied to the core here.
+      if (!conformanceVerify(token, ak.publicKey, ak.keyId, stamped.issuedAt, stamped.fingerprint ?? null)) {
         throw new SignerError("conformance", "minted token failed core conformance verification");
       }
       return token;
