@@ -1,0 +1,638 @@
+openapi: 3.1.0
+info:
+  title: Air-Gapped Activation API
+  version: 0.1.0
+  description: >
+    REST surface for epic E010 (Air-Gapped Activation). A fully offline machine that will NEVER touch a
+    network activates a license through a portable FILE EXCHANGE: the licensed app/SDK produces a versioned
+    REQUEST file offline (a license reference + the machine fingerprint as salted signal hashes + a single-use
+    nonce + a produced-at timestamp); an operator carries that file (e.g. on a USB stick) to a CONNECTED
+    machine and submits it to this portal; the portal activates the machine through the shared E009 seat
+    accounting and returns a versioned, signed RESPONSE file; the operator carries the response file back and
+    imports it, after which the license verifies FULLY OFFLINE on the originating machine. Covers FR-001..015
+    and SC-001..012.
+
+
+    TWO-TRANSPORT MODEL (critical to reading this contract). This OpenAPI describes ONLY the online portal
+    call. The air-gapped machine itself is NOT an HTTP client and appears NOWHERE in these paths: it performs
+    PURE FILE operations (produce the request file, import the response file) with ZERO network I/O at any
+    point (SC-002). Everything on the wire here happens on the operator's CONNECTED machine — the request file
+    is uploaded as an opaque string and the response file is returned as an opaque string; the base64url file
+    envelopes are the actual unit of exchange, and HTTP is merely their transport between the connected
+    operator and the vendor.
+
+
+    SINGLE AUTH PLANE — RUNTIME (API key, `activate` scope). The portal is a RUNTIME operation mounted under
+    `/v1/...`, called by the operator's licensed integration exactly like the online activation routes. It is
+    authenticated by the tenant/machine API key in the `X-API-Key` header, resolved by the server
+    (src/server/auth/apikey.ts + app.ts) to a tenant + capability scopes (`req.tenant = { tenantId, scopes }`).
+    It REQUIRES the `activate` scope and fails CLOSED: no resolvable tenant context → `401 unauthorized`; a
+    resolvable key that lacks the `activate` scope → `403 forbidden` (FR-002). There is NO CSRF on this plane —
+    it is header-credential, not cookie, auth (CSRF applies only to the E005/E009 `/admin` console plane, which
+    this contract does not touch). The operation is rate-limited exactly like the other `/v1` activation routes
+    to deter abuse (FR-013): keyed per API key, the limiter runs before the body is parsed (so the license id
+    is not yet known; default 60 req/min); an over-limit request is refused `429 rate_limited` with a
+    `Retry-After` header and the throttled attempt is audited (SC-012).
+
+
+    ONE STATUS FOR BOTH NEW AND REPLAY (deliberate, FR-005). This operation ALWAYS answers `200 OK` on success
+    and returns `{ responseFile, created }`. Unlike the online `POST /v1/activations` (E009) — which is a REST
+    resource operation that returns `201 Created` on a fresh bind and `200 OK` on an idempotent re-use — the
+    air-gap portal is a FILE-EXCHANGE TRANSACTION, not the creation of a REST resource addressable by the
+    caller. The caller submits a file and receives a file; there is no server-side resource URL for the client
+    to follow (the activation lives in the E009 registry, reachable only through the tenant's console), so
+    there is no `Location` header and no `201`. The `created` boolean carries the new-vs-replay distinction
+    instead: `created: true` when a NEW seat was consumed, `created: false` on an IDEMPOTENT replay of the same
+    request file (same single-use nonce), which returns the ORIGINAL response file and consumes NO additional
+    seat (SC-005). A replay is a successful, expected outcome — never an error.
+
+
+    SHARED E009 SEAT ACCOUNTING (FR-003, no second seat model). Processing a request file activates the machine
+    through the SAME E009 activation service as online activation — consuming a seat, enforcing the license's
+    snapshotted `maxActivations` seat limit RACE-SAFELY, binding the K-of-N fingerprint, and store-and-checking
+    the single-use nonce. An air-gap activation is INDISTINGUISHABLE from an online one in the seat count and
+    appears in the SAME tenant activation registry (SC-003). This epic adds a file transport + two file
+    formats; it does NOT add a parallel seat model or a second crypto path.
+
+
+    OFFLINE VERIFICATION & TAMPER-EVIDENCE (FR-006, SC-001/006). The machine-bound credential carried inside
+    the response envelope (`machineBoundKey`) is the SAME artifact the E009 online activation returns: an E001
+    `LIC1` token, Ed25519-signed by the product's signing key (reusing the E004 signer), that verifies FULLY
+    OFFLINE (zero network) via the E001 verifier core against a PINNED public key, and only on the bound machine
+    within the fingerprint tolerance. That Ed25519 signature on the embedded credential IS the response file's
+    tamper-evidence: the envelope carries NO separate envelope-level signature and NO private-key material of
+    any kind. A tampered response file, or one presented on a machine whose fingerprint does not match, is
+    rejected at IMPORT on the offline machine (the E001 verify fails) — the portal is not involved in that
+    rejection. This epic adds no online re-check (that is E013).
+
+
+    SECRECY & PII INVARIANTS (FR-010, SC-009; project-instructions non-negotiables I & III). Only salted
+    per-signal fingerprint HASHES and a pseudonymous salted-hash `machineId` ever appear in the request file,
+    the response file, storage, or logs — NEVER a raw hardware identifier, in any file, entity, or audit entry.
+    The product SIGNING KEY is never present in any body, header, file envelope, example, log, or audit entry;
+    the response envelope carries only the PUBLIC signed credential plus an opaque `keyId` for keyring
+    selection/rotation.
+
+
+    TENANT SCOPING (FR-011, SC-010, fail-closed). Every air-gap activation is implicitly scoped to the API
+    key's tenant; there is no tenant parameter and it can never be widened by the caller. A request file
+    referencing another tenant's license under the operator's credential resolves to `404 license_not_found`
+    (never `403`), indistinguishable from a non-existent license, and the resulting activation is visible only
+    within that tenant's registry.
+
+
+    AUDIT (FR-012, SC-011). Every processed request — a fresh activation, an idempotent replay, and EACH
+    distinct refusal (seat-limit, replayed nonce, non-active license, malformed/stale/unknown-version request,
+    too-few signals, rate-limit) — is written to the append-only audit log with actor, action, and reason,
+    never a raw hardware identifier or secret and never the nonce or fingerprint values.
+
+
+    FILE FORMAT VERSIONING (FR-001/007/014). Both the request and response file formats carry an explicit
+    `formatVersion` tag so the client SDK and server evolve compatibly. A request file whose format version is
+    unknown or future is refused `400 unknown_format_version` (a decodable file the server will not process),
+    distinct from `400 validation_error` (a structurally malformed, truncated, or non-base64url file that
+    cannot be decoded at all). Both are fail-closed: nothing is processed and no partial activation is recorded.
+    A "cross-version mismatch" (FR-014) — a request `formatVersion` OUTSIDE the server's supported set, whether
+    future, retired, or otherwise incompatible with the server's current formats — is UNIFORMLY refused
+    `400 unknown_format_version`: there is no separate cross-version code, so it is testably distinct from
+    `validation_error` (undecodable) but DELIBERATELY shares one code with a merely unknown/future version. A
+    SUPPORTED request `formatVersion` always yields the server's current response `formatVersion`; there is no
+    per-request format negotiation.
+
+
+    ERROR MODEL. Project-standard structured JSON `{ code, message, details? }` with a stable, enumerated
+    snake_case `code`. Every refusal reason has a DISTINCT, testable code (FR-004/007/008/009). Field naming is
+    camelCase throughout, matching the E005/E007/E008/E009 surfaces.
+
+
+    MEDIA TYPE. Every request body and every response body is `application/json` (UTF-8); there is no content
+    negotiation. The file envelopes themselves travel as opaque base64url STRINGS inside that JSON (`requestFile`
+    / `responseFile`) — the wire is JSON, the payload is a portable, copy-pasteable file blob.
+
+
+    VERSIONING. The runtime plane is API-versioned under the `/v1` prefix (matching the E009 activation surface);
+    a breaking change is introduced under a new prefix (`/v2`) with `/v1` retained until deprecation. This is the
+    HTTP API version and is independent of the request/response FILE `formatVersion` above.
+
+
+    STATUS PRECEDENCE. When more than one failure could apply, evaluation is strictly ordered: (1) AUTHENTICATION
+    first — an unresolvable API key is `401 unauthorized` (the tenant cannot be resolved, so tenant scoping is
+    never reached); (2) AUTHORIZATION next — a resolved key lacking the `activate` scope is `403 forbidden`;
+    (3) RATE LIMIT — an over-limit caller is `429 rate_limited` before the body is parsed; (4) FILE DECODE &
+    VERSION — a malformed file is `400 validation_error`, an unknown-version file is `400 unknown_format_version`;
+    (5) RESOURCE & BUSINESS RULES last — license resolution (`404 license_not_found`), freshness / signals /
+    seats / nonce / license status. So 401 precedes 403 precedes 429 precedes the 400/404/409 business outcomes.
+
+
+    OUT OF SCOPE. The (P2, deferred) console upload/download variant for support operators (FR-015, US4) is
+    intentionally NOT modeled here — this contract defines only the authenticated runtime portal endpoint. No
+    `/admin` route is designed by this file; when built, that variant will reuse the same underlying E009
+    activation service behind the console session + RBAC + CSRF posture (see the E009 admin plane).
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: air-gap
+    description: >
+      RUNTIME air-gap activation portal called by the operator's licensed integration on a CONNECTED machine.
+      API-key auth (`X-API-Key`) with the `activate` scope; no CSRF; rate-limited like the other `/v1`
+      activation routes. Ingests a request file, activates through the shared E009 seat accounting, and returns
+      a signed response file (FR-002/003/013).
+
+paths:
+  # --- RUNTIME plane (API key, `activate` scope) --------------------------------------------------
+  /v1/air-gap/activations:
+    post:
+      tags: [air-gap]
+      operationId: processAirGapActivation
+      summary: Process an air-gap request file and return a signed response file
+      description: >
+        Ingest a portable air-gap REQUEST file produced offline by the licensed app/SDK and return a signed
+        RESPONSE file that verifies fully offline on the originating machine (FR-002; US1). The request file is
+        submitted as `requestFile` — a base64url-encoded, versioned envelope referencing the license by EITHER
+        its signed `licenseKey` OR its `licenseId` and carrying the machine fingerprint (salted signal hashes),
+        a single-use `nonce`, and a `producedAt` timestamp (see `RequestFileEnvelope` for the decoded logical
+        shape; on the wire it is opaque base64url). Processing runs through the SHARED E009 activation service:
+        it consumes a seat, enforces the seat limit race-safely, binds the K-of-N fingerprint, store-and-checks
+        the nonce, and re-signs the machine-bound credential (FR-003).
+
+
+        Success (`200 OK`, ALWAYS — never `201`): the body is `{ responseFile, created }`. `responseFile` is a
+        base64url-encoded, versioned envelope carrying the machine-bound `LIC1` credential + activation metadata
+        (see `ResponseFileEnvelope`). `created: true` when a NEW machine was bound and one seat consumed;
+        `created: false` on an IDEMPOTENT replay of the same request file (same `nonce`), which returns the
+        ORIGINAL response file and consumes NO additional seat (FR-005, SC-005). A replay is a successful
+        outcome, not an error. There is no `201`/`Location` here — this is a file-exchange transaction, not the
+        creation of a caller-addressable REST resource (see the info description).
+
+
+        Refusals (fail-closed — no seat consumed, no response file returned, no partial activation, each with a
+        DISTINCT code, FR-004/007/008/009):
+
+          * `400 validation_error` — the body or the request FILE is malformed / truncated / not decodable
+            base64url; nothing is processed (FR-007).
+          * `400 unknown_format_version` — the file decodes but its `formatVersion` is unknown or future;
+            details carry `{ formatVersion }` (FR-001/007/014).
+          * `400 stale_request` — the file's `producedAt` is older than the configured freshness window
+            (default 604800s / 7 days, FR-020); details carry `{ producedAt, maxAgeSeconds }` (FR-008). The
+            freshness window gates ONLY the FIRST processing of a not-yet-seen request file: an ALREADY-processed
+            request file (its single-use nonce is retained via the persisted activation record) always REPLAYS
+            its original response — or is refused `nonce_replayed` — regardless of its age, so the freshness and
+            idempotent-replay controls never contradict (FR-021).
+          * `400 insufficient_signals` — fewer than the minimum fingerprint signals needed for a reliable
+            binding (FR-009).
+          * `404 license_not_found` — no such license resolves within this tenant (a cross-tenant reference
+            also resolves here, FR-011).
+          * `409 seat_limit_reached` — the license is at its `maxActivations` seat limit; details carry
+            `{ seatLimit, seatsUsed }` (FR-004, SC-004).
+          * `409 nonce_replayed` — the `nonce` was replayed to forge a DIFFERENT activation (FR-005).
+          * `409 license_not_active` — the referenced license is suspended, revoked, or expired (FR-009,
+            SC-008).
+          * `429 rate_limited` — the runtime rate limit was exceeded; `Retry-After` given, attempt audited
+            (FR-013, SC-012).
+          * `503 signer_unavailable` — the machine-bound credential could not be signed (an E004 signer fault);
+            the transaction rolls back fail-closed and NO seat is consumed.
+
+
+        Requires the `activate` scope; a key lacking it is refused `403 forbidden` (FR-002). Every processed
+        request — activation, replay, and each refusal — is audited (FR-012, SC-011). No raw hardware identifier
+        or signing-key material ever appears in the files, the response, or the audit log (FR-010, SC-009).
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: activate }
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AirGapActivateRequest' }
+            examples:
+              submitRequestFile:
+                summary: Submit an offline-produced request file
+                value:
+                  requestFile: "QUlSR1JFUTEuZXlKc2FXTmxibk5sUzJWNUlqb2lURWxETVM0dS4uLn0.c2FsdGVkLWZpbmdlcnByaW50LWVudmVsb3Bl"
+      responses:
+        '200':
+          description: >
+            The request file was processed. Body is `{ responseFile, created }`: `created: true` on a NEW seat
+            (fresh activation), `created: false` on an IDEMPOTENT replay of the same request file (original
+            response file re-returned, no new seat). `responseFile` is present on BOTH. The machine-bound
+            credential lives INSIDE the response envelope; the signing key is never returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirGapActivateResult' }
+              examples:
+                created:
+                  summary: New machine bound — one seat consumed
+                  value:
+                    responseFile: "QUlSR1JFU1AxLmV5SmhZM1JwZG1GMGFXOXVTV1FpT2lKaE4yWXhZekprTXlKOS5NRlZERVFvLWMybG5ibVZrLUxKRE1TMWpjbVZrWlc1MGFXRnM"
+                    created: true
+                replayed:
+                  summary: Same request file re-submitted — original response, no new seat
+                  value:
+                    responseFile: "QUlSR1JFU1AxLmV5SmhZM1JwZG1GMGFXOXVTV1FpT2lKaE4yWXhZekprTXlKOS5NRlZERVFvLWMybG5ibVZrLUxKRE1TMWpjbVZrWlc1MGFXRnM"
+                    created: false
+        '400':
+          description: >
+            The request could not be processed at the file/format layer (fail-closed — nothing processed, no
+            seat consumed): the body or file is malformed / not base64url-decodable (`validation_error`), the
+            file's `formatVersion` is unknown or future (`unknown_format_version`), the file's `producedAt` is
+            older than the freshness window (`stale_request`), or the fingerprint carries fewer than the minimum
+            signals (`insufficient_signals`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                malformedFile:
+                  summary: Malformed / truncated / non-base64url request file
+                  value:
+                    code: validation_error
+                    message: "The request file is malformed or could not be decoded."
+                    details: { field: requestFile }
+                unknownFormatVersion:
+                  summary: Decodable file, unsupported format version
+                  value:
+                    code: unknown_format_version
+                    message: "This request-file format version is not supported."
+                    details: { formatVersion: "airgap-req-99" }
+                staleRequest:
+                  summary: Produced-at older than the freshness window
+                  value:
+                    code: stale_request
+                    message: "The request file is older than the allowed freshness window."
+                    details: { producedAt: "2026-06-01T09:00:00Z", maxAgeSeconds: 604800 }
+                insufficientSignals:
+                  summary: Too few fingerprint signals to bind
+                  value:
+                    code: insufficient_signals
+                    message: "Too few fingerprint signals to form a reliable machine binding."
+                    details: { signalsProvided: 1, signalsRequired: 3 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '404': { $ref: '#/components/responses/LicenseNotFound' }
+        '409':
+          description: >
+            The activation is refused and NO seat is consumed and NO response file is returned: the seat limit
+            is reached (`seat_limit_reached`), the `nonce` was replayed to forge a different activation
+            (`nonce_replayed`), or the referenced license is not active (`license_not_active`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                seatLimitReached:
+                  value:
+                    code: seat_limit_reached
+                    message: "This license has reached its activation seat limit."
+                    details: { seatLimit: 2, seatsUsed: 2 }
+                nonceReplayed:
+                  value:
+                    code: nonce_replayed
+                    message: "This request nonce has already been used for a different activation."
+                    details: { reason: replayed_nonce }
+                licenseNotActive:
+                  value:
+                    code: license_not_active
+                    message: "The license is not active and cannot be activated."
+                    details: { status: suspended }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/SignerUnavailable' }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        RUNTIME plane credential (the same key the online E009 activation uses; NOT a console cookie). The
+        tenant/machine API key resolved by the server (src/server/auth/apikey.ts + app.ts) to `req.tenant`
+        ({ tenantId, scopes }). The air-gap portal REQUIRES the `activate` scope and fails closed — no
+        resolvable tenant context → `401 unauthorized`; a key lacking `activate` → `403 forbidden` (FR-002).
+        OpenAPI cannot express the scope in the security requirement for an `apiKey` scheme, so the required
+        scope is declared via `x-rbac.requiredScope` and enforced server-side.
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }`. `code` is a stable, enumerated
+        snake_case machine-readable value; `message` is human-readable; `details` is optional structured
+        context whose shape depends on `code`. No field ever carries a raw hardware identifier, signing-key
+        material, a signed token, or the request nonce; and no field discloses another tenant's existence —
+        a cross-tenant license reference resolves to `404 license_not_found` (never `403`).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error code (snake_case). Enumerated; new codes require a contract change.
+            Each refusal reason is a DISTINCT, testable code (FR-004/007/008/009).
+          enum:
+            - validation_error       # 400 — malformed body OR malformed/truncated/non-base64url request file (FR-007)
+            - unknown_format_version # 400 — request file decodes but its formatVersion is unknown/future (FR-001/007/014)
+            - stale_request          # 400 — request file's producedAt is older than the freshness window (FR-008)
+            - insufficient_signals   # 400 — fewer than the minimum fingerprint signals (FR-009)
+            - unauthorized           # 401 — no resolvable API key / tenant context
+            - forbidden              # 403 — resolved key lacks the `activate` scope (fail-closed, FR-002)
+            - license_not_found      # 404 — no such license in this tenant (cross-tenant resolves here, FR-011)
+            - seat_limit_reached     # 409 — the license is at its maxActivations seat limit (FR-004)
+            - nonce_replayed         # 409 — the nonce was replayed to forge a different activation (FR-005)
+            - license_not_active     # 409 — the license is suspended, revoked, or expired (FR-009)
+            - rate_limited           # 429 — runtime rate limit exceeded (FR-013); response carries Retry-After
+            - signer_unavailable     # 503 — machine-bound credential could not be signed (E004 fault); no seat consumed
+          example: seat_limit_reached
+        message:
+          type: string
+          description: Human-readable summary. Never contains a raw identifier, key material, token, or nonce.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value? }` (e.g. `{ field: requestFile }`) for a malformed body/file,
+            or `{ reason: "oversize" }` when the request file exceeds the configured maximum size (the pre-decode
+            oversize guard, FR-019);
+            `unknown_format_version` → `{ formatVersion }`;
+            `stale_request` → `{ producedAt, maxAgeSeconds }`;
+            `insufficient_signals` → `{ signalsProvided, signalsRequired }`;
+            `forbidden` → `{ requiredScope }`;
+            `license_not_found` → `{ licenseId? }` (omitted when the file referenced the license by opaque key);
+            `seat_limit_reached` → `{ seatLimit, seatsUsed }`;
+            `nonce_replayed` → `{ reason: "replayed_nonce" }` (the nonce value is never echoed);
+            `license_not_active` → `{ status: "suspended" | "revoked" | "expired" }`;
+            `rate_limited` → `{ retryAfterSeconds }` (also surfaced via the `Retry-After` header);
+            `signer_unavailable` → `{ retryAfterSeconds? }` (also surfaced via `Retry-After`).
+            It never carries a raw identifier, key material, token, or nonce.
+
+    # --- Request / response bodies ------------------------------------------------------------------
+    AirGapActivateRequest:
+      type: object
+      description: >
+        The portal submission — a single opaque, base64url-encoded request FILE the offline machine produced.
+        The server decodes and validates it; all invariants (seat cap, binding, nonce, license status) are
+        enforced SERVER-SIDE at processing under an honest-client threat model (the operator fully controls the
+        request file, so no request claim is trusted for security).
+      additionalProperties: false
+      required: [requestFile]
+      properties:
+        requestFile: { $ref: '#/components/schemas/RequestFile' }
+
+    AirGapActivateResult:
+      type: object
+      description: >
+        The portal result — the signed response FILE plus a `created` flag distinguishing a fresh activation
+        from an idempotent replay. Both cases return `200 OK` and BOTH include `responseFile`. A replay
+        re-returns the BYTE-IDENTICAL original response file: re-processing the same request file is
+        DETERMINISTIC — the original activation's machine-bound credential is re-packaged, so the `responseFile`
+        content matches the first response for that activation exactly (FR-005, SC-005). The machine-bound
+        credential is carried INSIDE the response envelope; the signing key is never returned.
+      additionalProperties: false
+      required: [responseFile, created]
+      properties:
+        responseFile: { $ref: '#/components/schemas/ResponseFile' }
+        created:
+          type: boolean
+          description: >
+            `true` when a NEW machine was bound and one seat was consumed. `false` for the two no-new-seat
+            cases: (a) an IDEMPOTENT replay of the same request file (same single-use nonce), which returns the
+            BYTE-IDENTICAL original response file (deterministic re-packaging of the original machine-bound
+            credential) (FR-005, SC-005); and (b) a K-of-N drift re-match — a request (new nonce) whose
+            fingerprint re-matches an existing active machine reuses the SAME seat and returns a FRESHLY
+            re-signed credential (FR-025). Either way no additional seat is consumed. This boolean carries the
+            new-vs-replay distinction that the online activation encodes as `201` vs `200`; the air-gap portal
+            always answers `200`.
+          example: true
+
+    # --- File envelopes (opaque on the wire) --------------------------------------------------------
+    RequestFile:
+      type: string
+      description: >
+        The air-gap REQUEST file: a base64url-encoded, VERSIONED envelope produced OFFLINE by the licensed
+        app/SDK and carried to the portal. On the wire it is OPAQUE base64url; the server decodes it. Its
+        decoded LOGICAL fields (see `RequestFileEnvelope`, a documentation-only view — NOT the wire format) are:
+        `formatVersion` (explicit format tag, rejected `unknown_format_version` if unknown/future);
+        EITHER `licenseKey` (the signed E001 `LIC1` license token) OR `licenseId` (UUID), exactly one;
+        `fingerprint` = `{ signals: string[] }` of salted per-signal hashes (raw hardware identifiers NEVER
+        appear); a single-use `nonce` (high-entropy, >=128-bit, makes re-submission idempotent, FR-005); a
+        `producedAt` ISO-8601 timestamp (checked against the freshness window, FR-008); and an optional
+        pseudonymous `label`. The file carries no secret and no signing-key material. A request file larger than
+        the configured maximum size (`maxLength`) is refused `validation_error` (`details.reason = oversize`)
+        BEFORE decoding — an oversize / decompression guard (FR-019).
+      minLength: 1
+      maxLength: 16384
+      pattern: '^[A-Za-z0-9_-]+$'
+      example: "QUlSR1JFUTEuZXlKc2FXTmxibk5sUzJWNUlqb2lURWxETVM0dS4uLn0.c2FsdGVkLWZpbmdlcnByaW50LWVudmVsb3Bl"
+
+    ResponseFile:
+      type: string
+      description: >
+        The air-gap RESPONSE file: a base64url-encoded, VERSIONED, tamper-evident envelope the portal returns,
+        carried back and imported on the originating offline machine. On the wire it is OPAQUE base64url. Its
+        decoded LOGICAL fields (see `ResponseFileEnvelope`, a documentation-only view — NOT the wire format)
+        are: `formatVersion`; `activationId` (the E009 activation UUID); `machineBoundKey` (the signed `LIC1`
+        machine-bound credential — the SAME artifact E009 online activation returns); `keyId` (opaque
+        signing-key id for keyring selection/rotation — never key material); `expiresAt` (ISO-8601 credential
+        expiry); and the pseudonymous `machineId` (salted hash). TAMPER-EVIDENCE is the Ed25519 signature on
+        the embedded `machineBoundKey` credential, verified OFFLINE by the E001 core against a PINNED public
+        key — the envelope carries NO separate envelope-level signature and NO private-key material. A tampered
+        or wrong-machine response file is rejected at IMPORT, not by the portal (FR-006, SC-006).
+      minLength: 1
+      maxLength: 16384
+      pattern: '^[A-Za-z0-9_-]+$'
+      example: "QUlSR1JFU1AxLmV5SmhZM1JwZG1GMGFXOXVTV1FpT2lKaE4yWXhZekprTXlKOS5NRlZERVFvLWMybG5ibVZrLUxKRE1TMWpjbVZrWlc1MGFXRnM"
+
+    # --- Decoded, documentation-only envelope shapes (NOT the wire representation) -------------------
+    SignalHash:
+      type: string
+      description: >
+        One salted hash of a stable hardware signal, computed by the CLIENT (base64url of a 32-byte digest).
+        Raw hardware identifiers are never transmitted, stored, or returned (FR-010). The server matches a
+        returning machine when at least K of N signals match (K-of-N drift tolerance, reusing E009).
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      example: "9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+
+    RequestFileEnvelope:
+      type: object
+      description: >
+        DOCUMENTATION-ONLY decoded view of the request file. This is NOT a wire schema — the request file
+        travels only as the opaque base64url `RequestFile` string inside `AirGapActivateRequest`. Shown here so
+        the logical fields (FR-001) are explicit. Reference the license by EITHER `licenseKey` OR `licenseId`
+        (exactly one).
+      additionalProperties: false
+      required: [formatVersion, fingerprint, nonce, producedAt]
+      properties:
+        formatVersion:
+          type: string
+          description: Explicit request-file format tag; an unknown/future value is refused `unknown_format_version` (FR-014).
+          example: "airgap-req-1"
+        licenseKey:
+          type: string
+          description: >
+            The signed E001 `LIC1` license token the customer holds (NOT the signing key). Provide this OR
+            `licenseId`, not both.
+          example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.aXNzdWVkLXRva2VuLWV4YW1wbGU"
+        licenseId:
+          type: string
+          format: uuid
+          description: The license id (UUID) within the caller's tenant. Provide this OR `licenseKey`, not both.
+        fingerprint:
+          type: object
+          description: The machine fingerprint — N client-computed salted signal hashes (no raw identifiers, FR-010).
+          additionalProperties: false
+          required: [signals]
+          properties:
+            signals:
+              type: array
+              description: >
+                The salted signal hashes. A well-formed payload below the server's configured minimum is refused
+                `insufficient_signals` (a business rule), not a schema error (FR-009).
+              minItems: 1
+              maxItems: 32
+              uniqueItems: true
+              items: { $ref: '#/components/schemas/SignalHash' }
+        nonce:
+          type: string
+          description: >
+            Single-use, high-entropy nonce (>=128-bit) that makes re-submission of the SAME request file
+            idempotent — a replay returns the original response file with no new seat (FR-005). A nonce reused
+            to forge a DIFFERENT activation is refused `nonce_replayed`. Never echoed in any response or error.
+          minLength: 16
+          maxLength: 200
+          pattern: '^[A-Za-z0-9_-]+$'
+          example: "b1946ac92492d2347c6235b4d2611184"
+        producedAt:
+          type: string
+          format: date-time
+          description: When the offline client produced the file (ISO-8601); older than the freshness window → `stale_request` (FR-008).
+          example: "2026-07-15T09:15:00Z"
+        label:
+          type: string
+          description: Optional pseudonymous, human-friendly machine label (never a raw identifier).
+          maxLength: 200
+          example: "Isolated OT workstation 3"
+      oneOf:
+        - required: [licenseKey]
+        - required: [licenseId]
+
+    ResponseFileEnvelope:
+      type: object
+      description: >
+        DOCUMENTATION-ONLY decoded view of the response file. This is NOT a wire schema — the response file
+        travels only as the opaque base64url `ResponseFile` string inside `AirGapActivateResult`. Shown here so
+        the logical fields (FR-006) are explicit. The envelope carries no separate signature and no private-key
+        material; its tamper-evidence is the Ed25519 signature ON the embedded `machineBoundKey`.
+      additionalProperties: false
+      required: [formatVersion, activationId, machineBoundKey, keyId, expiresAt, machineId]
+      properties:
+        formatVersion:
+          type: string
+          description: Explicit response-file format tag so the SDK and server evolve compatibly (FR-014).
+          example: "airgap-resp-1"
+        activationId:
+          type: string
+          format: uuid
+          description: The E009 activation UUID this air-gap activation created or replayed (visible in the tenant registry).
+          example: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+        machineBoundKey:
+          type: string
+          description: >
+            The machine-bound credential — an E001 `LIC1` token, Ed25519-signed by the product's signing key
+            (reusing the E004 signer), that verifies FULLY OFFLINE (zero network) via the E001 verifier core
+            against a pinned public key and ONLY on the bound machine (FR-006, SC-001). This is the SAME
+            artifact E009 online activation returns as `machineBoundKey`. It is safe to embed on the machine;
+            it is NOT the signing key, which is never present in any file.
+          example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImZwayI6M30.bWFjaGluZS1ib3VuZC1zaWduYXR1cmU"
+        keyId:
+          type: string
+          format: uuid
+          description: >
+            Opaque id of the product signing key that signed `machineBoundKey` (E004) — for keyring
+            selection/rotation. Never key material.
+          example: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the machine-bound credential expires (the offline verifier enforces this against the local clock).
+          example: "2027-07-15T09:15:00Z"
+        machineId:
+          type: string
+          description: >
+            Pseudonymous machine identity — a salted hash derived from the fingerprint. Not a raw hardware
+            identifier and not a UUID (FR-010, SC-009).
+          example: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+
+  responses:
+    Unauthorized:
+      description: No resolvable authentication — the runtime `X-API-Key` is missing or invalid, so no tenant context resolves.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noApiKey:
+              value: { code: unauthorized, message: "Missing or invalid API key." }
+    ForbiddenScope:
+      description: >
+        Fail-closed — the API key resolved to a tenant but lacks the required `activate` scope (FR-002). The
+        denied attempt is audited (FR-012).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingScope:
+              value:
+                code: forbidden
+                message: "The activate scope is required."
+                details: { requiredScope: activate }
+    LicenseNotFound:
+      description: >
+        No license resolves within the caller's tenant for the file's `licenseKey`/`licenseId` (a cross-tenant
+        reference also resolves here, FR-011). No seat is consumed and no response file is returned.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownLicense:
+              value:
+                code: license_not_found
+                message: "No such license in this tenant."
+                details: { licenseId: "00000000-0000-4000-8000-000000000000" }
+    RateLimited:
+      description: >
+        The runtime rate limit was exceeded for this API key — the request is refused fail-fast (before the
+        file is parsed), no seat is consumed, no response file is returned, and the throttled attempt is
+        audited (FR-013, SC-012). `Retry-After` gives the seconds to wait before retrying.
+      headers:
+        Retry-After:
+          description: Seconds the client should wait before retrying.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            rateLimited:
+              value:
+                code: rate_limited
+                message: "Too many air-gap requests; retry after the indicated delay."
+                details: { retryAfterSeconds: 60 }
+    SignerUnavailable:
+      description: >
+        The machine-bound credential could not be signed because the E004 signer is unavailable (a signer
+        fault). The transaction rolls back FAIL-CLOSED — no seat is consumed, no activation row is persisted,
+        and no response file is returned. The client MAY retry after a short delay. The signing key is never
+        exposed.
+      headers:
+        Retry-After:
+          description: Seconds the client should wait before retrying.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            signerUnavailable:
+              value:
+                code: signer_unavailable
+                message: "The signing service is temporarily unavailable; no seat was consumed. Retry shortly."
+                details: { retryAfterSeconds: 5 }
