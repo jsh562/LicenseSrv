@@ -46,7 +46,7 @@ description: "Task list for feature implementation: Air-Gapped Activation (E010)
 
 **Extend `ActivationConfig` + `loadActivationConfig` with the air-gap keys the codec (US1/US3) and the route (US1) both read. This is the only true cross-work-item blocker — there is no migration, no new module, and no new dependency.**
 
-- [ ] T001 {FR-020} [COMPLETES FR-020] Extend ActivationConfig + loadActivationConfig with air-gap keys (freshness default 604800s/7d, request+response formatVersion, max request-file size; min-signals = E009 fpMin default 3) in src/server/modules/activation/index.ts → exports: ActivationConfig
+- [X] T001 {FR-020} [COMPLETES FR-020] Extend ActivationConfig + loadActivationConfig with air-gap keys (freshness default 604800s/7d, request+response formatVersion, max request-file size; min-signals = E009 fpMin default 3) in src/server/modules/activation/index.ts → exports: ActivationConfig
 
 ---
 
@@ -54,11 +54,11 @@ description: "Task list for feature implementation: Air-Gapped Activation (E010)
 
 **Independent test**: on an isolated machine produce a request file for an active license; POST it to `/v1/air-gap/activations` on a connected machine; decode the `200` response file; the embedded machine-bound LIC1 verifies offline (zero network) via the E001 WASM core on the originating machine (SC-001/002). **The integration suite provisions an E004 product signing key + unlocks custody + uses the E001 WASM core for offline verify (reuse the E009 activation test harness).**
 
-- [ ] T002 [P] [US1] {FR-001,FR-006,FR-010,FR-014} Unit: request/response codec encode/decode round-trip + explicit formatVersion tag on BOTH files + PII-free envelope (salted hashes only, no raw ids) in src/server/modules/activation/__tests__/airgap.unit.test.ts
-- [ ] T003 [P] [US1] {FR-002,FR-003,FR-006,FR-016} [COMPLETES FR-016] IT: request file → POST /v1/air-gap/activations → 200 {responseFile,created:true} → decode → offline verify via the E001 WASM core, zero network (SC-001/002) in src/server/modules/activation/__tests__/airgap.integration.test.ts
-- [ ] T004 [US1] {FR-001,FR-007,FR-014} [COMPLETES FR-001,FR-014] Codec: versioned base64url(JSON) request decode + response encode; unknown/future formatVersion → unknown_format_version; malformed/non-base64url → validation_error in src/server/modules/activation/airgap.ts → exports: decodeRequestFile, encodeResponseFile
-- [ ] T005 [US1] {FR-003,FR-006,FR-022} [COMPLETES FR-022] processAirGapRequest: validate file layer → call E009 activate() verbatim → package the signed LIC1 + metadata (activationId/keyId/expiresAt=min(license exp,TTL)/machineId) into the response file in src/server/modules/activation/airgap.ts ← T001:ActivationConfig → exports: processAirGapRequest
-- [ ] T006 [US1] {FR-002,FR-012,FR-013} [COMPLETES FR-002] Register POST /v1/air-gap/activations (activate scope; SAME @fastify/rate-limit /v1 context as activate/deactivate; audit airgap.activated on success) in src/server/modules/activation/routes.ts after:T005 ← T005:processAirGapRequest
+- [X] T002 [P] [US1] {FR-001,FR-006,FR-010,FR-014} Unit: request/response codec encode/decode round-trip + explicit formatVersion tag on BOTH files + PII-free envelope (salted hashes only, no raw ids) in src/server/modules/activation/__tests__/airgap.unit.test.ts
+- [X] T003 [P] [US1] {FR-002,FR-003,FR-006,FR-016} [COMPLETES FR-016] IT: request file → POST /v1/air-gap/activations → 200 {responseFile,created:true} → decode → offline verify via the E001 WASM core, zero network (SC-001/002) in src/server/modules/activation/__tests__/airgap.integration.test.ts
+- [X] T004 [US1] {FR-001,FR-007,FR-014} [COMPLETES FR-001,FR-014] Codec: versioned base64url(JSON) request decode + response encode; unknown/future formatVersion → unknown_format_version; malformed/non-base64url → validation_error in src/server/modules/activation/airgap.ts → exports: decodeRequestFile, encodeResponseFile
+- [X] T005 [US1] {FR-003,FR-006,FR-022} [COMPLETES FR-022] processAirGapRequest: validate file layer → call E009 activate() verbatim → package the signed LIC1 + metadata (activationId/keyId/expiresAt=min(license exp,TTL)/machineId) into the response file in src/server/modules/activation/airgap.ts ← T001:ActivationConfig → exports: processAirGapRequest
+- [X] T006 [US1] {FR-002,FR-012,FR-013} [COMPLETES FR-002] Register POST /v1/air-gap/activations (activate scope; SAME @fastify/rate-limit /v1 context as activate/deactivate; audit airgap.activated on success) in src/server/modules/activation/routes.ts after:T005 ← T005:processAirGapRequest
 
 ---
 
@@ -66,8 +66,8 @@ description: "Task list for feature implementation: Air-Gapped Activation (E010)
 
 **Independent test**: process request files for distinct machines up to a 2-seat license's limit; the next distinct-machine request is refused `409 seat_limit_reached` with no response file and no seat; re-processing an already-processed request file returns the BYTE-IDENTICAL original response and does not change the seat count; the air-gap activation appears in the same E009 registry as online activations (SC-003/004/005). All seat/nonce/tenant behavior is inherited from `activate()` — these tasks prove it holds through the file transport.
 
-- [ ] T007 [US2] {FR-003,FR-004,FR-005} [COMPLETES FR-003,FR-004,FR-005] IT: one seat consumed + registry parity with online (SC-003); seats-full → 409 seat_limit_reached, no response file, no seat (SC-004); same-file replay → byte-identical response, created:false, no 2nd seat (SC-005) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T006
-- [ ] T008 [US2] {FR-011,FR-021,FR-024,FR-025} [COMPLETES FR-011,FR-021,FR-024,FR-025] IT: cross-tenant license → 404 license_not_found (SC-010); nonce retained via the activation → replay past the freshness window; cross-transport shared nonce (online↔air-gap); drift re-match (new nonce, ≥K) → same seat, created:false, refreshed response in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T007
+- [X] T007 [US2] {FR-003,FR-004,FR-005} [COMPLETES FR-003,FR-004,FR-005] IT: one seat consumed + registry parity with online (SC-003); seats-full → 409 seat_limit_reached, no response file, no seat (SC-004); same-file replay → byte-identical response, created:false, no 2nd seat (SC-005) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T006
+- [X] T008 [US2] {FR-011,FR-021,FR-024,FR-025} [COMPLETES FR-011,FR-021,FR-024,FR-025] IT: cross-tenant license → 404 license_not_found (SC-010); nonce retained via the activation → replay past the freshness window; cross-transport shared nonce (online↔air-gap); drift re-match (new nonce, ≥K) → same seat, created:false, refreshed response in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T007
 
 ---
 
@@ -75,11 +75,11 @@ description: "Task list for feature implementation: Air-Gapped Activation (E010)
 
 **Independent test**: a response file imports and verifies offline, then tampering with it (or presenting it on a machine whose fingerprint doesn't match) makes the offline import/verify reject it — the portal is not involved (SC-006); a malformed / truncated / unknown-format-version / oversize / stale / too-few-signals / non-active-license / signer-unavailable submission is each refused with a DISTINCT code, no response file, and no seat, and each refusal is audited (SC-007/008). File-layer validation runs BEFORE `activate()` (HINT-003), so file errors stay distinct from activation errors and never leave partial state (FR-028).
 
-- [ ] T009 [P] [US3] {FR-008,FR-019} Unit: freshness (producedAt older than the window → stale_request) + oversize guard (pre-decode, validation_error details.reason=oversize) in src/server/modules/activation/__tests__/airgap.unit.test.ts
-- [ ] T010 [US3] {FR-006} [COMPLETES FR-006] IT: response imports + verifies offline, then a tampered / wrong-machine response → rejected at IMPORT (E001 offline verify fails, not the portal) (SC-006) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T008
-- [ ] T011 [US3] {FR-007,FR-008,FR-009,FR-019,FR-023,FR-028} [COMPLETES FR-007,FR-009,FR-023] IT: malformed / unknown-version / stale / oversize / too-few-signals / non-active / signer-unavailable each a DISTINCT code, no response file, no seat (SC-007/008) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T010
-- [ ] T012 [US3] {FR-008,FR-019,FR-028} [COMPLETES FR-008,FR-019,FR-028] Add oversize (pre-decode) + freshness (producedAt window → stale_request) validation BEFORE activate(); fail-closed, no partial state on any refusal in src/server/modules/activation/airgap.ts after:T005 ← T004:decodeRequestFile
-- [ ] T013 [US3] {FR-012} Route: audit airgap.denied for EVERY refusal incl the file-layer 400s (validation_error/unknown_format_version/stale_request/oversize) — route them through the audit hook, no direct-return bypass (HINT-006) in src/server/modules/activation/routes.ts after:T006
+- [X] T009 [P] [US3] {FR-008,FR-019} Unit: freshness (producedAt older than the window → stale_request) + oversize guard (pre-decode, validation_error details.reason=oversize) in src/server/modules/activation/__tests__/airgap.unit.test.ts
+- [X] T010 [US3] {FR-006} [COMPLETES FR-006] IT: response imports + verifies offline, then a tampered / wrong-machine response → rejected at IMPORT (E001 offline verify fails, not the portal) (SC-006) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T008
+- [X] T011 [US3] {FR-007,FR-008,FR-009,FR-019,FR-023,FR-028} [COMPLETES FR-007,FR-009,FR-023] IT: malformed / unknown-version / stale / oversize / too-few-signals / non-active / signer-unavailable each a DISTINCT code, no response file, no seat (SC-007/008) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T010
+- [X] T012 [US3] {FR-008,FR-019,FR-028} [COMPLETES FR-008,FR-019,FR-028] Add oversize (pre-decode) + freshness (producedAt window → stale_request) validation BEFORE activate(); fail-closed, no partial state on any refusal in src/server/modules/activation/airgap.ts after:T005 ← T004:decodeRequestFile
+- [X] T013 [US3] {FR-012} Route: audit airgap.denied for EVERY refusal incl the file-layer 400s (validation_error/unknown_format_version/stale_request/oversize) — route them through the audit hook, no direct-return bypass (HINT-006) in src/server/modules/activation/routes.ts after:T006
 
 ---
 
@@ -94,13 +94,13 @@ description: "Task list for feature implementation: Air-Gapped Activation (E010)
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T016 {FR-010,FR-017,FR-018} [COMPLETES FR-010,FR-017,FR-018] Leakage/threat IT: files, logs, and audit carry only salted hashes / pseudonymous machineId; the signing key never appears anywhere; no request-supplied claim trusted (server resolves/matches/checks) (SC-009) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T013
-- [ ] T017 {FR-012,FR-026} [COMPLETES FR-012,FR-026] Audit IT: airgap.activated + airgap.denied (every refusal) carry actor/action/reason, never raw ids/nonce/fingerprint; air-gap provenance recorded SOLELY in the audit log (SC-011) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T013
-- [ ] T018 {FR-013} [COMPLETES FR-013] Rate-limit IT: over-limit → 429 rate_limited + Retry-After; the throttled attempt is audited (SC-012) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T013
-- [ ] T019 [P] {FR-027} [COMPLETES FR-027] Confirm air-gap-originated rows inherit the E009 retention/erasure path (SAME activation table, no separate air-gap lifecycle) — assertion + note in src/server/modules/activation/airgap.ts
-- [ ] T020 Perf IT: a single air-gap process (decode + activate + sign + encode) well under 1s in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T018
-- [ ] T021 Enforce ≥80% line+branch coverage of the air-gap codec + route in vitest.config.ts after:T020
-- [ ] T022 [P] Add air-gap CI workflow (typecheck + lint, Testcontainers IT + coverage, npm audit --omit=dev --audit-level=high, semgrep) in .github/workflows/airgap.yml
+- [X] T016 {FR-010,FR-017,FR-018} [COMPLETES FR-010,FR-017,FR-018] Leakage/threat IT: files, logs, and audit carry only salted hashes / pseudonymous machineId; the signing key never appears anywhere; no request-supplied claim trusted (server resolves/matches/checks) (SC-009) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T013
+- [X] T017 {FR-012,FR-026} [COMPLETES FR-012,FR-026] Audit IT: airgap.activated + airgap.denied (every refusal) carry actor/action/reason, never raw ids/nonce/fingerprint; air-gap provenance recorded SOLELY in the audit log (SC-011) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T013
+- [X] T018 {FR-013} [COMPLETES FR-013] Rate-limit IT: over-limit → 429 rate_limited + Retry-After; the throttled attempt is audited (SC-012) in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T013
+- [X] T019 [P] {FR-027} [COMPLETES FR-027] Confirm air-gap-originated rows inherit the E009 retention/erasure path (SAME activation table, no separate air-gap lifecycle) — assertion + note in src/server/modules/activation/airgap.ts
+- [X] T020 Perf IT: a single air-gap process (decode + activate + sign + encode) well under 1s in src/server/modules/activation/__tests__/airgap.integration.test.ts after:T018
+- [X] T021 Enforce ≥80% line+branch coverage of the air-gap codec + route in vitest.config.ts after:T020
+- [X] T022 [P] Add air-gap CI workflow (typecheck + lint, Testcontainers IT + coverage, npm audit --omit=dev --audit-level=high, semgrep) in .github/workflows/airgap.yml
 
 ---
 

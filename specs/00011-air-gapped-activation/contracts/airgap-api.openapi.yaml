@@ -525,6 +525,10 @@ components:
         the logical fields (FR-006) are explicit. The envelope carries no separate signature and no private-key
         material; its tamper-evidence is the Ed25519 signature ON the embedded `machineBoundKey`.
       additionalProperties: false
+      # keyId/expiresAt are present but nullable: they are INFORMATIONAL only — the authoritative signing-key
+      # id and expiry live INSIDE the self-describing `machineBoundKey` credential (its `kid`/`exp` claims),
+      # which is what the E001 core uses offline (AD-003). The server emits them null; a future build may
+      # populate them without changing the verify path.
       required: [formatVersion, activationId, machineBoundKey, keyId, expiresAt, machineId]
       properties:
         formatVersion:
@@ -546,17 +550,18 @@ components:
             it is NOT the signing key, which is never present in any file.
           example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImZwayI6M30.bWFjaGluZS1ib3VuZC1zaWduYXR1cmU"
         keyId:
-          type: string
-          format: uuid
+          type: [string, "null"]
           description: >
-            Opaque id of the product signing key that signed `machineBoundKey` (E004) — for keyring
-            selection/rotation. Never key material.
-          example: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+            INFORMATIONAL, nullable. The authoritative signing-key id lives inside the `machineBoundKey`
+            credential (its `kid` claim); the offline verifier selects the keyring entry from that, not from
+            this field. Emitted null by the server. Never key material.
+          example: null
         expiresAt:
-          type: string
-          format: date-time
-          description: When the machine-bound credential expires (the offline verifier enforces this against the local clock).
-          example: "2027-07-15T09:15:00Z"
+          type: [string, "null"]
+          description: >
+            INFORMATIONAL, nullable. The authoritative expiry lives inside the credential (its `exp` claim =
+            min(license expiry, credential TTL), FR-022) and the E001 core enforces THAT offline. Emitted null.
+          example: null
         machineId:
           type: string
           description: >

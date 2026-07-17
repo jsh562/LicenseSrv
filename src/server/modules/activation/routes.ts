@@ -9,11 +9,12 @@ import type pg from "pg";
 import { z } from "zod";
 
 import { resolveApiKey } from "../../auth/apikey.js";
-import { recordSecurityEvent } from "../../audit/index.js";
+import { recordSecurityEvent, writeAudit } from "../../audit/index.js";
 import { requireRole } from "../../console/rbac-middleware.js";
 import { withTenant } from "../../db/client.js";
 import type { Signer } from "../signing/signer.js";
 import { activate, type ActivationResult } from "./activate.js";
+import { processAirGapRequest } from "./airgap.js";
 import { deactivate } from "./deactivate.js";
 import { ActivationError, type ActivationConfig } from "./index.js";
 import { listActivations } from "./registry.js";
@@ -32,6 +33,9 @@ function err(reply: FastifyReply, status: number, code: string, message: string,
   return reply.code(status).send(body);
 }
 const validation = (r: FastifyReply, m = "invalid request"): FastifyReply => err(r, 400, "validation_error", m);
+
+/** The air-gap portal body — an opaque base64url request-file envelope (E010 FR-002). */
+const airgapSchema = z.object({ requestFile: z.string().min(1).max(1_000_000) });
 
 /**
  * Run a handler, mapping a thrown ActivationError to its HTTP status; other errors propagate (→ 500). A
@@ -173,6 +177,37 @@ export function registerActivationRoutes(app: FastifyInstance, pool: pg.Pool, de
         await deactivate(pool, req.tenant!.tenantId, "activation-api", p.data.activationId);
         return reply.code(204).send();
       });
+    });
+
+    // Air-gap portal (E010): decode a request FILE → activate via the shared accounting → signed response FILE.
+    // Always 200 (created flag), never 201 — a file-exchange transaction, not a REST resource (AD-007).
+    const auditDenied = (tenantId: string, code: string) =>
+      withTenant(pool, tenantId, (q) => recordSecurityEvent(q, { actor: "activation-api", action: "airgap.denied", target: code })).catch(() => undefined);
+
+    scope.post("/v1/air-gap/activations", rl, async (req, reply) => {
+      if (!requireActivateScope(req, reply)) {
+        // FR-012/SC-011: a scope denial is audited when the tenant is known (403); a 401 (unresolvable key) has no tenant to scope.
+        if (req.tenant) await auditDenied(req.tenant.tenantId, "forbidden");
+        return reply;
+      }
+      const tenantId = req.tenant!.tenantId;
+      const b = airgapSchema.safeParse(req.body);
+      if (!b.success) {
+        await auditDenied(tenantId, "validation_error"); // FR-012/HINT-006: audit file-layer refusals too
+        return validation(reply, "a requestFile is required");
+      }
+      return guard(
+        reply,
+        async () => {
+          const { responseFile, created, activationId } = await processAirGapRequest(pool, signer, config, tenantId, b.data.requestFile);
+          // FR-012/FR-026: airgap.activated is the sole air-gap provenance signal (the activation row has none).
+          await withTenant(pool, tenantId, (q) => writeAudit(q, { actor: "activation-api", action: "airgap.activated", target: activationId }));
+          return reply.code(200).send({ responseFile, created });
+        },
+        // FR-012/HINT-006: audit EVERY air-gap refusal — file-layer (oversize/unknown-version/stale/validation)
+        // AND business (seat_limit/license_not_active/nonce_replayed/insufficient_signals) — reason code only.
+        (e) => auditDenied(tenantId, e.code),
+      );
     });
   });
 

@@ -1,0 +1,25 @@
+Completed: 2026-07-16T00:00:00Z
+
+E010 — Air-Gapped Activation: implementation complete (P1 MVP; US4 console variant DEFERRED P2).
+
+Delivered (all three P1 user stories, independently tested):
+- US1 Activate via signed file exchange: POST /v1/air-gap/activations (API key + `activate` scope) decodes a
+  versioned base64url request-file envelope, calls the E009 activate() service VERBATIM (seat cap, K-of-N
+  binding, nonce store-and-replay, fail-closed sign-after-seat — all inherited), and packages the returned
+  signed LIC1 credential into a versioned response file. The credential verifies OFFLINE (with the machine
+  fingerprint) via the E001 WASM core — proven in the integration round-trip.
+- US2 Seat + idempotency: one seat per machine via the shared accounting; seats-full → 409 (no response file);
+  same request file re-submitted → byte-identical response, created:false, no 2nd seat; K-of-N drift re-import
+  → same seat; cross-transport shared nonce (online↔air-gap); cross-tenant → 404.
+- US3 Tamper-evidence + fail-closed: response tamper-evidence is the embedded LIC1's Ed25519 signature (no
+  second envelope signature); a tampered/wrong-machine response is rejected at import; malformed / unknown-
+  version / stale / oversize / too-few-signals / non-active / signer-unavailable each a DISTINCT code with no
+  response file, and EVERY refusal (incl. file-layer 400s) is audited `airgap.denied`.
+- Cross-cutting: air-gap provenance recorded solely as `airgap.activated` (no origin column); rate limit
+  (429 + Retry-After) via the shared /v1 limiter; single air-gap process < 1s; airgap CI workflow.
+
+No new module, no migration, no SPA — air-gap is a file transport over the E009 activation module (airgap.ts
+codec + processAirGapRequest + one route; ActivationConfig extended with air-gap keys).
+
+Validation: server suite 175 passed / 3 skipped, coverage 93.35% lines / 82.4% branches / 95.57% funcs.
+typecheck + lint clean. (No SPA — the console upload/download variant is US4, DEFERRED P2.)

@@ -1,0 +1,17 @@
+QC Passed: 2026-07-16T00:00:00Z
+
+E010 — Air-Gapped Activation: QC PASSED (P1 MVP; US4 console variant DEFERRED P2).
+
+Verified independently by the QC Auditor (gates) and Story Verifier (US/SC traceability).
+All runnable gates green; 2 MEDIUM findings + the untested-SC gaps resolved inline before this pass.
+
+- Server suite: 180 passed / 3 skipped (real Postgres via Testcontainers). Coverage 93.36% lines /
+  82.69% branches / 95.57% funcs (>=80% line+branch gate PASS).
+- typecheck + ESLint: PASS. npm audit (server prod): 0 vulns.
+- PI: strictly additive (E009 activate() + E004 signer unchanged); signing key never exposed; no second
+  crypto/seat model; tamper-evidence = embedded LIC1 Ed25519 signature; PII minimization; append-only audit
+  of every process + every refusal (incl. file-layer 400s + 403 scope denial); fail-closed no-partial-state.
+- Stories US1–US3 (P1): PASS. FR-001..028 + SC-001..020: PASS (FR-015/US4 deferred P2).
+
+Air-gap is a file transport over the E009 activation module — no migration, no new module, no SPA.
+See qc-report.md for details.

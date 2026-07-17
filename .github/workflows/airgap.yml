@@ -1,0 +1,52 @@
+name: airgap
+
+# CI for air-gapped activation (E010): the air-gap file codec + portal route added to the E009 activation
+# module (a file transport over the E009 activate() service — no migration, no SPA). Gates: typecheck + lint,
+# the real-Postgres integration suite (Testcontainers) with the >=80% coverage gate, a production-scope
+# dependency audit, and a semgrep scan over the activation + console sources.
+
+on:
+  push:
+    paths:
+      - "src/server/modules/activation/**"
+      - "src/server/modules/signing/**"
+      - "src/server/console/**"
+      - ".github/workflows/airgap.yml"
+  pull_request:
+    paths:
+      - "src/server/modules/activation/**"
+      - "src/server/modules/signing/**"
+      - "src/server/console/**"
+      - ".github/workflows/airgap.yml"
+
+jobs:
+  server:
+    name: server (air-gap portal + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker → Testcontainers spins up Postgres 16 for the air-gap integration suite
+      # (request file → portal → response file → offline verify via the E001 WASM core).
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  semgrep:
+    name: semgrep (activation + console)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/activation src/server/console

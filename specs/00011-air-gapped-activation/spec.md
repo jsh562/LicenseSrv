@@ -198,8 +198,10 @@ a viewer cannot.
 - **FR-016**: System MUST make the response credential verifiable against the product's pinned public keyring
   (published by E004 and distributed with the client SDK), with no network re-check; the response file's
   `keyId` selects the keyring entry so a credential signed by a rotated key still verifies offline, and the
-  E004 overlapping keyring keeps credentials signed by a prior key valid through rotation. This epic defines no
-  new key-distribution mechanism.
+  E004 overlapping keyring keeps credentials signed by a prior key valid through rotation. The key identifier
+  that selects the keyring entry lives inside the signed credential (the offline verifier uses that); the
+  response envelope may also surface it as informational metadata. This epic defines no new key-distribution
+  mechanism.
 - **FR-017**: System MUST never expose private signing-key material in the request file, the response file, the
   response envelope, storage, logs, or audit entries — the response file carries only the public machine-bound
   credential plus an opaque `keyId`; signing stays in the E004 signer.
@@ -219,10 +221,11 @@ a viewer cannot.
   freshness window gates only the FIRST processing of a not-yet-seen request file — an already-processed request
   file always replays its original response (or is refused `nonce_replayed`) regardless of its age, so the two
   anti-replay controls cannot contradict.
-- **FR-022**: System MUST embed the credential's own expiry in the response file, equal to the lesser of the
-  license expiry and the activation credential TTL (per E009), enforced OFFLINE by the E001 verifier core
-  against the machine's local clock; air-gapped clock drift is an accepted offline tradeoff (as documented in
-  E009), since no network time check is available.
+- **FR-022**: System MUST ensure the machine-bound credential the response file carries bounds its own expiry
+  to the lesser of the license expiry and the activation credential TTL (per E009), enforced OFFLINE by the
+  E001 verifier core against the machine's local clock (the response envelope may also surface this expiry as
+  informational metadata); air-gapped clock drift is an accepted offline tradeoff (as documented in E009),
+  since no network time check is available.
 - **FR-023**: System MUST fail closed when the E004 signer is unavailable — the transaction rolls back, no seat
   is consumed and no activation row is persisted, no response file is returned, and the request is refused
   `503 signer_unavailable`; the operator MAY re-submit the same request file (idempotent).
