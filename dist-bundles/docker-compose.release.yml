@@ -1,0 +1,74 @@
+# Signed self-host bundle (E011 OBJ3 / OR-007). This is the E006 reference stack with `build: .` replaced
+# by the PUBLISHED, digest-pinned release image — so operators run the exact signed artifact, never a local
+# rebuild. The release pipeline substitutes `__IMAGE_REF__` with `ghcr.io/<owner>/<repo>@sha256:<digest>`
+# and cosign-signs the resulting bundle (a detached `.cosign.bundle` blob signature). VERIFY THE BUNDLE
+# SIGNATURE BEFORE USE — see VERIFY.md (docs/release/verify.md). Do NOT edit `image:` to a floating tag;
+# the digest pin is the tamper-evidence.
+#
+# One command — `docker compose up` — brings up PostgreSQL, runs the gated migration job to completion,
+# then starts the API. Same secret contract as E006 (file-mounted, never baked into the image, DDR-005).
+#
+# Before first run, create the secret files under ./secrets/ (see .env.example):
+#   secrets/db_password       secrets/database_url       secrets/api_key_secret
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: licensesrv
+      POSTGRES_DB: licensesrv
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U licensesrv -d licensesrv"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    # No host port exposure by default — only the API is reachable.
+
+  migrate:
+    image: __IMAGE_REF__
+    command: ["node", "dist/server/db/migrate.js"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets:
+      - database_url
+
+  api:
+    image: __IMAGE_REF__
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+      DATABASE_URL_FILE: /run/secrets/database_url
+      API_KEY_SECRET_FILE: /run/secrets/api_key_secret
+    secrets:
+      - database_url
+      - api_key_secret
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          node -e "fetch('http://127.0.0.1:8080/internal/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
+  database_url:
+    file: ./secrets/database_url
+  api_key_secret:
+    file: ./secrets/api_key_secret

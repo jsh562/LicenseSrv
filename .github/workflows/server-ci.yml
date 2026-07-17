@@ -20,8 +20,8 @@ jobs:
   server:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4 # TODO: pin to SHA (DOD)
-      - uses: actions/setup-node@v4 # TODO: pin to SHA (DOD)
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: "npm"
@@ -31,7 +31,7 @@ jobs:
       # Security gate: fail on any high/critical advisory in PROD dependencies.
       - run: npm audit --omit=dev --audit-level=high
       # SAST gate: high-severity findings fail the build (SQL injection, authz).
-      - uses: returntocorp/semgrep-action@v1 # TODO: pin to SHA (DOD)
+      - uses: semgrep/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1
         with:
           config: >-
             p/typescript

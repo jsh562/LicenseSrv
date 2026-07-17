@@ -1,0 +1,4 @@
+QC passed: 2026-07-17
+Verdict: PASS (delivered scope OBJ1–OBJ4). OBJ5 (Helm chart, T024–T026) intentionally DEFERRED per plan (P2, non-MVP).
+QC agents: sddp-qc-auditor → PASS (one HIGH image-casing defect found + fixed + re-verified); sddp-story-verifier → PASS-WITH-DEFERRALS (all P1 + in-scope P2 OBJ4 satisfied; all 4 RRs; 9/10 SCs — only the deferred Helm SC-008/OR-011 unmet).
+See qc-report.md. Live signed release (buildx multi-arch, GHCR push, cosign keyless sign/verify, SLSA L3 provenance, air-gap load smoke) is CI-gated on a real v* tag with GHCR + OIDC; locally validated: authoring, YAML parse, pin-check logic, compose render.

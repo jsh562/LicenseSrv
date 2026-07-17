@@ -34,7 +34,7 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
           - { os: macos-latest, target: aarch64-apple-darwin }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -51,7 +51,7 @@ jobs:
       - name: C integration test (compile + link + run, leak-checked)
         run: cargo test -p ls-ffi --release --test c_integration
       - name: Publish the C-ABI artifact (shared/static lib + header) — T041/FR-010
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: c-abi-${{ matrix.target }}
           path: |
@@ -64,12 +64,12 @@ jobs:
     name: wasm32
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: jetli/wasm-pack-action@v0.4.0
-      - uses: actions/setup-node@v4
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
       - name: Build the WASM package
@@ -81,7 +81,7 @@ jobs:
         working-directory: src/bindings/wasm
         run: node --test tests/verify.test.mjs
       - name: Publish the WASM npm package — T041/FR-010
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wasm-pkg
           path: src/bindings/wasm/pkg
@@ -92,7 +92,7 @@ jobs:
     name: cross-binding parity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p ls-ffi --release --test parity --test determinism --test version
 
@@ -102,9 +102,9 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Build the uniffi-scaffolded library
@@ -126,7 +126,7 @@ jobs:
     name: fuzz gate (parse_token >= 300s)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
@@ -142,9 +142,9 @@ jobs:
     name: audit + coverage (>= 80%)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
       - name: cargo audit (Rust binding deps)

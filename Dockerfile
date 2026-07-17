@@ -5,7 +5,8 @@
 # stage carries just dist/ + production node_modules + migrations. One image, two commands: serve / migrate.
 
 # --- build: prod deps + tsc, compile TS -> dist/, then prune build-only deps ---
-FROM node:22-slim AS build
+# Base image digest-pinned for reproducible, tamper-resistant release builds (E011 OR-006).
+FROM node:22-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund \
@@ -16,7 +17,7 @@ RUN npx tsc -p tsconfig.json \
   && npm prune --omit=dev --no-audit --no-fund
 
 # --- runtime: slim, non-root, only what the app needs at run time ---
-FROM node:22-slim AS runtime
+FROM node:22-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules

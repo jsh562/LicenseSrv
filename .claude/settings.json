@@ -10,7 +10,6 @@
       "Edit",
       "WebFetch",
       "Notebook",
-
       "Bash(git *)",
       "Bash(npm *)",
       "Bash(npx *)",
@@ -28,7 +27,6 @@
       "Bash(govulncheck *)",
       "Bash(dotnet *)",
       "Bash(make *)",
-
       "Bash(cat *)",
       "Bash(ls *)",
       "Bash(find *)",
@@ -54,7 +52,6 @@
       "Bash(true)",
       "Bash(false)",
       "Bash(cd *)",
-
       "Bash(semgrep *)",
       "Bash(trivy *)",
       "Bash(npm audit *)",
@@ -62,7 +59,6 @@
       "Bash(lighthouse *)",
       "Bash(pa11y *)",
       "Bash(axe *)",
-
       "Bash(tsc *)",
       "Bash(eslint *)",
       "Bash(prettier *)",
@@ -73,9 +69,10 @@
       "Bash(vite *)",
       "Bash(esbuild *)",
       "Bash(rollup *)",
-
       "Bash(docker *)",
-      "Bash(docker-compose *)"
+      "Bash(docker-compose *)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:hub.docker.com)"
     ]
   }
 }

@@ -1,0 +1,11 @@
+Completed: 2026-07-16
+Scope: OBJ1–OBJ4 implemented (28/31 tasks). OBJ5 (Helm chart, T024–T026) DEFERRED per plan (P2, non-MVP) — compose (OBJ3) is the MVP self-host path.
+
+Deliverables:
+- .github/workflows/release.yml — v*-tag release pipeline: preflight-pins → deps-scan (npm+cargo audit) → release (build multi-arch OCI archive → DUAL scan Trivy+Grype fail-closed → skopeo push by digest → Syft SBOM CycloneDX+SPDX → cosign KEYLESS sign+attest → self-verify → leaked-secret scan → signed compose + offline air-gap bundles → GitHub release) → airgap-smoke (load + serve, --pull never) → provenance (SLSA Build L3 via slsa-github-generator).
+- Dockerfile — node:22-slim digest-pinned (build + runtime stages) for reproducible release builds (OR-006).
+- All 8 existing .github/workflows/*.yml — third-party actions SHA-pinned (OR-006). Documented pin exceptions allow-listed in the preflight: slsa-github-generator (reusable-by-tag, required by SLSA) and dtolnay/rust-toolchain@<channel> (the ref IS the toolchain channel).
+- dist-bundles/docker-compose.release.yml — E006 stack with build:. replaced by the injected digest-pinned image (OR-007).
+- docs/release/{verify,air-gap-install,failed-release,signing-identity-rotation}.md — operator runbooks RR-001..004; verify quickstart + air-gap install linked from README.
+
+Validation reality (honest): a true end-to-end SIGNED release runs ONLY in CI on a real v* tag with GHCR + GitHub OIDC (keyless Fulcio/Rekor) — it cannot be exercised locally. Locally validated this session: all workflow + compose YAML parse; the pin-check preflight logic run against the real repo → PASS (every action SHA-pinned or a documented exception, base image digest-pinned); the compose bundle renders via `docker compose config` (digest-pinned, no build:). The live signed publish, cosign sign/verify, SLSA provenance, and the air-gap load smoke are CI-gated on the tag. No source code / schema / API / migration changed — E011 only builds, scans, signs, and distributes the unchanged E006 image.

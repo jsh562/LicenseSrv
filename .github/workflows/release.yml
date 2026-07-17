@@ -1,0 +1,346 @@
+name: release
+
+# E011 supply-chain & distribution release pipeline (DDR-001/DDR-002). Triggered by a semver `v*` tag ONLY —
+# the heavy scan/SBOM/sign steps batch at release, not per commit (HINT-001). Fail-closed ordering: build →
+# DUAL-scanner gate (Trivy + Grype + npm/cargo audit, HIGH/CRITICAL) → Syft SBOM → cosign KEYLESS sign +
+# attest → self-verify → SLSA provenance → signed compose + offline air-gap bundles. No long-lived key: cosign
+# uses the ambient GitHub OIDC token (Fulcio cert + Rekor log). All third-party actions are SHA-pinned (OR-006).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub release + upload assets
+  packages: write # push the image to GHCR
+  id-token: write # OIDC for cosign keyless + SLSA provenance
+
+env:
+  REGISTRY: ghcr.io
+  # NB: the image path is derived (lowercased) in the release job's `meta` step — GHCR/OCI reject uppercase
+  # repository paths, and github.repository may contain uppercase. Do not build container refs from the raw name.
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # OR-006: refuse to run a release from an unpinned pipeline (floating action ref or undigested base image).
+  preflight-pins:
+    name: preflight — verify SHA/digest pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Fail on any floating action ref or undigested base image
+        run: |
+          set -euo pipefail
+          # Every third-party `uses:` must be pinned to a 40-hex commit SHA (local `uses: ./` is exempt),
+          # and the Dockerfile base image must be pinned by @sha256 digest. We match only real YAML `uses:`
+          # KEYS (line-anchored, optional list dash) and strip trailing `# comment` — so this check never
+          # trips over the literal `uses:` substrings inside its own script below.
+          bad=0
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            case "$ref" in ./*) continue ;; esac # local composite actions are exempt
+            # Documented pin exceptions:
+            #  - SLSA reusable workflows are pinned by tag by design (required for verification).
+            #  - dtolnay/rust-toolchain@<channel>: the ref IS the toolchain channel (stable/nightly) — the
+            #    action's intended API; a SHA pin would strip the channel. A trusted, channel-ref action.
+            if echo "$ref" | grep -qE '^slsa-framework/slsa-github-generator|^dtolnay/rust-toolchain@(stable|nightly|[0-9])'; then continue; fi
+            if ! echo "$ref" | grep -qE '@[0-9a-f]{40}$'; then
+              echo "::error::unpinned action ref (SHA required): $ref"; bad=1
+            fi
+          done < <(grep -rhE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+' .github/workflows/ \
+                     | sed -E 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+//; s/[[:space:]]*#.*$//; s/[[:space:]]*$//' \
+                     | sort -u)
+          if ! grep -qE 'FROM node:[0-9.]+-slim@sha256:[0-9a-f]{64}' Dockerfile; then
+            echo "::error::Dockerfile base image is not digest-pinned (@sha256:...)"; bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then echo "pin-check failed"; exit 1; fi
+          echo "all actions SHA-pinned and base image digest-pinned"
+
+  # Dependency scan gate (deps side of the dual gate): fail-closed on high/critical (OR-002).
+  deps-scan:
+    name: dependency audit (npm + cargo)
+    needs: preflight-pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --omit=dev --no-audit --no-fund
+      - name: npm audit (production deps, fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - name: cargo audit (verifier-core)
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --file src/verifier-core/Cargo.lock || cargo audit -f Cargo.lock
+
+  # Build the multi-arch image to a local archive, DUAL-scan it, and only THEN push it to GHCR by digest
+  # (OR-001/002/005) — so a scan failure publishes nothing — then sbom/sign/attest/self-verify/bundle it.
+  release:
+    name: build → scan → push → sbom → sign → bundle
+    needs: [preflight-pins, deps-scan]
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # GHCR/OCI require a LOWERCASE repository path, but github.repository may contain uppercase
+      # (e.g. <owner>/LicenseSrv). Derive the lowercased image path once and use it for every container ref.
+      - id: meta
+        run: echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # OR-001: build ONE multi-arch manifest (amd64 + arm64) to a LOCAL OCI archive — NO push yet.
+      # Fail-closed: the scanners below run on this un-pushed archive, so a HIGH/CRITICAL finding
+      # publishes NOTHING (SC-002). A partial-arch build fails the job (no single-arch fallback).
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          outputs: type=oci,dest=./image.oci.tar
+          provenance: false # SLSA provenance is generated by the dedicated slsa-github-generator job below
+
+      # OR-002: DUAL scanners (Trivy + Grype) on the UN-PUSHED archive, fail-closed on HIGH/CRITICAL —
+      # the release cannot reach the push/sign steps below unless BOTH pass.
+      - name: Trivy scan (image archive, fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: ./image.oci.tar # scan the local archive, not a registry ref (nothing is published yet)
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Grype scan (image archive, fail on FIX-AVAILABLE high/critical)
+        uses: anchore/scan-action@869c549e657a088dc0441b08ce4fc0ecdac2bb65 # v5
+        with:
+          image: oci-archive:./image.oci.tar
+          severity-cutoff: high
+          only-fixed: true # align with Trivy ignore-unfixed: gate on ACTIONABLE vulns; Dependabot re-pins the base image
+          fail-build: true
+
+      # OR-005: only NOW push the exact SCANNED bytes to GHCR (skopeo copies the archive verbatim, so the
+      # published digest == the digest we scanned). Capture the manifest-list digest for every downstream job.
+      - id: push
+        run: |
+          set -euo pipefail
+          DEST="${{ steps.meta.outputs.image }}:${{ github.ref_name }}"
+          skopeo copy --all --digestfile=digest.txt "oci-archive:./image.oci.tar" "docker://$DEST"
+          echo "digest=$(cat digest.txt)" >> "$GITHUB_OUTPUT"
+
+      # OR-003: Syft SBOM in BOTH CycloneDX (security) and SPDX (license/NTIA) formats.
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+      - name: SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      # OR-004/012: cosign KEYLESS (OIDC) sign the image digest + attach the SBOM as a signed attestation.
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: cosign sign (keyless) + SBOM attestation
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          IMG="${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
+          cosign sign --yes "$IMG"
+          cosign attest --yes --predicate sbom.cyclonedx.json --type cyclonedx "$IMG"
+          cosign attest --yes --predicate sbom.spdx.json --type spdxjson "$IMG"
+
+      # OR-009: self-verify the signature we just made (fail-closed — no bundle/release if verify fails).
+      - name: self-verify signature
+        run: |
+          set -euo pipefail
+          IMG="${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/v.*$" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMG"
+
+      # OR-007: signed docker-compose self-host bundle, pinned to the published digest (replaces build: .).
+      - name: assemble signed compose bundle
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          sed "s#__IMAGE_REF__#${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}#g" \
+            dist-bundles/docker-compose.release.yml > out/docker-compose.yml
+          cp .env.example out/ 2>/dev/null || true
+          cp docs/release/verify.md out/VERIFY.md
+          tar -C out -czf licensesrv-compose-${{ github.ref_name }}.tgz .
+          cosign sign-blob --yes --bundle licensesrv-compose-${{ github.ref_name }}.tgz.cosign.bundle \
+            licensesrv-compose-${{ github.ref_name }}.tgz
+
+      # OR-010: offline air-gap bundle — the multi-arch OCI image archive + SBOMs + the image's signature and
+      # attestations (with Rekor inclusion proof + Fulcio chain embedded) + the digest-pinned compose file.
+      # `cosign save` writes a self-contained OCI layout that `cosign verify --offline` checks with NO network;
+      # the OCI archive loads with skopeo/`docker load`. Nothing is pulled from a registry on the target host.
+      - name: assemble offline air-gap bundle
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          IMG="${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
+          mkdir -p airgap
+          # Reuse the EXACT multi-arch archive we built and scanned (same digest — no re-pull, no drift).
+          cp image.oci.tar airgap/licensesrv-image.oci.tar
+          cp sbom.cyclonedx.json sbom.spdx.json airgap/
+          # Bundle the image together with its signature + attestations + Rekor proof + Fulcio chain, so the
+          # target host can `cosign verify --offline` with no Sigstore/registry access.
+          cosign save "$IMG" --dir airgap/cosign-bundle
+          cp out/docker-compose.yml airgap/docker-compose.yml
+          cp docs/release/air-gap-install.md airgap/INSTALL.md
+          tar -C airgap -czf licensesrv-airgap-${{ github.ref_name }}.tgz .
+          cosign sign-blob --yes --bundle licensesrv-airgap-${{ github.ref_name }}.tgz.cosign.bundle \
+            licensesrv-airgap-${{ github.ref_name }}.tgz
+
+      # OR-012: keyless-only by construction — cosign uses the ambient OIDC token, so NO signing-key secret is
+      # referenced anywhere (the only secret is the ephemeral GITHUB_TOKEN). Belt-and-braces: scan the assets
+      # we are about to publish for any leaked private key / cloud credential before the release goes out.
+      - name: scan published assets for leaked secrets
+        run: |
+          set -euo pipefail
+          leak=0
+          for f in sbom.cyclonedx.json sbom.spdx.json \
+                   "licensesrv-compose-${{ github.ref_name }}.tgz" "licensesrv-airgap-${{ github.ref_name }}.tgz"; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              *.tgz) data="$(tar -xzO -f "$f" 2>/dev/null || true)" ;;
+              *)     data="$(cat "$f")" ;;
+            esac
+            if printf '%s' "$data" | grep -aqE 'BEGIN( [A-Z]+)? PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[0-9A-Za-z]{36}'; then
+              echo "::error::possible secret leaked into $f — refusing to publish"; leak=1
+            fi
+          done
+          [ "$leak" -eq 0 ] && echo "no private key / credential material in published assets (keyless-only confirmed)"
+          [ "$leak" -eq 0 ]
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-artifacts
+          path: |
+            sbom.cyclonedx.json
+            sbom.spdx.json
+            licensesrv-compose-${{ github.ref_name }}.tgz*
+            licensesrv-airgap-${{ github.ref_name }}.tgz*
+
+      # OR-005: attach the SBOM + signed bundles to the GitHub release.
+      - name: create GitHub release with assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file docs/release/verify.md \
+            sbom.cyclonedx.json sbom.spdx.json \
+            licensesrv-compose-${{ github.ref_name }}.tgz \
+            licensesrv-compose-${{ github.ref_name }}.tgz.cosign.bundle \
+            licensesrv-airgap-${{ github.ref_name }}.tgz \
+            licensesrv-airgap-${{ github.ref_name }}.tgz.cosign.bundle
+
+  # OR-010 smoke (T028): prove the air-gap bundle LOADS and SERVES with NO registry pull. The app image comes
+  # only from the bundled OCI archive (loaded under a LOCAL tag); `--pull never` forbids any registry access,
+  # so a green run proves the offline install path works end-to-end (build → bundle → load → serve).
+  airgap-smoke:
+    name: air-gap load + offline serve smoke (no registry pull)
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artifacts
+      - name: Load the bundled image and run the stack from LOCAL images only
+        run: |
+          set -euo pipefail
+          tar xzf licensesrv-airgap-*.tgz
+          # The DB image is staged ahead of time on a real air-gapped host too; pre-pull it, then forbid all
+          # further pulls so the smoke proves the APP image runs entirely from the offline bundle.
+          docker pull postgres:16-alpine
+          # Load the exact bundled OCI archive into the local daemon under a LOCAL tag (never a GHCR ref → no
+          # pull). skopeo selects the runner's architecture from the manifest list for the daemon.
+          skopeo copy "oci-archive:licensesrv-image.oci.tar" "docker-daemon:licensesrv:airgap-smoke"
+          # Repoint the bundled compose at the locally-loaded tag; every service now resolves from local images.
+          sed -E 's#image: [^[:space:]]+@sha256:[0-9a-f]+#image: licensesrv:airgap-smoke#' \
+            docker-compose.yml > compose.smoke.yml
+          mkdir -p secrets
+          printf '%s' 'airgap-smoke-pw'                                          > secrets/db_password
+          printf '%s' 'postgres://licensesrv:airgap-smoke-pw@db:5432/licensesrv' > secrets/database_url
+          printf '%s' "$(openssl rand -hex 32)"                                  > secrets/api_key_secret
+          docker compose -f compose.smoke.yml up -d --pull never
+          ok=0
+          api="$(docker compose -f compose.smoke.yml ps -q api)"
+          for _ in $(seq 1 40); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' "$api" 2>/dev/null || echo starting)" = "healthy" ]; then ok=1; break; fi
+            sleep 3
+          done
+          docker compose -f compose.smoke.yml ps
+          [ "$ok" -eq 1 ] || docker compose -f compose.smoke.yml logs
+          docker compose -f compose.smoke.yml down -v
+          [ "$ok" -eq 1 ] && echo "air-gap image served /internal/health/ready with no registry pull"
+          [ "$ok" -eq 1 ]
+
+  # OR-004: SLSA Build L3 provenance via the isolated hosted builder (referenced by tag, required by SLSA).
+  provenance:
+    name: SLSA build provenance
+    needs: release
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ${{ needs.release.outputs.image }}
+      digest: ${{ needs.release.outputs.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  # OR-009 (T027): the pipeline self-verifies its OWN published output — both the cosign signature AND the
+  # SLSA provenance — against the identity operators pin (verify.md), AFTER provenance exists. The in-job
+  # `self-verify` step already gates BUNDLE publishing on the signature; this end-to-end gate additionally
+  # confirms provenance. A red run here means the published release is not trustworthy — treat it as an
+  # incident (docs/release/failed-release.md), not a normal deploy.
+  verify-release:
+    name: self-verify published output (cosign + slsa-verifier)
+    needs: [release, provenance]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - uses: slsa-framework/slsa-verifier/actions/installer@6657aada084353c65e5dde35394b1a010289fab0 # v2.7.0
+      - name: Verify signature + SLSA provenance of the published image
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.release.outputs.image }}@${{ needs.release.outputs.digest }}"
+          # 1) keyless signature — the exact identity operators pin in verify.md (case-sensitive OIDC identity).
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/v.*$" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMG"
+          # 2) SLSA Build L3 provenance — proves THIS repo's release workflow built THIS digest on THIS tag.
+          slsa-verifier verify-image "$IMG" \
+            --source-uri "github.com/${GITHUB_REPOSITORY}" \
+            --source-tag "${{ github.ref_name }}"
+          echo "published image signature + SLSA provenance verified against the release identity"
