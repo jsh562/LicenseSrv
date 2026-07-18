@@ -1,5 +1,7 @@
 import pg from "pg";
 
+import { assertTenantMatch } from "../observability/isolation-assertion.js";
+
 const { Pool } = pg;
 
 export type TxQuery = (text: string, params?: readonly unknown[]) => Promise<pg.QueryResult>;
@@ -30,6 +32,11 @@ export async function withTenant<T>(
     await client.query("BEGIN");
     await client.query(`SET LOCAL ROLE ${APP_ROLE}`);
     await client.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
+    // Tenant-isolation continuous assertion (OR-011, OBJ3): at the single per-tx RLS choke point, compare
+    // the authenticated principal's tenant to the GUC just set and signal any mismatch. The assertion is
+    // detection/signal ONLY — it compares in-memory identities, issues NO query, NEVER throws, and does
+    // not alter withTenant's behavior; RLS remains the authoritative block on the rows themselves.
+    assertTenantMatch(tenantId);
     const q: TxQuery = (text, params) => client.query(text, params as unknown[]);
     const result = await fn(q);
     await client.query("COMMIT");

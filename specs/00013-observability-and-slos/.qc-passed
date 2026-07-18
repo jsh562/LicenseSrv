@@ -1,0 +1,5 @@
+QC Passed: 2026-07-17T00:00:00Z
+E012 Observability and SLOs — QC PASS after 1 implement→QC iteration.
+QC agents: sddp-qc-auditor → PASS (build/typecheck/lint clean; prod audit 0 vulns; 268 tests pass / 9 environmental skips; observability coverage 91.36% lines, all files ≥80% line; global 80% line+branch gate met). sddp-story-verifier → PASS-WITH-NOTES (OBJ1-5 all PASS; SC-001..009 PASS; SC-010 PARTIAL — CPU overhead measured/reported but not gate-enforceable locally due to noise; p95 latency within ≤2ms).
+No blocking defects, no PI violations. Non-blocking follow-ups (see qc-report.md): seat-contention/tamper counters + signer helpers exposed+tested but not yet wired into business paths (E013/signing follow-up); per-file branch coverage <80% on tracing/canary/metrics; OR-004 loglevel enum omits trace/fatal. Config-artifact promtool/amtool + semgrep run in CI (absent locally).
+See qc-report.md.

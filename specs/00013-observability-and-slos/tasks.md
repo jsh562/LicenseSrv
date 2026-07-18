@@ -33,9 +33,9 @@
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Add prom-client, @opentelemetry/sdk-node, auto-instrumentations-node, exporter-trace-otlp-http deps + autocannon devDep in package.json
-- [ ] T002 {OR-018} Add observability config keys (metricsPort, otlpEndpoint, traceSampleRatio, logFormat) + secret-free configSummary in src/server/config/index.ts → exports: AppConfig
-- [ ] T003 {OR-018} Resolve OTLP/exporter secrets via `<VAR>_FILE` readSecret precedence (file wins; required-empty fails fast) in src/server/config/secrets.ts after:T002
+- [X] T001 Add prom-client, @opentelemetry/sdk-node, auto-instrumentations-node, exporter-trace-otlp-http deps + autocannon devDep in package.json
+- [X] T002 {OR-018} Add observability config keys (metricsPort, otlpEndpoint, traceSampleRatio, logFormat) + secret-free configSummary in src/server/config/index.ts → exports: AppConfig
+- [X] T003 {OR-018} Resolve OTLP/exporter secrets via `<VAR>_FILE` readSecret precedence (file wins; required-empty fails fast) in src/server/config/secrets.ts after:T002
 
 ---
 
@@ -43,10 +43,10 @@
 
 **The `src/server/observability/` request-context + logger skeleton and the pino wiring in `app.ts` are the cross-cutting blocker every objective builds on.**
 
-- [ ] T004 [P] {OR-002} Create request-context.ts — ALS context + server genReqId + client_request_id sanitize (≤128 ASCII) in src/server/observability/request-context.ts → exports: genReqId
-- [ ] T005 [P] {OR-001} Create logger.ts base — pino from LOG_LEVEL + logFormat + base serializer in src/server/observability/logger.ts after:T002 → exports: createLogger, buildRequestLog
-- [ ] T006 {OR-002} Enable pino + genReqId in `createApp` (Fastify logger false→pino, wire request-context) in src/server/app.ts after:T004,T005 ← T005:createLogger
-- [ ] T007 {OR-001} Migrate main.ts startup `log()` to pino to avoid double logging (HINT-004) in src/server/main.ts after:T006
+- [X] T004 [P] {OR-002} Create request-context.ts — ALS context + server genReqId + client_request_id sanitize (≤128 ASCII) in src/server/observability/request-context.ts → exports: genReqId
+- [X] T005 [P] {OR-001} Create logger.ts base — pino from LOG_LEVEL + logFormat + base serializer in src/server/observability/logger.ts after:T002 → exports: createLogger, buildRequestLog
+- [X] T006 {OR-002} Enable pino + genReqId in `createApp` (Fastify logger false→pino, wire request-context) in src/server/app.ts after:T004,T005 ← T005:createLogger
+- [X] T007 {OR-001} Migrate main.ts startup `log()` to pino to avoid double logging (HINT-004) in src/server/main.ts after:T006
 
 ---
 
@@ -56,12 +56,12 @@
 
 **Independent test**: An authenticated `/v1` request emits exactly one JSON line carrying the four fields (tenant_id null on pre-auth reject) with no secrets/raw PII; filtering by tenant_id returns only that tenant's lines (SC-001).
 
-- [ ] T008 [P] [OBJ1] {OR-001} onResponse hook emits exactly one JSON line per request — all paths incl error/pre-auth/non-`/v1`, tenant_id null when unresolved in src/server/app.ts after:T006
-- [ ] T009 [P] [OBJ1] {OR-004,OR-020} Redaction — secrets/headers/tokens/keys/DSNs, HMAC-hash fingerprints, fail-closed, exclude signing-key material in src/server/observability/logger.ts after:T005
-- [ ] T010 [OBJ1] {OR-003} Log-field contract + tenant_id filterability (required fields, redaction rules doc) in src/server/observability/logger.ts after:T009
-- [ ] T011 [P] [OBJ1] {OR-002} Record sanitized client_request_id as distinct field (never overwrites request_id; no security/metric use) in src/server/observability/request-context.ts after:T004
-- [ ] T012 [P] [OBJ1] {OR-001,OR-003} [COMPLETES OR-001] Unit test — one line/request, 4 fields, tenant_id null pre-auth, per-tenant filter in src/server/observability/__tests__/logger.unit.test.ts
-- [ ] T013 [P] [OBJ1] {OR-002,OR-004} [COMPLETES OR-002] Unit test — redaction, fingerprint HMAC, fail-closed, server vs client request_id in src/server/observability/__tests__/logging.unit.test.ts
+- [X] T008 [P] [OBJ1] {OR-001} onResponse hook emits exactly one JSON line per request — all paths incl error/pre-auth/non-`/v1`, tenant_id null when unresolved in src/server/app.ts after:T006
+- [X] T009 [P] [OBJ1] {OR-004,OR-020} Redaction — secrets/headers/tokens/keys/DSNs, HMAC-hash fingerprints, fail-closed, exclude signing-key material in src/server/observability/logger.ts after:T005
+- [X] T010 [OBJ1] {OR-003} Log-field contract + tenant_id filterability (required fields, redaction rules doc) in src/server/observability/logger.ts after:T009
+- [X] T011 [P] [OBJ1] {OR-002} Record sanitized client_request_id as distinct field (never overwrites request_id; no security/metric use) in src/server/observability/request-context.ts after:T004
+- [X] T012 [P] [OBJ1] {OR-001,OR-003} [COMPLETES OR-001] Unit test — one line/request, 4 fields, tenant_id null pre-auth, per-tenant filter in src/server/observability/__tests__/logger.unit.test.ts
+- [X] T013 [P] [OBJ1] {OR-002,OR-004} [COMPLETES OR-002] Unit test — redaction, fingerprint HMAC, fail-closed, server vs client request_id in src/server/observability/__tests__/logging.unit.test.ts
 
 ---
 
@@ -71,16 +71,16 @@
 
 **Independent test**: Prometheus scrapes `/metrics` and finds RED+infra series in OpenMetrics format with no tenant_id/request_id/license_key label; the SLO dashboard renders activation ≥99.9%, issuance p95 <300ms, availability 99.9% (validate panel "pending").
 
-- [ ] T014 [OBJ2] {OR-008} Create metrics.ts — prom-client registry + STATIC label allowlist (route/outcome/method) + exemplar support in src/server/observability/metrics.ts → exports: registry
-- [ ] T015 [OBJ2] {OR-006,OR-008} RED instruments (histograms, SLO buckets incl 120/300ms) + seat-contention + tamper counters in src/server/observability/metrics.ts after:T014 → exports: recordRed
-- [ ] T016 [OBJ2] {OR-007,OR-020} Infra metrics — process CPU/mem, pg pool/conn stats, signer availability only (no key material) in src/server/observability/metrics.ts after:T015
-- [ ] T017 [OBJ2] {OR-006} Record RED metrics per route+outcome in the onResponse hook in src/server/app.ts after:T008,T015 ← T015:recordRed
-- [ ] T018 [OBJ2] {OR-005,OR-014} Dedicated internal metrics-port listener (configurable non-public bind; bind failure non-fatal/fail-open) in src/server/main.ts after:T007,T016
-- [ ] T019 [P] [OBJ2] {OR-010,OR-019} SLI recording rules — good/total ratios + latency percentiles, 30-day window, DOD budgets in observability/prometheus/recording-rules.yml
-- [ ] T020 [OBJ2] {OR-009,OR-019} Grafana SLO dashboards vs targets + validate-latency panel "pending" until E013 in observability/grafana/dashboards/slo-overview.json after:T019
-- [ ] T021 [P] [OBJ2] {OR-008} [COMPLETES OR-008] Unit test label allowlist — no tenant_id/request_id/license_key label (SC-006) in src/server/observability/__tests__/metrics.unit.test.ts
-- [ ] T022 [OBJ2] {OR-005,OR-006,OR-007} [COMPLETES OR-006] Int test — scrape RED+infra; bind-fail non-fatal in src/server/observability/__tests__/metrics.integration.test.ts after:T018
-- [ ] T023 [P] [OBJ2] {OR-010,OR-019} [COMPLETES OR-019] Config test — promtool check+test recording rules + Grafana JSON lint in observability/__tests__/recording-rules.config.test.ts
+- [X] T014 [OBJ2] {OR-008} Create metrics.ts — prom-client registry + STATIC label allowlist (route/outcome/method) + exemplar support in src/server/observability/metrics.ts → exports: registry
+- [X] T015 [OBJ2] {OR-006,OR-008} RED instruments (histograms, SLO buckets incl 120/300ms) + seat-contention + tamper counters in src/server/observability/metrics.ts after:T014 → exports: recordRed
+- [X] T016 [OBJ2] {OR-007,OR-020} Infra metrics — process CPU/mem, pg pool/conn stats, signer availability only (no key material) in src/server/observability/metrics.ts after:T015
+- [X] T017 [OBJ2] {OR-006} Record RED metrics per route+outcome in the onResponse hook in src/server/app.ts after:T008,T015 ← T015:recordRed
+- [X] T018 [OBJ2] {OR-005,OR-014} Dedicated internal metrics-port listener (configurable non-public bind; bind failure non-fatal/fail-open) in src/server/main.ts after:T007,T016
+- [X] T019 [P] [OBJ2] {OR-010,OR-019} SLI recording rules — good/total ratios + latency percentiles, 30-day window, DOD budgets in observability/prometheus/recording-rules.yml
+- [X] T020 [OBJ2] {OR-009,OR-019} Grafana SLO dashboards vs targets + validate-latency panel "pending" until E013 in observability/grafana/dashboards/slo-overview.json after:T019
+- [X] T021 [P] [OBJ2] {OR-008} [COMPLETES OR-008] Unit test label allowlist — no tenant_id/request_id/license_key label (SC-006) in src/server/observability/__tests__/metrics.unit.test.ts
+- [X] T022 [OBJ2] {OR-005,OR-006,OR-007} [COMPLETES OR-006] Int test — scrape RED+infra; bind-fail non-fatal in src/server/observability/__tests__/metrics.integration.test.ts after:T018
+- [X] T023 [P] [OBJ2] {OR-010,OR-019} [COMPLETES OR-019] Config test — promtool check+test recording rules + Grafana JSON lint in observability/__tests__/recording-rules.config.test.ts
 
 ---
 
@@ -90,15 +90,15 @@
 
 **Independent test**: A request whose authenticated tenant differs from the GUC tenant is blocked AND a page-level signal fires (SC-005); same-tenant traffic plus one full canary cadence raises no page; a canary probe failure raises the dead-man's-switch, not the isolation page.
 
-- [ ] T024 [OBJ3] {OR-011} Assert req.tenant==GUC (no cross-tenant read); emit tenant_isolation_violation_total counter + security log in src/server/observability/isolation-assertion.ts after:T014
-- [ ] T025 [OBJ3] {OR-011} Hook the assertion into withTenant() (per-tx at GUC set; assertion signals, RLS blocks) in src/server/db/client.ts after:T024
-- [ ] T026 [OBJ3] {OR-012,OR-016} Isolation-page alert (no burn/for: window; fires first eval on violation>0; SEV1; ≤~1min) + canary dead-man's-switch in observability/prometheus/alert-rules.yml
-- [ ] T027 [OBJ3] {OR-012} Synthetic canary — reserved synthetic tenants, cadence ~60s, pages if cross-tenant NOT blocked, probe-fail distinct in src/server/observability/canary.ts
-- [ ] T028 [OBJ3] {OR-012} Wire canary startup (fail-open; distinct from breach path) in src/server/main.ts after:T018,T027
-- [ ] T029 [OBJ3] {RR-001} Runbook — tenant-isolation page response (confirm via OR-011 log fields, contain, blast radius, notify) in docs/runbooks/observability/tenant-isolation-page.md
-- [ ] T030 [P] [OBJ3] {OR-011} [COMPLETES OR-011] Unit test isolation — mismatch signals, same-tenant silent, no cross-tenant query in src/server/observability/__tests__/isolation.unit.test.ts
-- [ ] T031 [OBJ3] {OR-012} Int test — cross-tenant blocked+pages; same-tenant no page; probe-fail→dead-man in src/server/observability/__tests__/isolation.integration.test.ts after:T025,T027
-- [ ] T032 [OBJ3] {OR-012} [COMPLETES OR-012] Config test — promtool asserts isolation-page alert fires on synthetic series in observability/__tests__/isolation-rules.config.test.ts after:T026
+- [X] T024 [OBJ3] {OR-011} Assert req.tenant==GUC (no cross-tenant read); emit tenant_isolation_violation_total counter + security log in src/server/observability/isolation-assertion.ts after:T014
+- [X] T025 [OBJ3] {OR-011} Hook the assertion into withTenant() (per-tx at GUC set; assertion signals, RLS blocks) in src/server/db/client.ts after:T024
+- [X] T026 [OBJ3] {OR-012,OR-016} Isolation-page alert (no burn/for: window; fires first eval on violation>0; SEV1; ≤~1min) + canary dead-man's-switch in observability/prometheus/alert-rules.yml
+- [X] T027 [OBJ3] {OR-012} Synthetic canary — reserved synthetic tenants, cadence ~60s, pages if cross-tenant NOT blocked, probe-fail distinct in src/server/observability/canary.ts
+- [X] T028 [OBJ3] {OR-012} Wire canary startup (fail-open; distinct from breach path) in src/server/main.ts after:T018,T027
+- [X] T029 [OBJ3] {RR-001} Runbook — tenant-isolation page response (confirm via OR-011 log fields, contain, blast radius, notify) in docs/runbooks/observability/tenant-isolation-page.md
+- [X] T030 [P] [OBJ3] {OR-011} [COMPLETES OR-011] Unit test isolation — mismatch signals, same-tenant silent, no cross-tenant query in src/server/observability/__tests__/isolation.unit.test.ts
+- [X] T031 [OBJ3] {OR-012} Int test — cross-tenant blocked+pages; same-tenant no page; probe-fail→dead-man in src/server/observability/__tests__/isolation.integration.test.ts after:T025,T027
+- [X] T032 [OBJ3] {OR-012} [COMPLETES OR-012] Config test — promtool asserts isolation-page alert fires on synthetic series in observability/__tests__/isolation-rules.config.test.ts after:T026
 
 ---
 
@@ -108,13 +108,13 @@
 
 **Independent test**: An activation request produces a trace attributing app/DB/signer spans (SC-007), its trace_id retrieves the correlated logs, and with the Collector unavailable request handling is unaffected (fail-open, SC-009).
 
-- [ ] T033 [OBJ4] {OR-013} NodeSDK + auto-instr (Fastify+pg+http) + OTLP + BatchSpanProcessor; pg db.statement OFF (HINT-001 preload) in src/server/observability/tracing.ts → exports: startTracing
-- [ ] T034 [OBJ4] {OR-014} Parent-based ratio sampler (configurable, default 10%) + fail-open export in src/server/observability/tracing.ts after:T033
-- [ ] T035 [OBJ4] {OR-013,OR-020} Manual signer span (availability/latency/outcome only; no key/payload; exception redacted) in src/server/observability/tracing.ts after:T033
-- [ ] T036 [OBJ4] {OR-013} trace_id/span_id in every log line regardless of sampling (SC-002 bridge) in src/server/observability/logger.ts after:T010,T033
-- [ ] T037 [OBJ4] {OR-013,OR-014} Preload tracing via --require BEFORE app/pg/fastify import (HINT-001); telemetry failures never crash bootstrap in src/server/main.ts after:T028,T033
-- [ ] T038 [P] [OBJ4] {OR-013,OR-020} [COMPLETES OR-020] Unit test — pg statement OFF, signer span no key/payload, trace_id unsampled in src/server/observability/__tests__/tracing.unit.test.ts
-- [ ] T039 [OBJ4] {OR-013,OR-014} [COMPLETES OR-013] Int test — app/DB/signer spans + trace_id↔log; Collector fail-open in src/server/observability/__tests__/tracing.integration.test.ts after:T037
+- [X] T033 [OBJ4] {OR-013} NodeSDK + auto-instr (Fastify+pg+http) + OTLP + BatchSpanProcessor; pg db.statement OFF (HINT-001 preload) in src/server/observability/tracing.ts → exports: startTracing
+- [X] T034 [OBJ4] {OR-014} Parent-based ratio sampler (configurable, default 10%) + fail-open export in src/server/observability/tracing.ts after:T033
+- [X] T035 [OBJ4] {OR-013,OR-020} Manual signer span (availability/latency/outcome only; no key/payload; exception redacted) in src/server/observability/tracing.ts after:T033
+- [X] T036 [OBJ4] {OR-013} trace_id/span_id in every log line regardless of sampling (SC-002 bridge) in src/server/observability/logger.ts after:T010,T033
+- [X] T037 [OBJ4] {OR-013,OR-014} Preload tracing via --require BEFORE app/pg/fastify import (HINT-001); telemetry failures never crash bootstrap in src/server/main.ts after:T028,T033
+- [X] T038 [P] [OBJ4] {OR-013,OR-020} [COMPLETES OR-020] Unit test — pg statement OFF, signer span no key/payload, trace_id unsampled in src/server/observability/__tests__/tracing.unit.test.ts
+- [X] T039 [OBJ4] {OR-013,OR-014} [COMPLETES OR-013] Int test — app/DB/signer spans + trace_id↔log; Collector fail-open in src/server/observability/__tests__/tracing.integration.test.ts after:T037
 
 ---
 
@@ -124,21 +124,21 @@
 
 **Independent test**: A sustained fast+slow burn pages on-call while a brief sub-threshold blip does not (SC-008); `amtool` confirms SEV1/SEV2 reach the on-call receivers and the escalation policy is present.
 
-- [ ] T040 [OBJ5] {OR-015,OR-016} Multi-window burn-rate rules — availability/activation/latency (page 14.4x/6x; ticket 1x; SEV1/SEV2) in observability/prometheus/alert-rules.yml after:T019,T026
-- [ ] T041 [OBJ5] {OR-014} [COMPLETES OR-014] Metrics-unavailability dead-man's-switch alert (target up==0) in observability/prometheus/alert-rules.yml after:T040
-- [ ] T042 [OBJ5] {OR-016} [COMPLETES OR-016] Alertmanager routing — SEV1 (isolation+fast-burn), SEV2 (slow-burn), escalation 10/30min in observability/alertmanager/config.yml
-- [ ] T043 [OBJ5] {OR-015,OR-016} Config test — promtool check+test burn rules (SC-008) + amtool check-config in observability/__tests__/alert-rules.config.test.ts after:T042
+- [X] T040 [OBJ5] {OR-015,OR-016} Multi-window burn-rate rules — availability/activation/latency (page 14.4x/6x; ticket 1x; SEV1/SEV2) in observability/prometheus/alert-rules.yml after:T019,T026
+- [X] T041 [OBJ5] {OR-014} [COMPLETES OR-014] Metrics-unavailability dead-man's-switch alert (target up==0) in observability/prometheus/alert-rules.yml after:T040
+- [X] T042 [OBJ5] {OR-016} [COMPLETES OR-016] Alertmanager routing — SEV1 (isolation+fast-burn), SEV2 (slow-burn), escalation 10/30min in observability/alertmanager/config.yml
+- [X] T043 [OBJ5] {OR-015,OR-016} Config test — promtool check+test burn rules (SC-008) + amtool check-config in observability/__tests__/alert-rules.config.test.ts after:T042
 
 ---
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-- [ ] T044 [P] {OR-017} Self-host stack overlay (Prometheus+Grafana+Alertmanager+OTel Collector) mounting versioned artifacts in dist-bundles/docker-compose.observability.yml
-- [ ] T045 [P] {RR-002} Runbook — SLO burn response (SLI→dashboards→exemplar traces→tenant logs, mitigate) in docs/runbooks/observability/slo-burn-response.md
-- [ ] T046 [P] {RR-003} Runbook — observability-stack failure (confirm API fail-open, restore telemetry) in docs/runbooks/observability/telemetry-stack-failure.md
-- [ ] T047 [P] {RR-004} Runbook — latency/error diagnosis (dashboard→burn alert→exemplar trace→per-tenant logs) in docs/runbooks/observability/latency-error-diagnosis.md
-- [ ] T048 [P] Performance test — autocannon instrumentation overhead vs baseline (≤~2ms p95, ≤~5% CPU; SC-010) in src/server/observability/__tests__/overhead.perf.test.ts
-- [ ] T049 [P] Security test — semgrep + npm audit: no secrets/PII in any signal, metrics port not public in src/server/observability/__tests__/no-secrets.security.test.ts
+- [X] T044 [P] {OR-017} Self-host stack overlay (Prometheus+Grafana+Alertmanager+OTel Collector) mounting versioned artifacts in dist-bundles/docker-compose.observability.yml
+- [X] T045 [P] {RR-002} Runbook — SLO burn response (SLI→dashboards→exemplar traces→tenant logs, mitigate) in docs/runbooks/observability/slo-burn-response.md
+- [X] T046 [P] {RR-003} Runbook — observability-stack failure (confirm API fail-open, restore telemetry) in docs/runbooks/observability/telemetry-stack-failure.md
+- [X] T047 [P] {RR-004} Runbook — latency/error diagnosis (dashboard→burn alert→exemplar trace→per-tenant logs) in docs/runbooks/observability/latency-error-diagnosis.md
+- [X] T048 [P] Performance test — autocannon instrumentation overhead vs baseline (≤~2ms p95, ≤~5% CPU; SC-010) in src/server/observability/__tests__/overhead.perf.test.ts
+- [X] T049 [P] Security test — semgrep + npm audit: no secrets/PII in any signal, metrics port not public in src/server/observability/__tests__/no-secrets.security.test.ts
 
 ---
 

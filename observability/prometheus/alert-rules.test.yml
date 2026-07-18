@@ -1,0 +1,60 @@
+# promtool unit tests for the tenant-isolation alerting rules (OR-012, T032). Run in CI via
+# `promtool test rules observability/prometheus/alert-rules.test.yml` (promtool is NOT installed locally;
+# the config test skips this invocation when promtool is absent and instead runs a structural check).
+#
+# Asserts: (1) the isolation PAGE fires on the first evaluation that sees any increase in the violation
+# counter, with the SEV1 page labels; (2) NO page fires for a flat/zero counter (no false positives);
+# (3) the canary dead-man's switch fires when the probe stops completing — as SEV2, NOT the isolation page.
+
+rule_files:
+  - alert-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # (1) A single cross-tenant violation increments the counter → the SEV1 isolation page fires immediately.
+  - interval: 1m
+    input_series:
+      - series: "tenant_isolation_violation_total"
+        values: "0 0 1 1"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TenantIsolationViolation
+        exp_alerts:
+          - exp_labels:
+              severity: SEV1
+              category: security
+              page: "true"
+              slo: tenant_isolation
+
+  # (2) A flat, never-incremented counter → NO isolation page (no false positives on same-tenant traffic).
+  - interval: 1m
+    input_series:
+      - series: "tenant_isolation_violation_total"
+        values: "0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: TenantIsolationViolation
+        exp_alerts: []
+
+  # (3) The canary stops completing probes (canary_up flips to 0) → the SEV2 dead-man's switch fires after
+  #     its `for: 2m`, and it is NOT the isolation page (distinct alert, lower severity).
+  - interval: 1m
+    input_series:
+      - series: "canary_up"
+        values: "1 1 0 0 0 0"
+      - series: "canary_last_success_timestamp_seconds"
+        values: "0 60 120 120 120 120"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: TenantIsolationCanaryDown
+        exp_alerts:
+          - exp_labels:
+              severity: SEV2
+              category: operational
+              page: "false"
+              slo: tenant_isolation
+      # The isolation page MUST NOT fire from a canary execution failure.
+      - eval_time: 5m
+        alertname: TenantIsolationViolation
+        exp_alerts: []

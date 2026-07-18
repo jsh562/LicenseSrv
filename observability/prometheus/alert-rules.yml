@@ -1,0 +1,403 @@
+# Alerting rules (OR-012 / OR-016, OBJ3, per {SAD:ADR-0009} + specs/dod.md alerting policy).
+#
+# This file currently carries the P1 TENANT-ISOLATION invariant alerting only. The multi-window
+# burn-rate SLO alerts (OBJ5, OR-015) are appended to this same file in a later phase; keep the
+# isolation group first and self-contained.
+#
+# Source signals (src/server/observability/isolation-assertion.ts + canary.ts, exposed on the dedicated
+# OpenMetrics port):
+#   - tenant_isolation_violation_total          (counter, NO labels)  — authenticated-tenant != GUC-tenant
+#                                                                        mismatch OR a canary cross-tenant leak
+#   - canary_up                                 (gauge)  — 1 last probe ran, 0 last probe failed to execute
+#   - canary_last_success_timestamp_seconds     (gauge)  — unix seconds of the last completed probe
+#
+# DESIGN (OR-012): tenant isolation is a hard invariant with ZERO error budget. Its page fires on the
+# FIRST evaluation that observes ANY violation — no `for:` window, no burn-rate smoothing — bounding
+# detection-to-page to ~one scrape + evaluation interval (<= ~1 min). A canary EXECUTION failure is
+# classified DISTINCTLY: it is a LOWER-severity operational dead-man's switch, NOT the isolation page, so
+# a broken canary is never misread as a breach and a silently-dead canary is still noticed.
+
+groups:
+  # --- Tenant-isolation paged invariant (OR-012, SEV1 — never burn-rate smoothed) -------------------
+  - name: tenant_isolation
+    rules:
+      # The isolation PAGE. No `for:` window: fires on the first evaluation cycle that sees an increase in
+      # the violation counter. `increase(...[2m]) > 0` captures a fresh violation across two scrapes and
+      # keeps the alert firing ~2 min after the last one so it is not lost between evaluations; detection
+      # latency is still one scrape + eval (<= ~1 min), distinct from the OR-015 burn-rate windows.
+      - alert: TenantIsolationViolation
+        expr: increase(tenant_isolation_violation_total[2m]) > 0
+        labels:
+          severity: SEV1
+          category: security
+          page: "true"
+          slo: tenant_isolation
+        annotations:
+          summary: "Tenant-isolation violation detected (cross-tenant access)"
+          description: >-
+            The tenant-isolation invariant was violated: the authenticated principal's tenant did not
+            match the app.current_tenant GUC at the withTenant() choke point, or the synthetic canary
+            observed a cross-tenant leak. RLS blocks the access, but this is a zero-error-budget security
+            invariant and pages immediately. Confirm the breach via the OR-011 security log event
+            (request_id, authenticated tenant, attempted/GUC tenant, assertion location).
+          runbook: docs/runbooks/observability/tenant-isolation-page.md
+
+  # --- Canary dead-man's switch (OR-012, SEV2 operational — NOT the isolation page) ----------------
+  - name: tenant_isolation_canary
+    rules:
+      # The canary probe failed to execute, or its last successful run is stale relative to the ~60s
+      # cadence. This means loss of BREACH VISIBILITY, not a breach — a distinct LOWER-severity operational
+      # alert so fail-open never becomes a silent blind spot. A short `for:` avoids flapping on a single
+      # missed cadence.
+      - alert: TenantIsolationCanaryDown
+        expr: |
+          canary_up == 0
+          or (time() - canary_last_success_timestamp_seconds > 180)
+        for: 2m
+        labels:
+          severity: SEV2
+          category: operational
+          page: "false"
+          slo: tenant_isolation
+        annotations:
+          summary: "Tenant-isolation canary is not completing probes (dead-man's switch)"
+          description: >-
+            The synthetic tenant-isolation canary has not executed a probe to completion recently
+            (canary_up == 0 or last success older than 3x the cadence). This is NOT an isolation breach —
+            it is loss of breach-detection coverage. Restore the canary before relying on it again.
+          runbook: docs/runbooks/observability/tenant-isolation-page.md
+      # The canary metric is entirely absent from the scrape (worker never started / not exposed). Same
+      # dead-man intent, separated so an absent series (vs. a present 0/stale) is distinguishable.
+      - alert: TenantIsolationCanaryAbsent
+        expr: absent(canary_up)
+        for: 5m
+        labels:
+          severity: SEV2
+          category: operational
+          page: "false"
+          slo: tenant_isolation
+        annotations:
+          summary: "Tenant-isolation canary metric is absent (probe not reporting)"
+          description: >-
+            No canary_up series is present on the metrics endpoint: the synthetic isolation canary is not
+            reporting at all. Operational dead-man's switch (SEV2), NOT the isolation page.
+          runbook: docs/runbooks/observability/tenant-isolation-page.md
+
+  # =================================================================================================
+  # OBJ5 — MULTI-WINDOW MULTI-BURN-RATE SLO ALERTS (OR-015 / OR-016, AD-005, per specs/dod.md).
+  # =================================================================================================
+  # These are the SLO error-budget alerts, DISTINCT from the zero-budget tenant-isolation page above.
+  # They follow the standard Google SRE-workbook multi-window, multi-burn-rate shape: EACH tier fires
+  # only when BOTH a LONG window (the primary "is the budget burning fast enough to care?" signal) AND a
+  # SHORT window (the "is it STILL burning right now?" guard, so we do not alert on an old, already-ended
+  # burn) exceed the same burn-rate threshold. The `and` between the two windows is what suppresses false
+  # pages on a brief sub-threshold blip (SC-008): a short spike breaches the short window but not the long
+  # one, so no page fires.
+  #
+  # Burn rate = (observed error ratio) / (per-SLO error budget). A burn rate of 1 exhausts the whole
+  # 30-day budget in exactly 30 days; 14.4 exhausts it in ~50 hours; 6 in ~5 days. Tiers (AD-005):
+  #   - fast page  — 14.4x over 1h AND 5m   → SEV1 (page)   — budget gone in ~2 days: wake someone.
+  #   - slow page  —    6x over 6h AND 30m  → SEV2 (page)   — sustained degradation: page, less urgent.
+  #   - ticket     —    1x over 3d AND 6h   → SEV3 (ticket) — chronic low-grade burn: file a ticket.
+  #
+  # SLI SOURCE (single canonical definition): the good/total ratios come from the SAME series the
+  # recording rules (observability/prometheus/recording-rules.yml) compute. The SHORT (5m) window of the
+  # availability and activation fast tiers references the recording-rule 5m SLI directly
+  # (`job:request_availability:ratio_rate5m`, `job:activation_success:ratio_rate5m`); the longer windows
+  # (1h/6h/30m/3d) are derived inline from the SAME http_requests_total good/total definition (recording
+  # rules for those windows are not precomputed to keep that file's series count bounded). Error ratio =
+  # 1 - availability ratio.
+  #
+  # ERROR BUDGETS (specs/dod.md SLI/SLO table):
+  #   - availability        99.9% → budget 0.001   (fast 14.4x=0.0144, slow 6x=0.006, ticket 1x=0.001)
+  #   - activation success  99.9% → budget 0.001   (same thresholds; denominator EXCLUDES policy denials)
+  #   - issuance latency  p95<300ms i.e. >=95% of issuance requests within 300ms → budget 0.05
+  #                                            (fast 14.4x=0.72, slow 6x=0.30, ticket 1x=0.05)
+
+  # --- Availability SLO burn-rate (OR-015; SLI: job:request_availability:*) -------------------------
+  - name: slo_availability_burn_rate
+    rules:
+      - alert: AvailabilityErrorBudgetBurnFast
+        # LONG 1h AND SHORT 5m both burning at >= 14.4x the 0.001 budget (>1.44% server-error ratio).
+        # The 5m term reads the recording-rule SLI directly (OR-015 "reference the recording-rule SLI").
+        expr: |
+          (
+            sum(rate(http_requests_total{outcome="server_error"}[1h]))
+            / sum(rate(http_requests_total[1h]))
+          ) > (14.4 * 0.001)
+          and
+          (1 - job:request_availability:ratio_rate5m) > (14.4 * 0.001)
+        labels:
+          severity: SEV1
+          category: slo
+          page: "true"
+          slo: availability
+          burn_rate: fast
+        annotations:
+          summary: "Availability error budget burning FAST (14.4x, 1h+5m) — SEV1 page"
+          description: >-
+            The control-plane availability SLO (99.9%) is burning its 30-day error budget at >= 14.4x over
+            BOTH a 1h and a 5m window: the service is dropping requests fast enough to exhaust the budget in
+            ~2 days. Page on-call. Correlate the availability dashboard -> exemplar traces -> per-tenant logs.
+          runbook: docs/runbooks/observability/slo-burn-response.md
+      - alert: AvailabilityErrorBudgetBurnSlow
+        # LONG 6h AND SHORT 30m both burning at >= 6x the budget — sustained degradation (SEV2 page).
+        expr: |
+          (
+            sum(rate(http_requests_total{outcome="server_error"}[6h]))
+            / sum(rate(http_requests_total[6h]))
+          ) > (6 * 0.001)
+          and
+          (
+            sum(rate(http_requests_total{outcome="server_error"}[30m]))
+            / sum(rate(http_requests_total[30m]))
+          ) > (6 * 0.001)
+        labels:
+          severity: SEV2
+          category: slo
+          page: "true"
+          slo: availability
+          burn_rate: slow
+        annotations:
+          summary: "Availability error budget burning (6x, 6h+30m) — SEV2 page"
+          description: >-
+            The availability SLO is burning at >= 6x over BOTH a 6h and a 30m window — sustained degradation
+            that will exhaust the 30-day budget in ~5 days. Page on-call (SEV2). Investigate via the
+            availability dashboard and recent deploys.
+          runbook: docs/runbooks/observability/slo-burn-response.md
+      - alert: AvailabilityErrorBudgetBurnTicket
+        # LONG 3d AND SHORT 6h both burning at >= 1x the budget — chronic low-grade burn (SEV3 ticket).
+        expr: |
+          (
+            sum(rate(http_requests_total{outcome="server_error"}[3d]))
+            / sum(rate(http_requests_total[3d]))
+          ) > (1 * 0.001)
+          and
+          (
+            sum(rate(http_requests_total{outcome="server_error"}[6h]))
+            / sum(rate(http_requests_total[6h]))
+          ) > (1 * 0.001)
+        labels:
+          severity: SEV3
+          category: slo
+          page: "false"
+          slo: availability
+          burn_rate: ticket
+        annotations:
+          summary: "Availability error budget burning slowly (1x, 3d+6h) — ticket"
+          description: >-
+            The availability SLO has been burning at >= 1x over BOTH a 3d and a 6h window — a chronic,
+            low-grade burn that does not warrant a page but will erode the monthly budget. File a ticket and
+            address in normal engineering flow.
+          runbook: docs/runbooks/observability/slo-burn-response.md
+
+  # --- Activation-success SLO burn-rate (OR-015; SLI: job:activation_success:*) ---------------------
+  # Denominator EXCLUDES policy denials (client_error on /v1/activations) — a seat-limit / non-active /
+  # replayed-nonce refusal is correct behaviour, not a reliability failure (OR-019). Only success vs
+  # server_error count toward the SLI, matching the recording rule.
+  - name: slo_activation_success_burn_rate
+    rules:
+      - alert: ActivationErrorBudgetBurnFast
+        expr: |
+          (
+            sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome="server_error"}[1h]))
+            / sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome=~"success|server_error"}[1h]))
+          ) > (14.4 * 0.001)
+          and
+          (1 - job:activation_success:ratio_rate5m) > (14.4 * 0.001)
+        labels:
+          severity: SEV1
+          category: slo
+          page: "true"
+          slo: activation_success
+          burn_rate: fast
+        annotations:
+          summary: "Activation-success error budget burning FAST (14.4x, 1h+5m) — SEV1 page"
+          description: >-
+            The activation-success SLO (>= 99.9%, excluding policy denials) is burning at >= 14.4x over BOTH
+            a 1h and a 5m window: activations are failing (server errors) fast enough to exhaust the budget in
+            ~2 days. Page on-call. Check the signer, DB, and seat-accounting path.
+          runbook: docs/runbooks/observability/slo-burn-response.md
+      - alert: ActivationErrorBudgetBurnSlow
+        expr: |
+          (
+            sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome="server_error"}[6h]))
+            / sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome=~"success|server_error"}[6h]))
+          ) > (6 * 0.001)
+          and
+          (
+            sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome="server_error"}[30m]))
+            / sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome=~"success|server_error"}[30m]))
+          ) > (6 * 0.001)
+        labels:
+          severity: SEV2
+          category: slo
+          page: "true"
+          slo: activation_success
+          burn_rate: slow
+        annotations:
+          summary: "Activation-success error budget burning (6x, 6h+30m) — SEV2 page"
+          description: >-
+            The activation-success SLO is burning at >= 6x over BOTH a 6h and a 30m window — sustained
+            activation failures. Page on-call (SEV2).
+          runbook: docs/runbooks/observability/slo-burn-response.md
+      - alert: ActivationErrorBudgetBurnTicket
+        expr: |
+          (
+            sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome="server_error"}[3d]))
+            / sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome=~"success|server_error"}[3d]))
+          ) > (1 * 0.001)
+          and
+          (
+            sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome="server_error"}[6h]))
+            / sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome=~"success|server_error"}[6h]))
+          ) > (1 * 0.001)
+        labels:
+          severity: SEV3
+          category: slo
+          page: "false"
+          slo: activation_success
+          burn_rate: ticket
+        annotations:
+          summary: "Activation-success error budget burning slowly (1x, 3d+6h) — ticket"
+          description: >-
+            The activation-success SLO has been burning at >= 1x over BOTH a 3d and a 6h window — chronic
+            low-grade activation failures. File a ticket.
+          runbook: docs/runbooks/observability/slo-burn-response.md
+
+  # --- Issuance-latency SLO burn-rate (OR-015; SLI source: issuance duration histogram) -------------
+  # The issuance SLO is p95 < 300 ms, i.e. >= 95% of POST /admin/licenses requests complete within 300 ms
+  # (budget 0.05 = 5% allowed to exceed 300 ms). The "error ratio" for the burn rate is the SLOW-request
+  # fraction: 1 - (requests <= 300ms) / (all requests), read from the SAME histogram the recording rule
+  # `job:issuance_latency:p95_5m` derives its percentile from (le="0.3" is the 300 ms SLO bucket).
+  - name: slo_issuance_latency_burn_rate
+    rules:
+      - alert: IssuanceLatencyErrorBudgetBurnFast
+        expr: |
+          (
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="0.3"}[1h]))
+              / sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="+Inf"}[1h]))
+            )
+          ) > (14.4 * 0.05)
+          and
+          (
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="0.3"}[5m]))
+              / sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="+Inf"}[5m]))
+            )
+          ) > (14.4 * 0.05)
+        labels:
+          severity: SEV1
+          category: slo
+          page: "true"
+          slo: issuance_latency
+          burn_rate: fast
+        annotations:
+          summary: "Issuance-latency error budget burning FAST (14.4x, 1h+5m) — SEV1 page"
+          description: >-
+            The issuance-latency SLO (p95 < 300 ms) is burning its budget FAST: the fraction of
+            POST /admin/licenses requests slower than 300 ms exceeds 72% over BOTH a 1h and a 5m window.
+            Page on-call. Cross-check job:issuance_latency:p95_5m on the dashboard and the DB/signer path.
+          runbook: docs/runbooks/observability/slo-burn-response.md
+      - alert: IssuanceLatencyErrorBudgetBurnSlow
+        expr: |
+          (
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="0.3"}[6h]))
+              / sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="+Inf"}[6h]))
+            )
+          ) > (6 * 0.05)
+          and
+          (
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="0.3"}[30m]))
+              / sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="+Inf"}[30m]))
+            )
+          ) > (6 * 0.05)
+        labels:
+          severity: SEV2
+          category: slo
+          page: "true"
+          slo: issuance_latency
+          burn_rate: slow
+        annotations:
+          summary: "Issuance-latency error budget burning (6x, 6h+30m) — SEV2 page"
+          description: >-
+            The issuance-latency SLO is burning at >= 6x over BOTH a 6h and a 30m window — sustained slow
+            issuance (>30% of requests over 300 ms). Page on-call (SEV2).
+          runbook: docs/runbooks/observability/slo-burn-response.md
+      - alert: IssuanceLatencyErrorBudgetBurnTicket
+        expr: |
+          (
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="0.3"}[3d]))
+              / sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="+Inf"}[3d]))
+            )
+          ) > (1 * 0.05)
+          and
+          (
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="0.3"}[6h]))
+              / sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST",le="+Inf"}[6h]))
+            )
+          ) > (1 * 0.05)
+        labels:
+          severity: SEV3
+          category: slo
+          page: "false"
+          slo: issuance_latency
+          burn_rate: ticket
+        annotations:
+          summary: "Issuance-latency error budget burning slowly (1x, 3d+6h) — ticket"
+          description: >-
+            The issuance-latency SLO has been burning at >= 1x over BOTH a 3d and a 6h window — chronically
+            slow issuance. File a ticket.
+          runbook: docs/runbooks/observability/slo-burn-response.md
+
+  # =================================================================================================
+  # OR-014 — METRICS-UNAVAILABILITY DEAD-MAN'S SWITCH ([COMPLETES OR-014]).
+  # =================================================================================================
+  # Fail-open telemetry means a down metrics endpoint / Prometheus is non-fatal to the API — but it MUST
+  # NOT be a SILENT blind spot: while metrics are unavailable, NONE of the burn-rate alerts above (nor the
+  # isolation-violation counter's scrape) can fire, so loss of breach/SLO visibility must itself alert.
+  # This is a DISTINCT operational alert (not an SLO burn): the Prometheus scrape target for the license
+  # API is down (`up == 0`) or has never appeared (`absent`). Job label `license-api` matches the scrape
+  # job in the self-host overlay's prometheus.yml (dist-bundles/docker-compose.observability.yml).
+  - name: metrics_availability
+    rules:
+      - alert: MetricsTargetDown
+        # The metrics endpoint is being scraped but the last scrape failed (process up, metrics port down,
+        # or the whole app down). A short `for:` rides out a single transient failed scrape.
+        expr: up{job="license-api"} == 0
+        for: 2m
+        labels:
+          severity: SEV2
+          category: operational
+          page: "false"
+          slo: metrics_availability
+        annotations:
+          summary: "License-API metrics target is DOWN (up == 0) — loss of SLO/breach visibility"
+          description: >-
+            Prometheus cannot scrape the license-API metrics endpoint (up == 0 for >= 2m). Telemetry is
+            fail-open so the API itself may be serving fine, but while metrics are down NO burn-rate or
+            tenant-isolation counter can be evaluated — this is loss of observability, not a silent no-op.
+            Restore the metrics listener / scrape path; see the telemetry-stack-failure runbook.
+          runbook: docs/runbooks/observability/telemetry-stack-failure.md
+      - alert: MetricsTargetAbsent
+        # The target series never appeared at all (mis-scraped job, never-started listener). Same
+        # dead-man intent as above, separated so an absent target is distinguishable from a present up==0.
+        expr: absent(up{job="license-api"})
+        for: 5m
+        labels:
+          severity: SEV2
+          category: operational
+          page: "false"
+          slo: metrics_availability
+        annotations:
+          summary: "License-API metrics target is ABSENT (never scraped) — loss of SLO/breach visibility"
+          description: >-
+            No up{job="license-api"} series exists: Prometheus has no license-API scrape target at all
+            (mis-configured job or a metrics listener that never started). Operational dead-man's switch —
+            restore the scrape target so SLO and tenant-isolation signals are visible again.
+          runbook: docs/runbooks/observability/telemetry-stack-failure.md

@@ -1,0 +1,16 @@
+# Grafana dashboard provisioning for the self-host overlay (OR-017, T044). Loads the versioned SLO
+# dashboard JSON (observability/grafana/dashboards/*.json) from disk on boot, so the SLO overview renders
+# with no manual import. The dashboards dir is mounted read-only at /var/lib/grafana/dashboards.
+apiVersion: 1
+
+providers:
+  - name: license-api-slo
+    orgId: 1
+    folder: "License API SLOs"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -27,5 +27,9 @@ COPY package.json ./
 # Drop privileges: the built-in non-root `node` user (uid 1000). No secrets or writable app state here.
 USER node
 EXPOSE 8080
-# Default command = serve. The migration job overrides this with: node dist/server/db/migrate.js
-CMD ["node", "dist/server/main.js"]
+# Default command = serve. Tracing is loaded as an ESM PRELOAD via `--import` (HINT-001) so the OTel SDK
+# starts and patches pg/fastify/http BEFORE the app imports them. `--import` (not `--require`) is used
+# because this is an ESM ("type":"module") project: `--require` cannot load the ESM tracing module. The
+# preload is fail-open — a down/absent Collector never affects boot. The migration job overrides this CMD
+# with: node dist/server/db/migrate.js
+CMD ["node", "--import", "./dist/server/observability/tracing.js", "dist/server/main.js"]

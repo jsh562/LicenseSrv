@@ -1,0 +1,102 @@
+# Self-host OBSERVABILITY STACK overlay (OR-017 / AD-008, E012 OBJ Polish T044). Cloud-agnostic: stands up
+# Prometheus + Grafana + Alertmanager + OpenTelemetry Collector next to the license API and mounts the
+# VERSIONED, in-repo operator artifacts (prometheus rules + scrape config, alertmanager routing, grafana
+# SLO dashboards). No proprietary-SaaS dependency — everything here is self-hostable.
+#
+# HOW TO RUN — this is an OVERLAY, layered on top of the app's base/release compose (which defines the
+# `api` and `db` services). From the repo root, run the app together with the observability stack:
+#
+#     docker compose -f dist-bundles/docker-compose.release.yml \
+#                    -f dist-bundles/docker-compose.observability.yml up
+#
+# (Swap docker-compose.release.yml for the E006 dev compose if running a locally-built image.) This file
+# also EXTENDS the existing `api` service with the two observability env vars it needs — the OTLP trace
+# endpoint and the metrics port — without redefining the rest of the app service.
+#
+# METRICS SCRAPE + THE LOOPBACK-BOUND PORT: the API exposes OpenMetrics on a dedicated INTERNAL port bound
+# to 127.0.0.1 (OR-005 / AD-001 — never a public interface). So the Prometheus container shares the API
+# container's network namespace (`network_mode: "service:api"`) and scrapes 127.0.0.1:9464 directly; the
+# metrics port is therefore never published on the compose network. A consequence of the shared netns:
+# Prometheus is reachable to Grafana/Alertmanager via the API service name (api:9090), and its own UI is
+# not host-published by default (view SLOs through Grafana; to expose the Prometheus UI directly, publish
+# 9090 on the `api` service).
+#
+# Images are pinned by tag (matching the release-bundle pinning posture). Before production use, review and
+# bump to current patched tags and set a real Grafana admin password (GF_SECURITY_ADMIN_PASSWORD).
+
+services:
+  # Extend the app service (defined by the base compose) with observability wiring only.
+  api:
+    environment:
+      # Export OTLP/HTTP traces to the Collector (fail-open on the app side; a down Collector is non-fatal).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # Dedicated internal metrics port (default 9464); stays loopback-bound. Prometheus scrapes it via the
+      # shared network namespace below.
+      OBS_METRICS_PORT: "9464"
+      # Sample 10% of traces by default (parent-based ratio); tune per environment.
+      OBS_TRACE_SAMPLE_RATIO: "0.1"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    # Share the API container's network namespace so a loopback-bound metrics port (127.0.0.1:9464) is
+    # scrapeable WITHOUT publishing metrics on the compose network (preserves OR-005 / AD-001).
+    network_mode: "service:api"
+    depends_on:
+      - api
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d # 30-day SLO error-budget window (OR-019)
+      - --web.enable-lifecycle
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/prometheus/recording-rules.yml:/etc/prometheus/rules/recording-rules.yml:ro
+      - ../observability/prometheus/alert-rules.yml:/etc/prometheus/rules/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ../observability/alertmanager/config.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093" # Alertmanager UI (optional; restrict/remove in production)
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    depends_on:
+      - api # Prometheus datasource is reachable at api:9090 (Prometheus shares the api netns)
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # CHANGE ME before production — default kept only so the turnkey stack boots.
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000" # Grafana UI — the primary operator surface for SLO dashboards
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.0
+    command: ["--config=/etc/otel-collector/config.yml"]
+    volumes:
+      - ../observability/otel-collector/config.yml:/etc/otel-collector/config.yml:ro
+    # OTLP ingest ports are reachable to the API on the compose network via the `otel-collector` DNS name;
+    # not host-published by default. Uncomment to inspect/ingest from the host.
+    # ports:
+    #   - "4317:4317"  # OTLP gRPC
+    #   - "4318:4318"  # OTLP HTTP
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

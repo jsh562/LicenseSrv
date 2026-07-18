@@ -1,0 +1,92 @@
+# SLI recording rules (OR-010 / OR-019, per {SAD:ADR-0009} + specs/dod.md SLI/SLO table).
+#
+# Precompute the good/total ratios and latency percentiles that the Grafana SLO dashboards
+# (observability/grafana/dashboards/slo-overview.json) and the burn-rate alerts (OBJ5,
+# observability/prometheus/alert-rules.yml) consume, so every downstream reader shares one canonical
+# SLI definition rather than re-deriving it.
+#
+# Source series come from the RED instruments in src/server/observability/metrics.ts:
+#   - http_requests_total{route,method,outcome}                    (counter)
+#   - http_request_duration_seconds_bucket{route,method,outcome,le} (histogram)
+# The `route` label is a bounded route PATTERN, never a raw URL (OR-008 cardinality ceiling).
+#
+# SLO targets (specs/dod.md): availability 99.9%; activation success >= 99.9% (EXCLUDING policy denials);
+# issuance p95 < 300 ms. The validate p95/p99 SLO (< 120 ms) is PENDING E013 — the online validate/
+# heartbeat handler ships in E013, so its source series do not yet exist; those rules are included but
+# COMMENTED OUT below so E013 enables them by uncommenting (IP-003).
+#
+# Windows: a short 5m window feeds the live dashboards / latency panels; the 30d rolling ratios back the
+# SLO error-budget view. Multi-window burn-rate rules that consume these ratios land in alert-rules.yml.
+
+groups:
+  - name: slo_availability
+    interval: 30s
+    rules:
+      # Availability SLI: fraction of requests that did NOT server-error, over a 30d rolling window.
+      - record: job:request_availability:ratio_rate30d
+        expr: |
+          sum(rate(http_requests_total{outcome!="server_error"}[30d]))
+          /
+          sum(rate(http_requests_total[30d]))
+      # Short-window availability for the live dashboard.
+      - record: job:request_availability:ratio_rate5m
+        expr: |
+          sum(rate(http_requests_total{outcome!="server_error"}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+  - name: slo_activation_success
+    interval: 30s
+    rules:
+      # Activation success SLI: successful activations / (successes + server errors) on the activation
+      # route, EXCLUDING policy denials. A client_error on /v1/activations is a business refusal
+      # (seat-limit / non-active license / replayed nonce / too-few signals) — correct behaviour, not a
+      # reliability failure — so it is excluded from the denominator (OR-019).
+      - record: job:activation_success:ratio_rate30d
+        expr: |
+          sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome="success"}[30d]))
+          /
+          sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome=~"success|server_error"}[30d]))
+      - record: job:activation_success:ratio_rate5m
+        expr: |
+          sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome="success"}[5m]))
+          /
+          sum(rate(http_requests_total{route="/v1/activations",method="POST",outcome=~"success|server_error"}[5m]))
+
+  - name: slo_issuance_latency
+    interval: 30s
+    rules:
+      # Issuance latency SLI: p95 request duration for POST /admin/licenses over 5m (SLO target < 300 ms).
+      - record: job:issuance_latency:p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST"}[5m])) by (le)
+          )
+      - record: job:issuance_latency:p99_5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum(rate(http_request_duration_seconds_bucket{route="/admin/licenses",method="POST"}[5m])) by (le)
+          )
+
+  # --- PENDING E013: validate / heartbeat latency SLI (SLO target p95 < 120 ms) ----------------------
+  # The online validate/heartbeat handler ships in E013 (IP-003). Until then the
+  # http_request_duration_seconds_bucket{route="/v1/validate"} series does not exist and these rules
+  # would produce no data, so they are provided here COMMENTED OUT. E013 enables the validate SLI by
+  # uncommenting this group (record names are stable so the dashboard/alerts can reference them today).
+  # - name: slo_validate_latency
+  #   interval: 30s
+  #   rules:
+  #     - record: job:validate_latency:p95_5m
+  #       expr: |
+  #         histogram_quantile(
+  #           0.95,
+  #           sum(rate(http_request_duration_seconds_bucket{route="/v1/validate",method="POST"}[5m])) by (le)
+  #         )
+  #     - record: job:validate_latency:p99_5m
+  #       expr: |
+  #         histogram_quantile(
+  #           0.99,
+  #           sum(rate(http_request_duration_seconds_bucket{route="/v1/validate",method="POST"}[5m])) by (le)
+  #         )

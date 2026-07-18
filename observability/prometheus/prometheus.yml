@@ -1,0 +1,42 @@
+# Minimal Prometheus config for the self-host observability overlay (OR-017, T044). Loaded by the
+# Prometheus service in dist-bundles/docker-compose.observability.yml.
+#
+# SCRAPE TARGET — the license API exposes OpenMetrics on a DEDICATED INTERNAL port bound to LOOPBACK
+# (127.0.0.1:<OBS_METRICS_PORT>, default 9464) so the metrics surface is never on a public interface
+# (OR-005 / AD-001). To scrape a loopback-bound port from a separate container, the Prometheus service in
+# the overlay shares the API container's network namespace (`network_mode: "service:api"`), so
+# `127.0.0.1:9464` here IS the API's metrics port. This preserves the non-public-port guarantee (metrics
+# are never published on the compose network) while still being scrapeable.
+#
+# The `job` label MUST be `license-api` — the metrics-unavailability dead-man's switch
+# (up{job="license-api"} == 0, alert-rules.yml) matches on exactly this job.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: license-api
+
+# The versioned recording + alerting rules, mounted read-only by the overlay. Referenced explicitly (not
+# a glob) so the promtool *.test.yml unit-test fixtures in the same source dir are never loaded as rules.
+rule_files:
+  - /etc/prometheus/rules/recording-rules.yml
+  - /etc/prometheus/rules/alert-rules.yml
+
+# Fire alerts through Alertmanager (its own service on the compose network; resolvable via the API
+# container's DNS because Prometheus shares that container's network namespace).
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # The license API's dedicated internal metrics port (loopback within the shared API netns).
+  - job_name: license-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:9464"]
+  # Prometheus scraping itself (also on the shared netns).
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]

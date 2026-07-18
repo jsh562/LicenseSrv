@@ -1,0 +1,120 @@
+# Alertmanager routing + escalation for the license-API observability stack
+# (OR-016 [COMPLETES OR-016], AD-005/AD-008, per specs/dod.md alerting + escalation policy).
+#
+# This is a VERSIONED, CLOUD-AGNOSTIC config: it routes alerts by the `severity` label the rules attach
+# (SEV1 / SEV2 / SEV3) to on-call receivers using ONLY self-hostable transports — a generic webhook plus
+# email. It has NO hard dependency on any proprietary SaaS. Slack / PagerDuty / Opsgenie appear ONLY as
+# commented-out optional receivers a managed instance may enable (specs/dod.md: managed may use
+# PagerDuty/Opsgenie; self-host uses Grafana OnCall / email / webhook).
+#
+# SEVERITY -> RECEIVER:
+#   SEV1  — tenant-isolation page (TenantIsolationViolation) + fast-burn availability/issuance/activation
+#           pages. Highest urgency. Notify on-call immediately; re-notify every 10 min until acked so an
+#           UNACKED SEV1 auto-escalates within ~10 min (OR-016 / {DOD:DDR-2}).
+#   SEV2  — slow-burn (sustained degradation) pages + operational dead-man's switches (canary down,
+#           metrics target down). Page on-call; re-notify every 30 min so SEV2 escalates to the lead at
+#           ~30 min (OR-016 / {DOD:DDR-2}).
+#   SEV3  — error-budget TICKETS (chronic low-grade burn). No page — routed to the default ticketing sink.
+#
+# The escalation CADENCE is modelled with `repeat_interval` (how often Alertmanager re-notifies an
+# unresolved, unacked alert): 10m for SEV1, 30m for SEV2. `group_wait: 0s` on SEV1 sends the first page
+# with no batching delay ("immediate", matching the isolation page's OR-012 latency intent).
+#
+# Operator setup: replace the placeholder receiver endpoints (webhook URLs, email addresses, and the
+# `global.smtp_*` relay) with real values, then mount this file as /etc/alertmanager/alertmanager.yml
+# (the self-host overlay dist-bundles/docker-compose.observability.yml does this). Validate with
+# `amtool check-config observability/alertmanager/config.yml`.
+
+global:
+  # Re-send a resolved notification if an alert stays resolved this long (housekeeping default).
+  resolve_timeout: 5m
+  # SMTP relay for the email receivers. Placeholders — set to the operator's relay. amtool validates the
+  # structure only (it does not connect), so these may stay as placeholders in the versioned artifact.
+  smtp_smarthost: "smtp.example.com:587"
+  smtp_from: "alertmanager@license-api.example.com"
+  smtp_require_tls: true
+
+# Top-level route: the default (catch-all) sink is the ticketing receiver; severity-specific child routes
+# override it for pages. `group_by` batches related alerts (same alertname + SLO) into one notification.
+route:
+  receiver: default-ticket
+  group_by: ["alertname", "slo"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # --- SEV1: page on-call immediately; escalate (re-notify) every 10 min until acked --------------
+    - matchers:
+        - severity = "SEV1"
+      receiver: oncall-sev1
+      group_wait: 0s # send the first SEV1 page with no batching delay ("immediate")
+      group_interval: 1m
+      repeat_interval: 10m # SEV1 auto-escalation cadence (OR-016 / {DOD:DDR-2})
+      continue: false
+    # --- SEV2: page on-call; escalate to lead at ~30 min --------------------------------------------
+    - matchers:
+        - severity = "SEV2"
+      receiver: oncall-sev2
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 30m # SEV2 escalation-to-lead cadence (OR-016 / {DOD:DDR-2})
+      continue: false
+    # --- SEV3: ticket only (no page) ---------------------------------------------------------------
+    - matchers:
+        - severity = "SEV3"
+      receiver: default-ticket
+      group_wait: 1m
+      group_interval: 10m
+      repeat_interval: 12h
+
+# Inhibition: while a SEV1 page for an SLO is firing, suppress the noisier SEV2/SEV3 alerts for the SAME
+# SLO so on-call gets one clear signal per incident rather than three.
+inhibit_rules:
+  - source_matchers:
+      - severity = "SEV1"
+    target_matchers:
+      - severity =~ "SEV2|SEV3"
+    equal: ["slo"]
+
+receivers:
+  # Default ticketing sink (SEV3 + any unmatched alert). Generic webhook — point at the operator's
+  # ticketing/automation endpoint (self-hostable; no SaaS dependency).
+  - name: default-ticket
+    webhook_configs:
+      - url: "http://alert-webhook:9095/tickets"
+        send_resolved: true
+
+  # SEV1 on-call: generic webhook (integrate with the operator's pager/OnCall) + email backup.
+  - name: oncall-sev1
+    webhook_configs:
+      - url: "http://alert-webhook:9095/oncall/sev1"
+        send_resolved: true
+    email_configs:
+      - to: "oncall-primary@license-api.example.com"
+        send_resolved: true
+        headers:
+          Subject: "[SEV1] {{ .CommonLabels.alertname }} — {{ .CommonAnnotations.summary }}"
+    # --- OPTIONAL managed-instance receivers (commented — enable per deployment; NOT a hard dep) -----
+    # slack_configs:
+    #   - api_url_file: /run/secrets/slack_webhook_url   # self-hostable Slack; secret via file
+    #     channel: "#oncall-sev1"
+    #     send_resolved: true
+    # pagerduty_configs:
+    #   - routing_key_file: /run/secrets/pagerduty_routing_key
+    #     severity: critical
+
+  # SEV2 on-call: webhook + email to the on-call + lead (30-min escalation target).
+  - name: oncall-sev2
+    webhook_configs:
+      - url: "http://alert-webhook:9095/oncall/sev2"
+        send_resolved: true
+    email_configs:
+      - to: "oncall-primary@license-api.example.com, oncall-lead@license-api.example.com"
+        send_resolved: true
+        headers:
+          Subject: "[SEV2] {{ .CommonLabels.alertname }} — {{ .CommonAnnotations.summary }}"
+    # OPTIONAL (commented): route SEV2 to a lower-urgency Slack channel on a managed instance.
+    # slack_configs:
+    #   - api_url_file: /run/secrets/slack_webhook_url
+    #     channel: "#oncall-sev2"
+    #     send_resolved: true

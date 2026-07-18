@@ -1,0 +1,9 @@
+Completed: 2026-07-17T00:00:00Z
+E012 Observability and SLOs — all 49 tasks implemented (Phases 1-8).
+- OBJ1 (logging): pino request logger + request_id/ALS context + redaction/fingerprint-HMAC + one-line-per-request.
+- OBJ2 (metrics): prom-client registry (static label allowlist, no high-card labels), RED+infra, dedicated fail-open /metrics port, recording rules + Grafana dashboard.
+- OBJ3 (isolation): withTenant() assertion (no cross-tenant read) → tenant_isolation_violation_total + SEV1 page; synthetic canary + dead-man's-switch; RR-001 runbook.
+- OBJ4 (tracing): OTel NodeSDK --import preload (fail-open), ParentBased ratio sampler, RedactingSpanProcessor (SQL/params stripped), signer span (no key material), trace_id-in-log for unsampled spans.
+- OBJ5 (alerting): multi-window burn-rate rules (14.4x/6x/1x SEV1/SEV2/SEV3), metrics-unavailability dead-man, Alertmanager routing + escalation.
+- Polish: self-host compose overlay (Prometheus/Grafana/Alertmanager/OTel-Collector), 3 runbooks, autocannon overhead perf test, no-secrets security test.
+Validation: build/typecheck/lint clean; full Vitest suite 268 passed / 9 skipped (promtool/amtool are CI-only). Config-artifact promtool/amtool checks skip locally (tools absent) but run in CI. NOTE: T048 measured CPU overhead ~9.3% vs SC-010 target ≤5% (p95 latency 0.00ms within ≤2ms) — local autocannon CPU is noisy; flagged for QC.

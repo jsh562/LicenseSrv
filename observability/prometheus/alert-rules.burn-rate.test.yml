@@ -1,0 +1,56 @@
+# promtool unit tests for the multi-window burn-rate SLO alerts (OR-015 / SC-008, T043). Run in CI via
+# `promtool test rules alert-rules.burn-rate.test.yml` (cwd = observability/prometheus/). promtool is NOT
+# installed locally, so the config test skips this invocation when promtool is absent and instead runs a
+# dependency-light structural check over the same rules.
+#
+# Both rule files are loaded so the alerts can read the recording-rule SLI series they reference
+# (job:request_availability:ratio_rate5m is defined in recording-rules.yml) exactly as they would live.
+#
+# PROVES SC-008 for the availability SLO — the canonical multi-window property:
+#   (1) a SUSTAINED error-budget burn (5% server-error ratio held across all windows) FIRES the SEV1
+#       fast-burn page (both the 1h long window AND the 5m short window breach 14.4x the 0.001 budget).
+#   (2) a BRIEF sub-threshold BLIP (a 5-minute spike, quiet otherwise) does NOT fire the page: the 5m
+#       short window breaches but the 1h long window stays under threshold, and the `and` between the two
+#       windows suppresses the false page. This is exactly the multi-window guard the SRE workbook buys.
+
+rule_files:
+  - recording-rules.yml
+  - alert-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # (1) SUSTAINED BURN — a steady 5% server-error ratio (5 errors + 95 successes per minute) held for
+  #     130 minutes. At eval 130m the error ratio is ~0.05 over every window (5m, 1h, ...), well above the
+  #     14.4x fast threshold (0.0144), so the SEV1 fast-burn page fires.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{outcome="success", route="/v1/activations", method="POST"}'
+        values: "0+95x130"
+      - series: 'http_requests_total{outcome="server_error", route="/v1/activations", method="POST"}'
+        values: "0+5x130"
+    alert_rule_test:
+      - eval_time: 130m
+        alertname: AvailabilityErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              severity: SEV1
+              category: slo
+              page: "true"
+              slo: availability
+              burn_rate: fast
+
+  # (2) BRIEF SUB-THRESHOLD BLIP — quiet (0 errors) for 125 minutes, then a 5-minute error spike
+  #     (10 errors/min added on top of 90 successes/min => ~10% error ratio during the spike). At eval
+  #     130m the 5m short window sees ~10% (above threshold) but the 1h long window averages only ~0.9%
+  #     (below the 1.44% fast threshold), so the fast-burn page MUST NOT fire (the two-window `and` holds).
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{outcome="success", route="/v1/activations", method="POST"}'
+        values: "0+90x130"
+      - series: 'http_requests_total{outcome="server_error", route="/v1/activations", method="POST"}'
+        values: "0+0x125 10+10x4"
+    alert_rule_test:
+      - eval_time: 130m
+        alertname: AvailabilityErrorBudgetBurnFast
+        exp_alerts: []

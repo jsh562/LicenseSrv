@@ -1,0 +1,19 @@
+# Grafana datasource provisioning for the self-host overlay (OR-017, T044). Auto-wires the Prometheus
+# datasource so the provisioned SLO dashboards render on first boot with no manual setup.
+#
+# Prometheus shares the API container's network namespace (see prometheus.yml), so it is reachable to
+# Grafana on the compose network via the API service name at Prometheus's port: http://api:9090.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://api:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # OpenMetrics exemplars bridge a latency bucket to a representative trace (ADR-0009); enable the
+      # exemplar->trace link once a trace datasource (e.g. Tempo) is added.
+      exemplarTraceIdDestinations: []

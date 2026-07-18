@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["src/server/**/*.{test,spec}.ts"],
+    include: ["src/server/**/*.{test,spec}.ts", "observability/**/*.{test,spec}.ts"],
     // Real-Postgres integration tests start a fresh container; allow ample time.
     testTimeout: 120_000,
     hookTimeout: 120_000,

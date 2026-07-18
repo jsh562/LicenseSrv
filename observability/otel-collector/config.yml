@@ -1,0 +1,45 @@
+# Minimal OpenTelemetry Collector config for the self-host observability overlay (OR-017, T044). The
+# license API exports OTLP/HTTP traces to this Collector (OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318),
+# decoupling the app from any specific tracing backend (AD-007). Export is fail-open on the app side, so a
+# down Collector never affects request handling.
+#
+# Out of the box this pipeline BATCHES spans and logs them (the `debug` exporter) so the stack is
+# self-contained and turnkey. To ship traces to a real backend (Tempo, Jaeger, or any OTLP endpoint),
+# uncomment an `otlp` exporter below and add it to the traces pipeline — no app change required.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Bounded batching before export — matches the app's BatchSpanProcessor posture (bounded overhead).
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  # Guard the Collector's own memory so a trace spike never OOMs it.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # Turnkey default: log a compact summary of received spans (no external backend required).
+  debug:
+    verbosity: basic
+  # OPTIONAL backend export — uncomment and point at a real OTLP endpoint (e.g. Tempo/Jaeger), then add
+  # `otlp/backend` to the traces pipeline exporters list below.
+  # otlp/backend:
+  #   endpoint: tempo:4317
+  #   tls:
+  #     insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
