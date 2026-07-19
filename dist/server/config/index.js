@@ -39,6 +39,13 @@ const schema = z.object({
     canaryIntervalMs: z.coerce.number().int().positive().default(60_000),
     canaryScopedTenant: z.string().default(""),
     canaryTargetTenant: z.string().default(""),
+    // E013 enforcement windows — sane defaults on the order of days (renewal window / CRL horizon), a
+    // handful of missed beats (grace), and a short offline tolerance. Operators retune without a migration.
+    enforcementRenewalWindowSecs: z.coerce.number().int().positive().default(172_800), // 2 days
+    enforcementHeartbeatCadenceSecs: z.coerce.number().int().positive().default(86_400), // 1 day (~50% of TTL)
+    enforcementHeartbeatGraceBeats: z.coerce.number().int().positive().default(2), // tolerate 2 missed beats
+    enforcementCrlNextUpdateSecs: z.coerce.number().int().positive().default(86_400), // 1 day
+    enforcementOfflineToleranceSecs: z.coerce.number().int().positive().default(3_600), // 1 hour
 });
 /**
  * Resolve + validate `DATABASE_URL` (with `<VAR>_FILE` support) on its own. The migration job needs the
@@ -72,6 +79,11 @@ export function loadConfig(env = process.env) {
         canaryIntervalMs: env.OBS_CANARY_INTERVAL_MS,
         canaryScopedTenant: env.OBS_CANARY_SCOPED_TENANT,
         canaryTargetTenant: env.OBS_CANARY_TARGET_TENANT,
+        enforcementRenewalWindowSecs: env.ENFORCEMENT_RENEWAL_WINDOW_SECS,
+        enforcementHeartbeatCadenceSecs: env.ENFORCEMENT_HEARTBEAT_CADENCE_SECS,
+        enforcementHeartbeatGraceBeats: env.ENFORCEMENT_HEARTBEAT_GRACE_BEATS,
+        enforcementCrlNextUpdateSecs: env.ENFORCEMENT_CRL_NEXT_UPDATE_SECS,
+        enforcementOfflineToleranceSecs: env.ENFORCEMENT_OFFLINE_TOLERANCE_SECS,
         // Secrets follow the <VAR>_FILE convention (file wins; unset → empty, telemetry stays fail-open).
         fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
         otlpAuthToken: readSecret(env, "OTEL_EXPORTER_OTLP_AUTH_TOKEN") ?? "",
@@ -120,6 +132,12 @@ export function configSummary(c) {
         // Synthetic tenant fixtures are non-secret reserved UUIDs; shown for operability. Empty when unset.
         canaryScopedTenant: c.canaryScopedTenant || "(unset)",
         canaryTargetTenant: c.canaryTargetTenant || "(unset)",
+        // E013 enforcement windows (non-secret; deployment-wide defaults, per-plan overrides resolved live).
+        enforcementRenewalWindowSecs: c.enforcementRenewalWindowSecs,
+        enforcementHeartbeatCadenceSecs: c.enforcementHeartbeatCadenceSecs,
+        enforcementHeartbeatGraceBeats: c.enforcementHeartbeatGraceBeats,
+        enforcementCrlNextUpdateSecs: c.enforcementCrlNextUpdateSecs,
+        enforcementOfflineToleranceSecs: c.enforcementOfflineToleranceSecs,
         // Secrets are never summarised: presence-only, never the value.
         fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",
         otlpAuthToken: c.otlpAuthToken ? "***" : "(unset)",

@@ -1,0 +1,5 @@
+QC Passed: 2026-07-19T00:00:00Z
+E013 Online Enforcement and Revocation — QC PASS after 1 implement→QC iteration.
+QC agents: sddp-qc-auditor → PASS (build/typecheck/lint clean; prod audit 0 vulns, no new prod deps; 377 tests pass / 9 env-gated skips; coverage 93.14% line / 81.43% branch global + enforcement module 94.13%/82.77% — both clear the 80% gate; real autocannon perf p97.5 ~47-53ms << 120ms SLO). sddp-story-verifier → PASS-WITH-NOTES (US1-6 all PASS; FR-001..023 + SC-001..015 all covered).
+No blocking defects, no PI violations. Non-blocking follow-ups (see qc-report.md): per-file branch coverage <80% on config.ts (74% line)/token.ts/validate.ts (defensive/edge branches; enforced global+module gate passes); client-side CRL/anchor obligations delivered as server primitives + docs (correct boundary for a server epic); T040 task description overstated a server-side clock gate (implemented client-side per HINT-005). Semgrep runs in CI (absent locally).
+See qc-report.md.

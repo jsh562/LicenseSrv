@@ -15,6 +15,8 @@ import { configSummary, loadConfig } from "./config/index.js";
 import { applySecretFile } from "./config/secrets.js";
 import { makePool } from "./db/client.js";
 import { registerHealth } from "./health/index.js";
+import { loadEnforcementConfig } from "./modules/enforcement/config.js";
+import { startCrlWorker } from "./modules/enforcement/crl-worker.js";
 import { makeCrossTenantProbe, startCanary } from "./observability/canary.js";
 import { createLogger } from "./observability/logger.js";
 import { setPoolStatsSource, startMetricsListener } from "./observability/metrics.js";
@@ -99,6 +101,25 @@ export async function startServer(env = process.env) {
     else if (config.canaryEnabled) {
         app.log.warn({}, "tenant-isolation canary enabled but not started: set OBS_CANARY_SCOPED_TENANT and OBS_CANARY_TARGET_TENANT (reserved synthetic tenants)");
     }
+    // Signed-CRL publication worker (E013/US4, FR-009): a periodic background job that regenerates + signs a
+    // product's CRL when its revoked set changes or `next_update` elapses, and audits each publication
+    // (`crl.published`). FAIL-OPEN and cancelable exactly like the observability canary above: the cadence timer
+    // is unref'd, a fault on any tenant/product/sweep is caught + logged and NEVER crashes boot (the CRL is
+    // belt-and-braces — a client fails OPEN when it is missing/stale, FR-011). With no signer configured it
+    // no-ops (a CRL cannot be signed without the E004 key). Its lifecycle is tied to app.close() for clean
+    // shutdown. NOTE: check-in retention pruning (`pruneExpiredCheckins`) is deliberately NOT scheduled here —
+    // the app role holds SELECT/INSERT-only on `checkin`, so retention is a PLATFORM-OWNER job (privileged
+    // role), not an app-process worker (see modules/enforcement/README.md).
+    let crlWorker;
+    try {
+        const signer = app.signer;
+        crlWorker = startCrlWorker(pool, signer, loadEnforcementConfig(env), { logger: app.log });
+        app.log.info({}, "CRL publication worker started");
+        app.addHook("onClose", async () => crlWorker?.stop());
+    }
+    catch (err) {
+        app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "CRL publication worker failed to start (fail-open)");
+    }
     const shutdown = async (signal) => {
         app.log.info({ signal }, "shutting down");
         try {
@@ -113,7 +134,7 @@ export async function startServer(env = process.env) {
     };
     process.on("SIGTERM", () => void shutdown("SIGTERM"));
     process.on("SIGINT", () => void shutdown("SIGINT"));
-    return { app, pool, config, metricsListener, canary };
+    return { app, pool, config, metricsListener, canary, crlWorker };
 }
 // CLI entry: `node dist/server/main.js` (the image's serve command).
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`;

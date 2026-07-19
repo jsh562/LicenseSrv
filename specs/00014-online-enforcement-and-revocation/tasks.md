@@ -41,9 +41,9 @@ description: "Task list for feature implementation: Online Enforcement and Revoc
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Extend coverage globs for src/server/modules/enforcement/** (>=80% gate) in vitest.config.ts
-- [ ] T002 {FR-016} Add enforcement config keys (short-token TTL/renewal window, heartbeat cadence+grace, CRL next_update TTL, per-plan offline-tolerance defaults) in src/server/config/index.ts
-- [ ] T003 {FR-015,FR-016} [COMPLETES FR-016] EnforcementConfig loader + per-plan window resolver in src/server/modules/enforcement/config.ts → exports: loadEnforcementConfig, resolvePlanWindows
+- [X] T001 Extend coverage globs for src/server/modules/enforcement/** (>=80% gate) in vitest.config.ts
+- [X] T002 {FR-016} Add enforcement config keys (short-token TTL/renewal window, heartbeat cadence+grace, CRL next_update TTL, per-plan offline-tolerance defaults) in src/server/config/index.ts
+- [X] T003 {FR-015,FR-016} [COMPLETES FR-016] EnforcementConfig loader + per-plan window resolver in src/server/modules/enforcement/config.ts → exports: loadEnforcementConfig, resolvePlanWindows
 
 ---
 
@@ -51,17 +51,17 @@ description: "Task list for feature implementation: Online Enforcement and Revoc
 
 **The migration `0009`, the module scaffold + seam, and the three shared building blocks — `enforce.ts` (verdict), `token.ts` (short-TTL mint), `checkin-repo.ts` (nonce store + anchor) — block every delivery story (validate AND heartbeat consume all three). Complete before any US phase. Unit tests (T008–T010) are TDD-first and precede their implementations (T011–T013).**
 
-- [ ] T004 {FR-003,FR-008,FR-009,FR-014} Migration: activation anchor cols + checkin + revocation_list tables (constraints/indexes per data-model §11) in migrations/0009_online_enforcement.sql
-- [ ] T005 {FR-018} Migration: ENABLE+FORCE RLS + tenant_isolation policies + GRANT SELECT,INSERT only (no UPDATE/DELETE) on checkin + revocation_list in migrations/0009_online_enforcement.sql
-- [ ] T006 Module scaffold: registerEnforcement seam (pool+signer+effective+config) in src/server/modules/enforcement/index.ts → exports: registerEnforcement, EnforcementError
-- [ ] T007 Register registerEnforcement after registerActivation in src/server/modules/index.ts ← T006:registerEnforcement
-- [ ] T008 [P] Unit (TDD): verdict logic — active→valid; revoked/suspended/expired/deactivated→refuse+reason in src/server/modules/enforcement/__tests__/enforce.unit.test.ts
-- [ ] T009 [P] Unit (TDD): short-TTL exp=now+renewalWindow + signed serverTime anchor claim in src/server/modules/enforcement/__tests__/token.unit.test.ts
-- [ ] T010 [P] Unit (TDD): idempotent replay returns original outcome/token + guarded anchor non-decrease in src/server/modules/enforcement/__tests__/checkin-repo.unit.test.ts
-- [ ] T011 {FR-004,FR-005,FR-006,FR-017} enforce.ts: license/activation/expiry/entitlements → verdict+reason in src/server/modules/enforcement/enforce.ts → exports: evaluateEnforcement, Verdict
-- [ ] T012 [P] {FR-002,FR-007,FR-014} [COMPLETES FR-007] token.ts: mint short-TTL LIC1 (exp=now+window, signed serverTime) via E004 signer in src/server/modules/enforcement/token.ts
-- [ ] T013 [P] {FR-008,FR-014,FR-019} [COMPLETES FR-008] checkin-repo.ts: TTL-pruned nonce store + idempotent replay + guarded anchor + audit in src/server/modules/enforcement/checkin-repo.ts
-- [ ] T014 [P] IT: 0009 tables + forced RLS (unset GUC→0 rows) + guarded anchor rejects decrease in src/server/modules/enforcement/__tests__/migration.integration.test.ts after:T005
+- [X] T004 {FR-003,FR-008,FR-009,FR-014} Migration: activation anchor cols + checkin + revocation_list tables (constraints/indexes per data-model §11) in migrations/0009_online_enforcement.sql
+- [X] T005 {FR-018} Migration: ENABLE+FORCE RLS + tenant_isolation policies + GRANT SELECT,INSERT only (no UPDATE/DELETE) on checkin + revocation_list in migrations/0009_online_enforcement.sql
+- [X] T006 Module scaffold: registerEnforcement seam (pool+signer+effective+config) in src/server/modules/enforcement/index.ts → exports: registerEnforcement, EnforcementError
+- [X] T007 Register registerEnforcement after registerActivation in src/server/modules/index.ts ← T006:registerEnforcement
+- [X] T008 [P] Unit (TDD): verdict logic — active→valid; revoked/suspended/expired/deactivated→refuse+reason in src/server/modules/enforcement/__tests__/enforce.unit.test.ts
+- [X] T009 [P] Unit (TDD): short-TTL exp=now+renewalWindow + signed serverTime anchor claim in src/server/modules/enforcement/__tests__/token.unit.test.ts
+- [X] T010 [P] Unit (TDD): idempotent replay returns original outcome/token + guarded anchor non-decrease in src/server/modules/enforcement/__tests__/checkin-repo.unit.test.ts
+- [X] T011 {FR-004,FR-005,FR-006,FR-017} enforce.ts: license/activation/expiry/entitlements → verdict+reason in src/server/modules/enforcement/enforce.ts → exports: evaluateEnforcement, Verdict
+- [X] T012 [P] {FR-002,FR-007,FR-014} [COMPLETES FR-007] token.ts: mint short-TTL LIC1 (exp=now+window, signed serverTime) via E004 signer in src/server/modules/enforcement/token.ts
+- [X] T013 [P] {FR-008,FR-014,FR-019} [COMPLETES FR-008] checkin-repo.ts: TTL-pruned nonce store + idempotent replay + guarded anchor + audit in src/server/modules/enforcement/checkin-repo.ts
+- [X] T014 [P] IT: 0009 tables + forced RLS (unset GUC→0 rows) + guarded anchor rejects decrease in src/server/modules/enforcement/__tests__/migration.integration.test.ts after:T005
 
 ---
 
@@ -69,11 +69,11 @@ description: "Task list for feature implementation: Online Enforcement and Revoc
 
 **Independent test**: a connected client calls `POST /v1/validate` for an active license + active activation → `200 verdict:valid` + a `shortLivedToken` that verifies OFFLINE against the product key via the E001 WASM core, carrying `serverTime` + `stalenessWindow`; a same-nonce+same-activation retry replays the ORIGINAL token (no second mint, anchor not advanced twice); a nonce reused for a DIFFERENT activation → `409 nonce_replayed`; missing `validate` scope → 403, unresolvable key → 401, cross-tenant `activationId` → 404 (SC-001/010).
 
-- [ ] T015 [P] [US1] {FR-001,FR-002} IT (TDD): validate valid → token verifies offline (E001 WASM) + staleness (SC-001) in src/server/modules/enforcement/__tests__/validate.integration.test.ts
-- [ ] T016 [P] [US1] IT (TDD): same-nonce retry→200 replay original; nonce for a different activation→409 (SC-010) in src/server/modules/enforcement/__tests__/nonce.integration.test.ts
-- [ ] T017 [P] [US1] IT (TDD): missing validate scope→403; unresolvable key→401; cross-tenant activationId→404 in src/server/modules/enforcement/__tests__/enforcement-auth.integration.test.ts
-- [ ] T018 [US1] {FR-001,FR-013} validate.ts: resolve activation→evaluate→mint(valid)→checkin/replay+anchor→result in src/server/modules/enforcement/validate.ts → exports: validateOnline
-- [ ] T019 [US1] {FR-001,FR-021} [COMPLETES FR-001] routes.ts: register POST /v1/validate (validate scope, rate-limited) in src/server/modules/enforcement/routes.ts after:T018
+- [X] T015 [P] [US1] {FR-001,FR-002} IT (TDD): validate valid → token verifies offline (E001 WASM) + staleness (SC-001) in src/server/modules/enforcement/__tests__/validate.integration.test.ts
+- [X] T016 [P] [US1] IT (TDD): same-nonce retry→200 replay original; nonce for a different activation→409 (SC-010) in src/server/modules/enforcement/__tests__/nonce.integration.test.ts
+- [X] T017 [P] [US1] IT (TDD): missing validate scope→403; unresolvable key→401; cross-tenant activationId→404 in src/server/modules/enforcement/__tests__/enforcement-auth.integration.test.ts
+- [X] T018 [US1] {FR-001,FR-013} validate.ts: resolve activation→evaluate→mint(valid)→checkin/replay+anchor→result in src/server/modules/enforcement/validate.ts → exports: validateOnline
+- [X] T019 [US1] {FR-001,FR-021} [COMPLETES FR-001] routes.ts: register POST /v1/validate (validate scope, rate-limited) in src/server/modules/enforcement/routes.ts after:T018
 
 ---
 
@@ -81,9 +81,9 @@ description: "Task list for feature implementation: Online Enforcement and Revoc
 
 **Independent test**: revoke a license via the E008 admin path → the next validate/heartbeat returns `200 verdict:revoked` with NO token, and the outstanding short-lived token lapses within its TTL (bounded staleness ≤ renewal window, measured); a suspended license refuses renewal until reinstated, whereupon the next beat renews; an expired license → `expired`; a deactivated activation → `deactivated` (SC-002/003/004).
 
-- [ ] T020 [P] [US2] {FR-005} IT (TDD): revoke→next beat 200 revoked (no token); token lapses ≤ TTL (SC-002/004) in src/server/modules/enforcement/__tests__/revocation.integration.test.ts
-- [ ] T021 [P] [US2] {FR-006} IT (TDD): suspend→refused; reinstate→renews; expired/deactivated verdicts (SC-003) in src/server/modules/enforcement/__tests__/verdict-refusal.integration.test.ts
-- [ ] T022 [US2] {FR-005,FR-006} [COMPLETES FR-005,FR-006] enforce.ts: refuse revoked/suspended/expired/deactivated + reinstate-resumes verdict in src/server/modules/enforcement/enforce.ts after:T011
+- [X] T020 [P] [US2] {FR-005} IT (TDD): revoke→next beat 200 revoked (no token); token lapses ≤ TTL (SC-002/004) in src/server/modules/enforcement/__tests__/revocation.integration.test.ts
+- [X] T021 [P] [US2] {FR-006} IT (TDD): suspend→refused; reinstate→renews; expired/deactivated verdicts (SC-003) in src/server/modules/enforcement/__tests__/verdict-refusal.integration.test.ts
+- [X] T022 [US2] {FR-005,FR-006} [COMPLETES FR-005,FR-006] enforce.ts: refuse revoked/suspended/expired/deactivated + reinstate-resumes verdict in src/server/modules/enforcement/enforce.ts after:T011
 
 ---
 
@@ -91,10 +91,10 @@ description: "Task list for feature implementation: Online Enforcement and Revoc
 
 **Independent test**: a client heartbeats before expiry → a FRESH short-lived token + advanced last-seen anchor; an entitlement/plan change on the license → the renewed token reflects the new effective entitlements (FR-017); a deactivated activation or an expired license → renewal refused with a specific reason; the grace window tolerates N missed beats before the effective authorization lapses (FR-007, no false lockout) (SC-003).
 
-- [ ] T023 [P] [US3] {FR-002,FR-017} IT (TDD): heartbeat→fresh token + anchor; entitlement change reflected (SC-003) in src/server/modules/enforcement/__tests__/heartbeat.integration.test.ts
-- [ ] T024 [P] [US3] {FR-004} IT (TDD): deactivated/expired→refused; grace tolerates N missed beats (FR-007) in src/server/modules/enforcement/__tests__/heartbeat-recheck.integration.test.ts
-- [ ] T025 [US3] {FR-002,FR-003,FR-004,FR-017} [COMPLETES FR-002,FR-017] heartbeat.ts: re-check status/expiry/entitlements per beat → mint/refuse in src/server/modules/enforcement/heartbeat.ts
-- [ ] T026 [US3] {FR-003,FR-004,FR-021} [COMPLETES FR-003,FR-004] routes.ts: register POST /v1/heartbeat (validate scope, rate-limited) in src/server/modules/enforcement/routes.ts after:T025
+- [X] T023 [P] [US3] {FR-002,FR-017} IT (TDD): heartbeat→fresh token + anchor; entitlement change reflected (SC-003) in src/server/modules/enforcement/__tests__/heartbeat.integration.test.ts
+- [X] T024 [P] [US3] {FR-004} IT (TDD): deactivated/expired→refused; grace tolerates N missed beats (FR-007) in src/server/modules/enforcement/__tests__/heartbeat-recheck.integration.test.ts
+- [X] T025 [US3] {FR-002,FR-003,FR-004,FR-017} [COMPLETES FR-002,FR-017] heartbeat.ts: re-check status/expiry/entitlements per beat → mint/refuse in src/server/modules/enforcement/heartbeat.ts
+- [X] T026 [US3] {FR-003,FR-004,FR-021} [COMPLETES FR-003,FR-004] routes.ts: register POST /v1/heartbeat (validate scope, rate-limited) in src/server/modules/enforcement/routes.ts after:T025
 
 ---
 
@@ -102,10 +102,10 @@ description: "Task list for feature implementation: Online Enforcement and Revoc
 
 **Independent test**: an activation that NEVER calls validate/heartbeat keeps verifying its E009 `machine_bound_token` OFFLINE via the E001 core to that credential's own `exp`, is NOT treated as revoked-by-default, and its `last_checkin_at`/`last_anchor_at` stay NULL; validate/heartbeat never overwrite or shorten `machine_bound_token`; every validate/heartbeat response discloses `stalenessWindow` = max(short-token TTL, CRL `next_update`) + offline tolerance (SC-005/006).
 
-- [ ] T027 [P] [US5] {FR-012} IT (TDD): never-connected verifies E009 offline; not revoked-by-default (SC-005) in src/server/modules/enforcement/__tests__/offline-first.integration.test.ts
-- [ ] T028 [P] [US5] {FR-013} IT (TDD): validate/heartbeat never mutate machine_bound_token; staleness disclosed (SC-006) in src/server/modules/enforcement/__tests__/staleness.integration.test.ts
-- [ ] T029 [US5] {FR-012} [COMPLETES FR-012] Offline-first guard: enforcement reads (never writes) E009 credential + document never-connected gap in src/server/modules/enforcement/README.md
-- [ ] T030 [US5] {FR-013} [COMPLETES FR-013] Finalize stalenessWindow disclosure on every EnforcementResult + document bounded-staleness in src/server/modules/enforcement/README.md after:T018
+- [X] T027 [P] [US5] {FR-012} IT (TDD): never-connected verifies E009 offline; not revoked-by-default (SC-005) in src/server/modules/enforcement/__tests__/offline-first.integration.test.ts
+- [X] T028 [P] [US5] {FR-013} IT (TDD): validate/heartbeat never mutate machine_bound_token; staleness disclosed (SC-006) in src/server/modules/enforcement/__tests__/staleness.integration.test.ts
+- [X] T029 [US5] {FR-012} [COMPLETES FR-012] Offline-first guard: enforcement reads (never writes) E009 credential + document never-connected gap in src/server/modules/enforcement/README.md
+- [X] T030 [US5] {FR-013} [COMPLETES FR-013] Finalize stalenessWindow disclosure on every EnforcementResult + document bounded-staleness in src/server/modules/enforcement/README.md after:T018
 
 ---
 
@@ -113,14 +113,14 @@ description: "Task list for feature implementation: Online Enforcement and Revoc
 
 **Independent test**: revoke a license → the CRL worker regenerates a signed artifact whose `version` and `next_update` advance; the detached signature verifies against the product keyring; `GET /v1/revocation-list` serves the JSON by default and the SAME canonical bytes as an `application/octet-stream` file under `?format=file`; `Cache-Control`/`ETag` align to `next_update` and a matching `If-None-Match` → `304`; an unknown/cross-tenant `productId` → `404`; the client fail-open vs untrusted-signature vs anti-downgrade rules are documented (SC-007).
 
-- [ ] T031 [P] [US4] {FR-009} IT (TDD): revoke→CRL regen; version+next_update advance; signature verifies; file==json (SC-007) in src/server/modules/enforcement/__tests__/crl.integration.test.ts
-- [ ] T032 [P] [US4] {FR-010} IT (TDD): GET revocation-list json/file; ETag/cache→next_update; 304; unknown productId→404 in src/server/modules/enforcement/__tests__/crl-fetch.integration.test.ts
-- [ ] T033 [P] [US4] {FR-022} Unit (TDD): CRL canonical byte-stable encoding + monotonic version max+1; older signed version rejected in src/server/modules/enforcement/__tests__/crl.unit.test.ts
-- [ ] T034 [US4] {FR-009,FR-022} crl.ts: project revoked ids → canonical doc → sign via E004 + version max+1 in src/server/modules/enforcement/crl.ts → exports: generateCrl, getLatestCrl
-- [ ] T035 [US4] {FR-009,FR-019} [COMPLETES FR-009] crl-worker.ts: signed-CRL regen + audit publish; fail-open start from main.ts in src/server/modules/enforcement/crl-worker.ts
-- [ ] T036 [US4] {FR-010} revocation-list.ts: GET handler (json+file byte-stable, ETag/cache→next_update, 304) in src/server/modules/enforcement/revocation-list.ts → exports: getRevocationList
-- [ ] T037 [US4] {FR-010,FR-021} [COMPLETES FR-010] routes.ts: register GET /v1/revocation-list (validate scope, rate-limited) in src/server/modules/enforcement/routes.ts after:T019
-- [ ] T038 [US4] {FR-011,FR-022,FR-023} [COMPLETES FR-011,FR-022,FR-023] Document client CRL rules: fail-open vs untrusted-sig + anti-downgrade version in src/server/modules/enforcement/README.md
+- [X] T031 [P] [US4] {FR-009} IT (TDD): revoke→CRL regen; version+next_update advance; signature verifies; file==json (SC-007) in src/server/modules/enforcement/__tests__/crl.integration.test.ts
+- [X] T032 [P] [US4] {FR-010} IT (TDD): GET revocation-list json/file; ETag/cache→next_update; 304; unknown productId→404 in src/server/modules/enforcement/__tests__/crl-fetch.integration.test.ts
+- [X] T033 [P] [US4] {FR-022} Unit (TDD): CRL canonical byte-stable encoding + monotonic version max+1; older signed version rejected in src/server/modules/enforcement/__tests__/crl.unit.test.ts
+- [X] T034 [US4] {FR-009,FR-022} crl.ts: project revoked ids → canonical doc → sign via E004 + version max+1 in src/server/modules/enforcement/crl.ts → exports: generateCrl, getLatestCrl
+- [X] T035 [US4] {FR-009,FR-019} [COMPLETES FR-009] crl-worker.ts: signed-CRL regen + audit publish; fail-open start from main.ts in src/server/modules/enforcement/crl-worker.ts
+- [X] T036 [US4] {FR-010} revocation-list.ts: GET handler (json+file byte-stable, ETag/cache→next_update, 304) in src/server/modules/enforcement/revocation-list.ts → exports: getRevocationList
+- [X] T037 [US4] {FR-010,FR-021} [COMPLETES FR-010] routes.ts: register GET /v1/revocation-list (validate scope, rate-limited) in src/server/modules/enforcement/routes.ts after:T019
+- [X] T038 [US4] {FR-011,FR-022,FR-023} [COMPLETES FR-011,FR-022,FR-023] Document client CRL rules: fail-open vs untrusted-sig + anti-downgrade version in src/server/modules/enforcement/README.md
 
 ---
 
@@ -128,20 +128,20 @@ description: "Task list for feature implementation: Online Enforcement and Revoc
 
 **Independent test**: a client rolls its clock back after a check-in → a token/time preceding the server-side monotonic `last_anchor_at` floor is rejected; a client that runs offline beyond the per-plan offline-tolerance window must re-anchor (renew) to continue; the never-connected pure-offline rollback exposure is bounded by the tolerance window (documented, accepted) (SC-009).
 
-- [ ] T039 [P] [US6] {FR-014,FR-015} IT (TDD): rollback→time/token < anchor rejected; beyond tolerance→re-anchor in src/server/modules/enforcement/__tests__/clock-tamper.integration.test.ts
-- [ ] T040 [US6] {FR-014,FR-015} [COMPLETES FR-014,FR-015] enforce.ts: reject time/token < last_anchor_at + offline-tolerance re-anchor gate in src/server/modules/enforcement/enforce.ts after:T022
+- [X] T039 [P] [US6] {FR-014,FR-015} IT (TDD): rollback→time/token < anchor rejected; beyond tolerance→re-anchor in src/server/modules/enforcement/__tests__/clock-tamper.integration.test.ts
+- [X] T040 [US6] {FR-014,FR-015} [COMPLETES FR-014,FR-015] enforce.ts: reject time/token < last_anchor_at + offline-tolerance re-anchor gate in src/server/modules/enforcement/enforce.ts after:T022
 
 ---
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T041 {FR-021} [COMPLETES FR-021] Verify @fastify/rate-limit on all 3 routes (per API-key, 429+Retry-After, audited) + IT in src/server/modules/enforcement/routes.ts after:T037
-- [ ] T042 [P] {FR-019} [COMPLETES FR-019] Audit IT: check-in + CRL publish → actor/action/target; denied/revoked→security_event in src/server/modules/enforcement/__tests__/audit.integration.test.ts
-- [ ] T043 [P] {FR-018} [COMPLETES FR-018] Tenant-isolation IT: cross-tenant validate/heartbeat/CRL→404; RLS unset-GUC→0 rows in src/server/modules/enforcement/__tests__/isolation.integration.test.ts
-- [ ] T044 [P] {FR-020} [COMPLETES FR-020] Autocannon: validate/heartbeat p95<120ms (SC-008); revocation ≤ renewal window (SC-004) in src/server/modules/enforcement/__tests__/perf.integration.test.ts
-- [ ] T045 [P] Security IT: no signing-key/secret in tokens/CRL/audit; no raw machine id persisted in src/server/modules/enforcement/__tests__/secret-leakage.test.ts
-- [ ] T046 Enforce >=80% line+branch coverage of the enforcement module in vitest.config.ts after:T044
-- [ ] T047 [P] Add enforcement CI workflow (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep) in .github/workflows/enforcement.yml mirroring activation.yml
+- [X] T041 {FR-021} [COMPLETES FR-021] Verify @fastify/rate-limit on all 3 routes (per API-key, 429+Retry-After, audited) + IT in src/server/modules/enforcement/routes.ts after:T037
+- [X] T042 [P] {FR-019} [COMPLETES FR-019] Audit IT: check-in + CRL publish → actor/action/target; denied/revoked→security_event in src/server/modules/enforcement/__tests__/audit.integration.test.ts
+- [X] T043 [P] {FR-018} [COMPLETES FR-018] Tenant-isolation IT: cross-tenant validate/heartbeat/CRL→404; RLS unset-GUC→0 rows in src/server/modules/enforcement/__tests__/isolation.integration.test.ts
+- [X] T044 [P] {FR-020} [COMPLETES FR-020] Autocannon: validate/heartbeat p95<120ms (SC-008); revocation ≤ renewal window (SC-004) in src/server/modules/enforcement/__tests__/perf.integration.test.ts
+- [X] T045 [P] Security IT: no signing-key/secret in tokens/CRL/audit; no raw machine id persisted in src/server/modules/enforcement/__tests__/secret-leakage.test.ts
+- [X] T046 Enforce >=80% line+branch coverage of the enforcement module in vitest.config.ts after:T044
+- [X] T047 [P] Add enforcement CI workflow (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep) in .github/workflows/enforcement.yml mirroring activation.yml
 
 ---
 

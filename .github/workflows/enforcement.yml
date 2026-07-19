@@ -1,0 +1,54 @@
+name: enforcement
+
+# CI for online enforcement & revocation (E013): the server enforcement module (runtime /v1 validate/
+# heartbeat + the signed CRL fallback GET /v1/revocation-list, consuming the E004 signer, the E008 license
+# snapshot, the E009 activation, and the E007 effective entitlements) plus the fail-open CRL worker wired
+# into main.ts. Gates: typecheck + lint, the real-Postgres integration suite (Testcontainers) with the
+# >=80% coverage gate on the module, a production-scope dependency audit, and a semgrep scan over the
+# enforcement sources.
+
+on:
+  push:
+    paths:
+      - "src/server/modules/enforcement/**"
+      - "migrations/0009_online_enforcement.sql"
+      - "src/server/main.ts"
+      - ".github/workflows/enforcement.yml"
+  pull_request:
+    paths:
+      - "src/server/modules/enforcement/**"
+      - "migrations/0009_online_enforcement.sql"
+      - "src/server/main.ts"
+      - ".github/workflows/enforcement.yml"
+
+jobs:
+  server:
+    name: server (enforcement module + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker → Testcontainers spins up Postgres 16 for the enforcement integration
+      # suite (validate→token→heartbeat→revoke→CRL; RLS isolation; audit; rate-limit; clock-tamper; perf).
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  semgrep:
+    name: semgrep (enforcement)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/enforcement

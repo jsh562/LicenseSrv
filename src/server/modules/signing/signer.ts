@@ -50,6 +50,23 @@ export class SignerError extends Error {
   }
 }
 
+/**
+ * The domain-separation tag for a detached CRL signature (E013/US4, FR-009). DISTINCT from the LIC1
+ * token domain (`LICSRV-LICENSE-TOKEN-v1`, `token.ts`): domain separation guarantees a CRL signature can
+ * never be confused for — or replayed as — a license-token signature under the same product key, and
+ * vice versa. Any new detached-signed artifact MUST get its own tag.
+ */
+export const CRL_SIGNING_DOMAIN = "LICSRV-CRL-v1";
+
+/**
+ * The bytes a detached signer signs: `domain ‖ message`. The domain tag (ASCII) is prepended so the
+ * Ed25519 signature is bound to exactly one protocol (cross-protocol confusion is impossible). The same
+ * builder is used by the signer and by `verifyDetached`, so the two can never drift.
+ */
+export function buildDetachedSigningInput(domain: string, message: Buffer): Buffer {
+  return Buffer.concat([Buffer.from(domain, "ascii"), message]);
+}
+
 /** The one signing surface. Implemented by the keystore signer (default) and the KMS adapter. */
 export interface Signer {
   /**
@@ -59,6 +76,21 @@ export interface Signer {
    * `SignerError` and returns no token bytes (TR-011).
    */
   sign(tenantId: string, claims: Claims): Promise<string>;
+
+  /**
+   * Produce a DETACHED Ed25519 signature over `domain ‖ message` using the product's active key
+   * (E013/US4). Unlike {@link sign}, this signs arbitrary canonical bytes (e.g. a byte-stable CRL
+   * document) rather than a LIC1 token, and it is domain-separated (`domain`, e.g.
+   * {@link CRL_SIGNING_DOMAIN}) from the token protocol so signatures can never cross protocols.
+   * Returns the base64url signature + the `key_id` that signed it (a PUBLIC identifier — never key
+   * bytes). Fail-closed: a custody/backend/registry fault throws {@link SignerError} with no signature.
+   */
+  signDetached(
+    tenantId: string,
+    productId: string,
+    domain: string,
+    message: Buffer,
+  ): Promise<{ signature: string; keyId: string }>;
 
   /** True when the signer can currently sign (custody unlocked, backend reachable). */
   ready(): boolean;
