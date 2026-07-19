@@ -1,0 +1,918 @@
+openapi: 3.1.0
+info:
+  title: Online Enforcement & Revocation API
+  version: 0.1.0
+  description: >
+    REST surface for epic E013 (Online Enforcement and Revocation). Closes the disclosed offline-
+    revocation gap for CONNECTED clients: a connected licensed application validates online and
+    silently renews a SHORT-lived, offline-verifiable token, so an admin revoke/suspend (E008) or a
+    machine deactivation (E009) takes effect within a bounded window — while never-connected/air-gapped
+    clients keep running on their existing E009 offline credential to its own expiry, unaffected. Covers
+    FR-001..021 and SC-001..010. Concretizes ADR-0010 (short-TTL LIC1 renewal + signed CRL fallback).
+
+
+    RUNTIME PLANE ONLY. Every operation is mounted under `/v1/...` and is called by the LICENSED
+    APPLICATION (a machine/integration), authenticated by the tenant/machine API key in the `X-API-Key`
+    header (src/server/auth/apikey.ts + app.ts), resolved to a tenant + capability scopes. There is NO
+    admin/console plane in this contract and NO cookie/CSRF auth — this is header-credential auth.
+
+
+    SCOPE (E009 `validate`, fail-closed). All three operations REQUIRE the `validate` capability scope
+    (src/server/auth/rbac.ts `type Scope = "activate" | "validate" | "admin"`; distinct from E009's
+    `activate` scope, which binds seats). Fail-closed precedence, identical to E009: (1) no resolvable
+    tenant context -> `401 unauthorized`; (2) a resolvable key lacking `validate` -> `403 forbidden`;
+    (3) a tenant-scoped lookup that misses (unknown or cross-tenant id) -> `404`. So 401 precedes 403
+    precedes 404. OpenAPI cannot express a required scope on an `apiKey` scheme, so it is declared per
+    operation via `x-rbac.requiredScope` and enforced server-side.
+
+
+    TENANT SCOPING (FR-018, fail-closed). Every validate/heartbeat/CRL fetch is implicitly scoped to the
+    caller's tenant (the API key's tenant). There is NO tenant path/query parameter and it can never be
+    widened by the caller. A cross-tenant `activationId` or `productId` resolves to `404` (never `403`),
+    so an out-of-tenant id is indistinguishable from a non-existent one.
+
+
+    RENEWAL-TOKEN MODEL (ADR-0010; FR-002). The `shortLivedToken` returned by validate/heartbeat is a
+    re-signed, SHORT-TTL E001 `LIC1` credential — the SAME format and machine binding as E009's
+    offline `machineBoundKey`, minted by the EXISTING E004 signer/keyring, but with a near-term `exp`
+    equal to the configured renewal window and an added SIGNED-SERVER-TIME anchor. The client's EXISTING
+    E001 offline verifier verifies it unchanged; there is NO new token type and NO second client verifier.
+    It is an OPAQUE signed string in this contract — its internal claims are NOT modelled here beyond the
+    sibling convenience fields `serverTime` and `expiresAt` the server decodes into the response. It is a
+    PUBLIC signed artifact (safe to embed on the machine); the private signing key is NEVER returned,
+    logged, or otherwise exposed, and PASETO v4.public stays reserved for HUMAN/admin sessions (E005).
+
+
+    REVOCATION PROPAGATION (ADR-0010; FR-004/005). PRIMARY = short-TTL NON-REISSUE ("revoke by ceasing
+    to re-issue"): every validate/heartbeat re-reads the E008 `license.status` (must be `active`),
+    `license.expiresAt` (must be in the future), the E008 effective `entitlements` (baked FRESH into the
+    renewed token, FR-017), and the E009 `activation.status` (must be `active`), and REFUSES to re-sign a
+    revoked/suspended/expired/deactivated binding — so the outstanding token lapses within one renewal
+    window (staleness <= TTL). FALLBACK = the signed, versioned CRL (`GET /v1/revocation-list`). There is
+    NO OCSP-style per-request status lookup (rejected — it would bust the p95 SLO and fail open).
+
+
+    REFUSAL SEMANTICS (design decision — read this). validate and heartbeat are enforcement QUERIES, not
+    state MUTATIONS, so a non-valid outcome is a SUCCESSFUL evaluation, returned `200 OK` with a machine-
+    readable `verdict` discriminator (`valid` | `revoked` | `suspended` | `expired` | `deactivated`) and
+    NO `shortLivedToken` — the enforcement analogue of a CRL "revoked" status. This deliberately DIVERGES
+    from E009's activate, which is a MUTATION that signals a not-active license with `409
+    license_not_active` because the requested seat change could not happen; here nothing is mutated, the
+    client asked for its status, so a single `verdict` field is the correct branch point (a `409` would
+    conflate "your license is revoked" with "your request was malformed"). GENUINE protocol failures
+    still use the SHARED project error model + HTTP status exactly as E009: `400` (malformed), `401` (no
+    key), `403` (missing `validate` scope), `404` (unknown/cross-tenant activation or product/CRL), `409`
+    (`nonce_replayed` — a nonce reused to forge a DIFFERENT check-in), `429` (rate limited), `503`
+    (signer fault — the license is valid but the token could not be signed).
+
+
+    ANTI-REPLAY NONCE + IDEMPOTENT REPLAY (FR-008, SC-010). Each validate/heartbeat carries a single-use
+    `nonce`, stored bounded (TTL = the renewal window) and UNIQUE per tenant (data-model `checkin`
+    `UNIQUE (tenant_id, nonce)`). A retry with the SAME nonce for the SAME activation REPLAYS the ORIGINAL
+    stored result at `200` — the SAME verdict and, when it was `valid`, the SAME already-minted token (no
+    second token is minted and the monotonic anchor is not advanced twice). A nonce reused to forge a
+    DIFFERENT check-in (a different activation) is rejected `409 nonce_replayed`. The nonce is never
+    echoed in any response or error.
+
+
+    CLOCK-TAMPER RESISTANCE (FR-014/015). The renewed token embeds SIGNED SERVER TIME (`serverTime`,
+    which equals the check-in anchor). The server keeps a per-activation MONOTONIC last-seen anchor
+    (`last_anchor_at`, non-decreasing) as an enforcement floor; the client keeps its own local monotonic
+    anchor and rejects any token/time preceding the highest signed server time it has observed. A per-
+    plan OFFLINE-TOLERANCE window bounds how long a client may run without a fresh anchor before it must
+    re-anchor (renew). Pure-offline rollback on a never-connecting client is only BOUNDED by this window,
+    not eliminated — a disclosed, accepted limitation.
+
+
+    OFFLINE-FIRST PRESERVED (FR-012; US5, non-regression). E013 is strictly ADDITIVE. A never-connected/
+    air-gapped client keeps verifying its EXISTING E009 `machineBoundKey` offline credential to that
+    credential's OWN `exp` and is NOT treated as revoked-by-default; this online path does NOT overwrite
+    or shorten that credential (the short-lived renewal token is a SEPARATE artifact). The bounded
+    revocation-staleness window is disclosed in-band via `stalenessWindow` (FR-013).
+
+
+    BOUNDED-STALENESS DISCLOSURE (FR-013; SC-006). Every validate/heartbeat response carries a
+    `stalenessWindow` = max(short-token TTL, CRL `nextUpdate`) + per-plan offline tolerance — the honestly
+    disclosed maximum delay between an admin revocation and its enforcement on a connected client.
+
+
+    CRL FALLBACK (FR-009/010/011; US4). `GET /v1/revocation-list` returns the signed, versioned CRL for
+    the caller's tenant + a selected `productId` (the CRL is per-product because signing keys are per-
+    product, E004): `{ version, generatedAt, nextUpdate, keyId, signature, revokedIds }`. It is served
+    JSON by default and as a downloadable signed FILE (`?format=file`) for air-gap import — BOTH forms
+    cover the SAME canonical signed bytes, so the detached signature verifies identically. CDN cache
+    semantics align to `nextUpdate` (`Cache-Control`/`Expires`/`ETag`; conditional `If-None-Match` ->
+    `304`). CLIENT SEMANTICS — three distinct outcomes for a CRL-consulting client: (a) FETCH FAILURE
+    (unreachable/404) → FAIL OPEN, fall back to short-TTL non-reissue enforcement (FR-011); (b) OLDER
+    SIGNED VERSION (`version` < highest cached for this tenant+product) → IGNORE, do not let it supersede
+    the newer list (anti-downgrade, FR-022); (c) SIGNATURE FAILS to verify against the product keyring →
+    treat as UNTRUSTED, neither apply nor cache, fall back to short-TTL enforcement (FR-023, distinct from
+    (a) — a rejected-as-untrusted artifact, not a fail-open on availability). Token EXPIRY always FAILS
+    CLOSED. The CRL is belt-and-braces, not the primary path.
+
+
+    RATE LIMITING (FR-021). validate, heartbeat, and the CRL fetch are rate-limited per (API key /
+    activation), consistent with the E009 activation surface, so abuse cannot degrade the p95 SLO or
+    apply brute-force/replay pressure. An over-limit request is refused `429 rate_limited` with a
+    `Retry-After` header; the limit-exceeded event is audited.
+
+
+    PERFORMANCE SLO (FR-020; SC-008). Online validate/heartbeat MUST meet p95 < 120 ms under nominal
+    load. The hot path is a local tenant-scoped status read + a single re-sign — there is NO third-party
+    round-trip (OCSP was rejected precisely to protect this budget).
+
+
+    AUDIT (FR-019). Every validate/heartbeat outcome and every CRL publication is written append-only to
+    the E002 `audit_log`; denied/revoked renewals and security-relevant refusals are flagged
+    `security_event = true`. No raw hardware identifier or secret is ever logged.
+
+
+    PII / SECRECY INVARIANTS. The server NEVER receives, stores, logs, or returns a RAW hardware
+    identifier — machine signal proof is the client-computed salted HASHES (mirrors E009). The product
+    SIGNING KEY is never exposed in any body, header, example, log, or audit entry. The check-in store
+    holds only signed timestamps + ids + a short-lived token; it carries no raw machine identifier.
+
+
+    ERROR MODEL. Project-standard structured JSON `{ code, message, details? }` with a stable, enumerated
+    snake_case `code` (matches E008/E009). Every DISTINCT refusal reason has a distinct, testable code.
+    Field naming is camelCase throughout the bodies, matching the E005/E007/E008/E009 surfaces. (Note:
+    the spec's prose uses snake_case shorthand like `short_lived_token`; the WIRE contract is camelCase.)
+
+
+    MEDIA TYPE. Request and response bodies are `application/json` (UTF-8) on validate/heartbeat and on
+    the default CRL read; the CRL FILE form (`?format=file`) is `application/octet-stream`. A non-JSON
+    request body is rejected `400 validation_error`.
+
+
+    VERSIONING. The runtime plane is API-versioned under `/v1`; a BREAKING change is introduced under a
+    new prefix (`/v2`) with `/v1` retained until deprecation — the established platform convention
+    (E004/E009 `/v1` + `/admin` split; this contract has no admin plane).
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: enforcement
+    description: >
+      RUNTIME online validate + heartbeat/renewal called by the licensed application. API-key auth
+      (`X-API-Key`) with the `validate` scope; single-use nonce anti-replay; rate-limited; p95 < 120 ms
+      (FR-001..008/014/017/018/020/021).
+  - name: revocation
+    description: >
+      RUNTIME signed, versioned CRL fetch (JSON + downloadable air-gap file), the fail-open FALLBACK to
+      short-TTL non-reissue. API-key auth (`validate` scope); CDN-cacheable; rate-limited (FR-009/010/011).
+
+paths:
+  # --- Online validate ----------------------------------------------------------------------------
+  /v1/validate:
+    post:
+      tags: [enforcement]
+      operationId: validateOnline
+      summary: Validate online and mint the first short-lived renewal token
+      description: >
+        A CONNECTED client validates its license + activation online and receives a `verdict` plus, when
+        `valid`, a freshly-minted SHORT-lived, offline-verifiable token (FR-001/002; US1). This is the
+        ENTRY point of the online-enforcement session; the client then keeps the token fresh via
+        `POST /v1/heartbeat`.
+
+
+        The client identifies its activation by `activationId` and/or its E009 offline credential
+        `machineBoundKey` (at least one), and MAY include a machine-signal `fingerprint` when server
+        policy requires re-proving the binding (K-of-N drift, mirrors E009). Each request carries a
+        single-use `nonce` (FR-008).
+
+
+        On evaluation the server re-reads (FR-004): `license.status` (E008; must be `active`),
+        `license.expiresAt` (must be future), the effective `entitlements` (E008; baked FRESH into the
+        renewed token, FR-017), and `activation.status` (E009; must be `active`). Outcomes (all `200`):
+
+          * `verdict: valid` — a `shortLivedToken` is minted (TTL = the configured renewal window) with
+            signed `serverTime`; `renewAfter`/`expiresAt` bound the renewal; `stalenessWindow` discloses
+            the bounded revocation lag (FR-013). The activation's monotonic anchor advances (FR-014).
+          * `verdict: revoked | suspended | expired | deactivated` — NO token; the outstanding token
+            lapses within its TTL (bounded staleness <= TTL, FR-005). `stalenessWindow` and `serverTime`
+            are still returned so the client can stop cleanly at expiry.
+
+
+        IDEMPOTENT REPLAY (FR-008, SC-010): a retry with the SAME `nonce` for the SAME activation replays
+        the ORIGINAL result (same verdict, same already-minted token) at `200`; a nonce reused for a
+        DIFFERENT activation is refused `409 nonce_replayed`.
+
+
+        Requires the `validate` scope (a key lacking it -> `403`). Rate-limited (FR-021); p95 < 120 ms
+        (FR-020); audited (FR-019). Offline-first is preserved — this does NOT touch the E009
+        `machineBoundKey` offline credential (FR-012).
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: validate }
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnforcementRequest' }
+            examples:
+              byActivationId:
+                summary: Validate by activation id + nonce
+                value:
+                  activationId: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+                  nonce: "b1946ac92492d2347c6235b4d2611184"
+              withProof:
+                summary: Validate by credential + machine-signal proof
+                value:
+                  machineBoundKey: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImZwayI6M30.bWFjaGluZS1ib3VuZC1zaWduYXR1cmU"
+                  fingerprint:
+                    signals:
+                      - "9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+                      - "2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw"
+                      - "Lp3Qz7Yw1Rk9Vn0Ma8Bc4Hd2Js6Uu5Ei1oGz4fRB2yNw"
+                  nonce: "c2a57bd03583e3458d7346c5e3722295"
+      responses:
+        '200':
+          description: >
+            The enforcement verdict. `valid` carries a freshly-minted `shortLivedToken`; a non-valid
+            verdict carries no token (the outstanding token lapses within its TTL). Also returned on an
+            idempotent nonce replay for the same activation (the ORIGINAL result).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnforcementResult' }
+              examples:
+                valid:
+                  summary: Valid — short-lived token minted
+                  value:
+                    verdict: valid
+                    shortLivedToken: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImV4cCI6MTc1MjA0MzIwMH0.c2hvcnQtbGl2ZWQtcmVuZXdhbC1zaWc"
+                    serverTime: "2026-07-18T09:15:00Z"
+                    renewAfter: "2026-07-19T09:15:00Z"
+                    expiresAt: "2026-07-20T09:15:00Z"
+                    stalenessWindow:
+                      seconds: 176400
+                      tokenTtlSeconds: 172800
+                      crlNextUpdateSeconds: 86400
+                      offlineToleranceSeconds: 3600
+                revoked:
+                  summary: Revoked — no token (bounded staleness <= TTL)
+                  value:
+                    verdict: revoked
+                    serverTime: "2026-07-18T09:15:00Z"
+                    stalenessWindow:
+                      seconds: 176400
+                      tokenTtlSeconds: 172800
+                      crlNextUpdateSeconds: 86400
+                      offlineToleranceSeconds: 3600
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '404': { $ref: '#/components/responses/ActivationNotFound' }
+        '409': { $ref: '#/components/responses/NonceReplayed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/SignerUnavailable' }
+
+  # --- Heartbeat / silent renewal -----------------------------------------------------------------
+  /v1/heartbeat:
+    post:
+      tags: [enforcement]
+      operationId: heartbeatRenew
+      summary: Renew the short-lived token before expiry (silent background renewal)
+      description: >
+        Silently renew the short-lived token BEFORE it expires and advance the activation's last-seen
+        anchor (FR-003; US1/US2/US3). Same auth (`X-API-Key` + `validate` scope), same single-use
+        `nonce`, and same request shape as `POST /v1/validate` — heartbeat is the periodic RENEWAL of a
+        session that validate established; clients beat at a cadence well below the token TTL (research:
+        ~50-70% of TTL) so a transient outage is absorbed by the grace window (FR-007) without a false
+        lockout.
+
+
+        Every beat RE-CHECKS current authorization (FR-004), not just the clock: `license.status` (E008),
+        `license.expiresAt`, the effective `entitlements` (E008 — the renewed token reflects CURRENT
+        entitlements/plan, so plan changes propagate on renewal, FR-017), and `activation.status` (E009).
+        Outcomes (all `200`):
+
+          * `verdict: valid` — a FRESH `shortLivedToken` with a new `serverTime`; the monotonic anchor
+            advances (FR-014).
+          * `verdict: revoked | suspended | expired | deactivated` — renewal REFUSED, NO new token; the
+            current token lapses within its TTL (FR-005). Reinstating a suspended license resumes renewal
+            on the NEXT beat (FR-006).
+
+
+        IDEMPOTENT REPLAY (FR-008): a retry with the SAME `nonce` for the SAME activation replays the
+        ORIGINAL result (same verdict, same token) at `200`; a nonce reused for a DIFFERENT activation is
+        refused `409 nonce_replayed`. Rate-limited (FR-021); p95 < 120 ms (FR-020); audited (FR-019).
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: validate }
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnforcementRequest' }
+            examples:
+              renew:
+                summary: Renew before expiry
+                value:
+                  activationId: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+                  nonce: "d3b68ce14694f4569e8457d6f4833306"
+      responses:
+        '200':
+          description: >
+            The renewal verdict. `valid` carries a FRESH `shortLivedToken`; a non-valid verdict refuses
+            renewal with no token. Also returned on an idempotent nonce replay for the same activation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnforcementResult' }
+              examples:
+                renewed:
+                  summary: Renewed — fresh short-lived token
+                  value:
+                    verdict: valid
+                    shortLivedToken: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImV4cCI6MTc1MjEyOTYwMH0.cmVuZXdlZC1zaG9ydC1saXZlZC1zaWc"
+                    serverTime: "2026-07-19T02:00:00Z"
+                    renewAfter: "2026-07-20T02:00:00Z"
+                    expiresAt: "2026-07-21T02:00:00Z"
+                    stalenessWindow:
+                      seconds: 176400
+                      tokenTtlSeconds: 172800
+                      crlNextUpdateSeconds: 86400
+                      offlineToleranceSeconds: 3600
+                deactivated:
+                  summary: Activation deactivated — renewal refused
+                  value:
+                    verdict: deactivated
+                    serverTime: "2026-07-19T02:00:00Z"
+                    stalenessWindow:
+                      seconds: 176400
+                      tokenTtlSeconds: 172800
+                      crlNextUpdateSeconds: 86400
+                      offlineToleranceSeconds: 3600
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '404': { $ref: '#/components/responses/ActivationNotFound' }
+        '409': { $ref: '#/components/responses/NonceReplayed' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/SignerUnavailable' }
+
+  # --- Signed revocation list (CRL) fallback ------------------------------------------------------
+  /v1/revocation-list:
+    get:
+      tags: [revocation]
+      operationId: getRevocationList
+      summary: Fetch the signed, versioned CRL (JSON or downloadable air-gap file)
+      description: >
+        Fetch the signed, versioned revocation list (CRL) for the caller's tenant and the selected
+        `productId` (FR-009/010; US4) — the fail-open FALLBACK to short-TTL non-reissue for spans between
+        renewals and for air-gapped sites. The CRL is PER-PRODUCT because the signature is made with the
+        product's E004 key and verified against that product's keyring. By default the LATEST published
+        version is returned; an optional `version` selects a specific one.
+
+
+        Body: `{ version, generatedAt, nextUpdate, keyId, signature, revokedIds }` where `signature` is a
+        detached Ed25519 signature over the canonical CRL document (a PUBLIC artifact — never a private
+        key) and `revokedIds` is the point-in-time snapshot `{ licenses[], activations[] }` projected
+        from `license.status='revoked'` (+ deactivated/revoked activations) at generation.
+
+
+        REPRESENTATIONS (same canonical signed bytes, so the signature verifies identically):
+
+          * default (`application/json`) — the JSON document above.
+          * `?format=file` (`application/octet-stream`, `Content-Disposition: attachment`) — the signed
+            CRL as a downloadable FILE for AIR-GAP import (mirrors E010 air-gap activation).
+
+
+        CACHING (FR-010): `Cache-Control`/`Expires` align to `nextUpdate`; `ETag` carries the version.
+        A conditional `If-None-Match` matching the current version returns `304 Not Modified`. A CDN in
+        front caches to `nextUpdate`.
+
+
+        CLIENT FAIL-OPEN (FR-011): a CRL fetch FAILURE (network/CDN unreachable, or `404` when no CRL is
+        published for the product) MUST fail OPEN — the client falls back to short-token-TTL enforcement;
+        token EXPIRY fails CLOSED. The CRL is belt-and-braces, not the primary path.
+
+
+        Requires the `validate` scope; tenant-scoped (an unknown/cross-tenant `productId` -> `404`);
+        rate-limited (FR-021).
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: validate }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/ProductIdQuery'
+        - $ref: '#/components/parameters/CrlVersionQuery'
+        - $ref: '#/components/parameters/CrlFormatQuery'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: >
+            The signed, versioned CRL for the tenant + product. Served JSON by default, or as a
+            downloadable signed file when `?format=file`. Cacheable to `nextUpdate`.
+          headers:
+            Cache-Control:
+              description: Public cache directive whose `max-age` aligns to `nextUpdate` (FR-010).
+              schema: { type: string }
+              example: "public, max-age=86400"
+            Expires:
+              description: Absolute cache expiry, equal to the CRL's `nextUpdate`.
+              schema: { type: string, format: date-time }
+            ETag:
+              description: Strong validator carrying the CRL `version`; usable with `If-None-Match` for `304`.
+              schema: { type: string }
+              example: '"v42"'
+            Content-Disposition:
+              description: >
+                Present only on the FILE form (`?format=file`) — offers the signed CRL as a download for
+                air-gap import.
+              schema: { type: string }
+              example: 'attachment; filename="revocation-list-3f2504e0-v42.crl"'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RevocationList' }
+              examples:
+                crl:
+                  value:
+                    version: 42
+                    productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    generatedAt: "2026-07-18T00:00:00Z"
+                    nextUpdate: "2026-07-19T00:00:00Z"
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    signature: "Zm9yZ2VkLWRldGFjaGVkLWVkMjU1MTktY3JsLXNpZ25hdHVyZQ"
+                    revokedIds:
+                      licenses:
+                        - "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                        - "f6071829-4444-4d5e-bf60-718293a4b5c6"
+                      activations:
+                        - "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                description: >
+                  The FILE form (`?format=file`) — the SAME canonical signed CRL bytes as the JSON
+                  representation, offered as a download for air-gap import. The detached signature
+                  verifies identically against the product keyring.
+        '304':
+          description: >
+            Not Modified — the caller's `If-None-Match` matches the current CRL version; the cached copy
+            is still valid to `nextUpdate`. No body.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '404': { $ref: '#/components/responses/RevocationListNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        RUNTIME plane credential (the tenant/machine API key; NOT the human `admin_session` cookie).
+        Resolved by the server (src/server/auth/apikey.ts + app.ts) to a tenant + capability scopes.
+        Every E013 operation REQUIRES the `validate` scope and fails closed — no resolvable tenant
+        context -> `401 unauthorized`; a key lacking `validate` -> `403 forbidden`. OpenAPI cannot
+        express the scope in the security requirement for an `apiKey` scheme, so the required scope is
+        declared per operation via `x-rbac.requiredScope` and enforced server-side.
+
+  parameters:
+    ProductIdQuery:
+      name: productId
+      in: query
+      required: true
+      description: >
+        The product whose CRL to fetch (UUID), within the caller's tenant. REQUIRED — the CRL is signed
+        per-product by that product's E004 key (FR-009). An unknown or cross-tenant product resolves to
+        `404` (never `403`, FR-018).
+      schema: { type: string, format: uuid }
+      example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+    CrlVersionQuery:
+      name: version
+      in: query
+      required: false
+      description: >
+        Optional specific CRL version to fetch. Omit to receive the LATEST published version (`max(version)`
+        for the product). A version that does not exist -> `404`.
+      schema: { type: integer, format: int64, minimum: 1 }
+      example: 42
+    CrlFormatQuery:
+      name: format
+      in: query
+      required: false
+      description: >
+        Representation selector. `json` (default) returns `application/json`; `file` returns the SAME
+        signed CRL bytes as an `application/octet-stream` download (`Content-Disposition: attachment`)
+        for AIR-GAP import (FR-010). Both cover identical canonical bytes, so the signature verifies the
+        same way.
+      schema:
+        type: string
+        enum: [json, file]
+        default: json
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: >
+        Conditional-GET validator. When it matches the current CRL `ETag` (the version), the server
+        returns `304 Not Modified` and the client keeps its cached copy until `nextUpdate` (FR-010).
+      schema: { type: string }
+      example: '"v42"'
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }` (matches E008/E009). `code`
+        is a stable, enumerated snake_case machine-readable value; `message` is human-readable; `details`
+        is optional structured context whose shape depends on `code`. No field ever carries a raw
+        hardware identifier, signing-key material, a signed token, or a nonce, and no field discloses
+        another tenant's existence — cross-tenant access resolves to `404` (never `403`). NOTE: the
+        enforcement outcomes revoked/suspended/expired/deactivated are NOT errors — they are `200`
+        verdicts (see `EnforcementResult`); this schema is only for genuine protocol failures.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error code (snake_case). Enumerated; new codes require a contract
+            change. Each refusal reason is a DISTINCT, testable code.
+          enum:
+            - validation_error          # 400 — malformed body / bad query value (missing productId, bad uuid, non-JSON)
+            - unauthorized              # 401 — no resolvable auth (missing/invalid API key)
+            - forbidden                 # 403 — the API key lacks the `validate` scope (fail-closed, FR-018)
+            - activation_not_found      # 404 — unknown/cross-tenant activation on validate/heartbeat (FR-018)
+            - revocation_list_not_found # 404 — unknown/cross-tenant product, or no CRL published yet (client FAILS OPEN, FR-011)
+            - nonce_replayed            # 409 — nonce reused to forge a DIFFERENT check-in (FR-008)
+            - rate_limited              # 429 — validate/heartbeat/CRL rate limit exceeded (FR-021); carries Retry-After
+            - signer_unavailable        # 503 — the license is valid but the short-lived token could not be signed (E004 signer fault)
+          example: nonce_replayed
+        message:
+          type: string
+          description: Human-readable summary. Never contains a raw identifier, key material, token, or nonce.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` -> `{ field, value? }`;
+            `forbidden` -> `{ requiredScope: "validate" }`;
+            `activation_not_found` -> `{ activationId? }` (omitted when referenced only by opaque credential);
+            `revocation_list_not_found` -> `{ productId, version? }`;
+            `nonce_replayed` -> `{ reason: "replayed_nonce" }` (the nonce value is never echoed);
+            `rate_limited` -> `{ retryAfterSeconds }` (also surfaced via the `Retry-After` header);
+            `signer_unavailable` -> `{ retryAfterSeconds? }` (also surfaced via `Retry-After`).
+            It never carries a raw identifier, key material, token, or nonce.
+
+    # --- Shared value types -----------------------------------------------------------------------
+    Verdict:
+      type: string
+      description: >
+        The enforcement outcome discriminator returned at `200` by validate/heartbeat. `valid` = the
+        binding is currently authorized and a `shortLivedToken` is minted; the others REFUSE renewal with
+        NO token (the outstanding token lapses within its TTL, bounded staleness <= TTL, FR-005). These
+        are SUCCESSFUL evaluations, not errors — hence `200`, not a `4xx` (see the info-block "REFUSAL
+        SEMANTICS"). `deactivated` corresponds to the `activation_deactivated` check-in reason.
+      enum: [valid, revoked, suspended, expired, deactivated]
+      example: valid
+
+    SignalHash:
+      type: string
+      description: >
+        One salted hash of a stable hardware signal, computed by the CLIENT (base64url of a 32-byte
+        digest), mirroring E009. Raw hardware identifiers are never transmitted, stored, or returned. Used
+        only to re-prove the machine binding (K-of-N drift) when server policy requires it.
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      example: "9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+
+    Fingerprint:
+      type: object
+      description: >
+        OPTIONAL machine-signal proof — N client-computed salted signal hashes (mirrors the E009
+        `Fingerprint`). Included only when server policy requires re-proving the binding on validate/
+        heartbeat; the K-of-N threshold is a SERVER default, not a client choice.
+      additionalProperties: false
+      required: [signals]
+      properties:
+        signals:
+          type: array
+          minItems: 1
+          maxItems: 32
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/SignalHash' }
+
+    MachineBoundKey:
+      type: string
+      description: >
+        The client's EXISTING E009 offline credential (API field `machineBoundKey`; DB column
+        `machine_bound_token`) — an OPAQUE, offline-verifiable E001 `LIC1` token. Supplied to IDENTIFY /
+        prove the activation being validated; it is a PUBLIC signed artifact, never the signing key. E013
+        does NOT overwrite or shorten it (offline-first preserved, FR-012).
+      example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImZwayI6M30.bWFjaGluZS1ib3VuZC1zaWduYXR1cmU"
+
+    ShortLivedToken:
+      type: string
+      description: >
+        The re-signed, SHORT-TTL renewal token minted on a `valid` verdict (FR-002; ADR-0010) — an OPAQUE
+        E001 `LIC1` token, Ed25519-signed by the EXISTING E004 keyring, same machine binding as the E009
+        credential but with a near-term `exp` (= the renewal window) and a signed-server-time anchor. The
+        client's EXISTING E001 offline verifier verifies it unchanged. Its internal claims are NOT modelled
+        here beyond the sibling `serverTime` / `expiresAt` fields; it is a PUBLIC artifact — the signing
+        key is never returned.
+      example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCIsImV4cCI6MTc1MjA0MzIwMH0.c2hvcnQtbGl2ZWQtcmVuZXdhbC1zaWc"
+
+    StalenessWindow:
+      type: object
+      description: >
+        The honestly-disclosed bounded revocation-staleness window (FR-013; SC-006) — the maximum delay
+        between an admin revocation and its enforcement on THIS connected client. `seconds` =
+        max(`tokenTtlSeconds`, `crlNextUpdateSeconds`) + `offlineToleranceSeconds`. Returned on every
+        validate/heartbeat response so the disclosure is in-band, not only in documentation.
+      required: [seconds]
+      properties:
+        seconds:
+          type: integer
+          minimum: 0
+          description: The total bounded staleness = max(tokenTtl, crlNextUpdate) + offline tolerance.
+          example: 176400
+        tokenTtlSeconds:
+          type: integer
+          minimum: 0
+          description: The short-lived token TTL / renewal window for this plan (FR-002/016).
+          example: 172800
+        crlNextUpdateSeconds:
+          type: integer
+          minimum: 0
+          description: The CRL `nextUpdate` horizon (the fallback path's max staleness, FR-010).
+          example: 86400
+        offlineToleranceSeconds:
+          type: integer
+          minimum: 0
+          description: The per-plan offline-tolerance window — how long the client may run without a fresh anchor (FR-015).
+          example: 3600
+
+    EnforcementRequest:
+      type: object
+      description: >
+        The SHARED request body for `POST /v1/validate` and `POST /v1/heartbeat`. The client identifies
+        its activation by `activationId` and/or its E009 `machineBoundKey` (at least ONE required),
+        optionally includes a machine-signal `fingerprint`, and MUST carry a single-use `nonce` (FR-008).
+        No raw hardware identifier is ever sent.
+      additionalProperties: false
+      required: [nonce]
+      properties:
+        activationId:
+          type: string
+          format: uuid
+          description: The E009 activation id (UUID) within the caller's tenant. Provide this and/or `machineBoundKey`.
+          example: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+        machineBoundKey:
+          allOf: [{ $ref: '#/components/schemas/MachineBoundKey' }]
+          description: The client's E009 offline credential, identifying the activation. Provide this and/or `activationId`.
+        fingerprint:
+          allOf: [{ $ref: '#/components/schemas/Fingerprint' }]
+          description: Optional machine-signal proof; required only when server policy re-checks the binding.
+        nonce:
+          type: string
+          description: >
+            Single-use client-supplied nonce for anti-replay (FR-008). MUST be high-entropy (>=128-bit,
+            single-use) and is retained bounded (TTL = the renewal window; data-model `checkin`
+            `UNIQUE (tenant_id, nonce)`). A retry with the SAME nonce for the SAME activation replays the
+            ORIGINAL result (`200`); a nonce reused for a DIFFERENT activation is rejected
+            (`409 nonce_replayed`). Never echoed in any response or error.
+          minLength: 16
+          maxLength: 200
+          pattern: '^[A-Za-z0-9_-]+$'
+          example: "b1946ac92492d2347c6235b4d2611184"
+      anyOf:
+        - required: [activationId]
+        - required: [machineBoundKey]
+
+    EnforcementResult:
+      type: object
+      description: >
+        The SHARED `200` result of validate/heartbeat. `verdict` is the discriminator: on `valid`,
+        `shortLivedToken` (+ `renewAfter`, `expiresAt`) is present; on a non-valid verdict there is NO
+        token (the outstanding token lapses within its TTL). `serverTime` and `stalenessWindow` are
+        always present. Also returned verbatim on an idempotent nonce replay for the same activation.
+      required: [verdict, serverTime, stalenessWindow]
+      properties:
+        verdict: { $ref: '#/components/schemas/Verdict' }
+        shortLivedToken:
+          allOf: [{ $ref: '#/components/schemas/ShortLivedToken' }]
+          description: >
+            PRESENT ONLY when `verdict = valid`. The freshly-minted (or, on idempotent replay, the
+            original) short-lived renewal token. OMITTED on every non-valid verdict.
+        serverTime:
+          type: string
+          format: date-time
+          description: >
+            The SIGNED server time anchor for this beat (FR-014) — equals the anchor embedded in the
+            minted token and the check-in's stored time. The client advances its local monotonic anchor
+            to this value and rejects any later token/time preceding it.
+          example: "2026-07-18T09:15:00Z"
+        renewAfter:
+          type: string
+          format: date-time
+          description: >
+            PRESENT ONLY on `valid`. When the client SHOULD renew (before `expiresAt`, typically ~50-70%
+            of the TTL) so clock drift and transient outages are absorbed by the grace window (FR-007).
+          example: "2026-07-19T09:15:00Z"
+        expiresAt:
+          type: string
+          format: date-time
+          description: >
+            PRESENT ONLY on `valid`. The short-lived token's `exp`. After this instant, absent a renewal,
+            offline verification of the short-lived token FAILS CLOSED — bounding revocation staleness to
+            the renewal window (FR-005).
+          example: "2026-07-20T09:15:00Z"
+        stalenessWindow: { $ref: '#/components/schemas/StalenessWindow' }
+
+    RevokedIds:
+      type: object
+      description: >
+        The point-in-time snapshot of revoked ids covered by the CRL (data-model `revocation_list.revoked_ids`
+        `{ licenses[], activations[] }`), projected at generation from `license.status='revoked'` (+
+        deactivated/revoked activations). Pseudonymous ids only — no PII, no raw hardware identifiers.
+      required: [licenses, activations]
+      properties:
+        licenses:
+          type: array
+          description: Revoked license ids (UUIDs) for this tenant + product.
+          items: { type: string, format: uuid }
+          example: ["e5f60718-3333-4c4d-ae5f-60718293a4b5"]
+        activations:
+          type: array
+          description: Revoked/deactivated activation ids (UUIDs) published in this CRL, where policy includes them.
+          items: { type: string, format: uuid }
+          example: ["a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"]
+
+    RevocationList:
+      type: object
+      description: >
+        The signed, versioned CRL for one tenant + product (FR-009). `signature` is a detached Ed25519
+        signature (E004 keyring, `keyId`) over the canonical encoding of `{ version, generatedAt,
+        nextUpdate, revokedIds }` — a PUBLIC artifact, never a private key. Immutable once published;
+        `version` advances monotonically per product.
+      required: [version, productId, generatedAt, nextUpdate, keyId, signature, revokedIds]
+      properties:
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Monotonic CRL version per (tenant, product); advances each publication (FR-009, US4-AC1). Also the `ETag`.
+          example: 42
+        productId:
+          type: string
+          format: uuid
+          description: The product this CRL covers (its E004 key signed it).
+          example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        generatedAt:
+          type: string
+          format: date-time
+          description: When this CRL version was generated/signed.
+          example: "2026-07-18T00:00:00Z"
+        nextUpdate:
+          type: string
+          format: date-time
+          description: >
+            The CRL's validity horizon — cache to this instant (FR-010). Strictly after `generatedAt`.
+            Bounds the CRL-path staleness; the client fails OPEN if it cannot refresh before this, and
+            token expiry still fails CLOSED (FR-011).
+          example: "2026-07-19T00:00:00Z"
+        keyId:
+          type: string
+          format: uuid
+          description: The id of the product E004 signing key that signed this CRL (opaque identifier, never key material). Verified against the product keyring.
+          example: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+        signature:
+          type: string
+          description: Detached Ed25519 signature (base64url) over the canonical CRL document. Public; never a private key.
+          pattern: '^[A-Za-z0-9_-]+$'
+          example: "Zm9yZ2VkLWRldGFjaGVkLWVkMjU1MTktY3JsLXNpZ25hdHVyZQ"
+        revokedIds: { $ref: '#/components/schemas/RevokedIds' }
+
+  responses:
+    BadRequest:
+      description: Validation error — malformed body, a bad query value, a missing `productId`, or a non-JSON body.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingNonce:
+              value:
+                code: validation_error
+                message: "nonce is required."
+                details: { field: nonce }
+            missingProductId:
+              value:
+                code: validation_error
+                message: "productId is required."
+                details: { field: productId }
+            noActivationIdentity:
+              value:
+                code: validation_error
+                message: "Provide at least one of activationId or machineBoundKey."
+                details: { field: activationId }
+    Unauthorized:
+      description: No resolvable authentication — the `X-API-Key` is missing or invalid.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noApiKey:
+              value: { code: unauthorized, message: "Missing or invalid API key." }
+    ForbiddenScope:
+      description: >
+        Fail-closed — the API key resolved to a tenant but lacks the required `validate` scope (FR-018).
+        The denied attempt is audited (FR-019).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingScope:
+              value:
+                code: forbidden
+                message: "The validate scope is required."
+                details: { requiredScope: validate }
+    ActivationNotFound:
+      description: >
+        No activation resolves within the caller's tenant for the supplied `activationId`/`machineBoundKey`
+        (a cross-tenant reference also resolves here, FR-018). Distinct from a non-valid VERDICT: a KNOWN
+        activation whose license is revoked/suspended/expired or whose binding is deactivated returns
+        `200` with that `verdict`, not `404`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownActivation:
+              value:
+                code: activation_not_found
+                message: "No such activation in this tenant."
+                details: { activationId: "00000000-0000-4000-8000-000000000000" }
+    RevocationListNotFound:
+      description: >
+        No CRL resolves for the caller's tenant and the supplied `productId` (unknown/cross-tenant product,
+        or no CRL has been published for it yet), or the requested `version` does not exist. The CLIENT
+        MUST fail OPEN on this (fall back to short-token-TTL enforcement, FR-011).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noCrl:
+              value:
+                code: revocation_list_not_found
+                message: "No revocation list published for this product."
+                details: { productId: "00000000-0000-4000-8000-000000000000" }
+    NonceReplayed:
+      description: >
+        The `nonce` was reused to forge a DIFFERENT check-in (a different activation) (FR-008). NOTE: a
+        retry reusing the SAME nonce for the SAME activation is NOT an error — it replays the ORIGINAL
+        result at `200` (idempotency, SC-010). The nonce value is never echoed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            nonceReplayed:
+              value:
+                code: nonce_replayed
+                message: "This nonce has already been used for a different check-in."
+                details: { reason: replayed_nonce }
+    RateLimited:
+      description: >
+        The validate/heartbeat/CRL rate limit was exceeded for this (API key / activation) — the request
+        is refused fail-fast and the limit-exceeded event is audited (FR-021). The `Retry-After` header
+        gives the seconds to wait. Protects the p95 < 120 ms SLO and deters brute-force/replay pressure.
+      headers:
+        Retry-After:
+          description: Seconds the client should wait before retrying.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            rateLimited:
+              value:
+                code: rate_limited
+                message: "Too many requests; retry after the indicated delay."
+                details: { retryAfterSeconds: 30 }
+    SignerUnavailable:
+      description: >
+        The binding IS currently valid but the short-lived renewal token could not be signed because the
+        E004 signer is unavailable (a signer fault). No token is minted and the anchor is not advanced;
+        the client MAY retry after a short delay (within the grace window, so no false lockout). The
+        signing key is never exposed. (A non-valid VERDICT — revoked/suspended/expired/deactivated — is a
+        `200`, not a `503`; `503` means "valid but could not sign".)
+      headers:
+        Retry-After:
+          description: Seconds the client should wait before retrying.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            signerUnavailable:
+              value:
+                code: signer_unavailable
+                message: "The signing service is temporarily unavailable; retry shortly."
+                details: { retryAfterSeconds: 5 }
