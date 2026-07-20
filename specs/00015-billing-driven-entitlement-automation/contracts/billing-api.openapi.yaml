@@ -1,0 +1,1497 @@
+openapi: 3.1.0
+info:
+  title: Billing-driven Entitlement Automation API
+  version: 0.1.0
+  description: >
+    REST surface for epic E014 (Billing-driven Entitlement Automation). An external billing provider's
+    SIGNED subscription/payment webhooks automatically drive the E008 license lifecycle — provision on
+    subscription-created, extend on renewal/payment, grace→suspend on cancel/payment-failure, revoke on
+    refund/chargeback — with configurable grace, verified signatures, and idempotent handling; operators
+    connect a provider (type + inbound-HMAC signing secret), configure the subscription-plan→catalog-plan
+    mapping + grace policy, browse managed subscriptions and the billing-event ledger, and trigger on-demand
+    reconciliation. Covers FR-001..021 and SC-001..010. Concretizes ADR-0011 (external-event → license-
+    lifecycle model: verify → dedupe → apply, provider-agnostic adapters, grace as an E008 overlay, a
+    recency guard + reconciliation, and a permanent PCI boundary).
+
+
+    TWO AUTH PLANES (this contract deliberately spans both surfaces; each operation declares exactly one).
+
+      * WEBHOOK INGESTION plane — `POST /v1/billing/webhooks/{connectionId}`, called by the external
+        BILLING PROVIDER (Stripe/Paddle/…), NOT by a tenant/machine `X-API-Key` and NOT by a human
+        `admin_session`. It is authenticated by the PROVIDER HMAC SIGNATURE over the RAW request body,
+        carried in a provider signature header (e.g. `Stripe-Signature: t=…,v1=…`) — modeled here as the
+        `providerSignature` security scheme. The `{connectionId}` (a UUID minted when the operator created
+        the `billing_connection`) resolves the tenant + the connection that holds the signing secret; the
+        server recomputes the HMAC over the raw bytes and checks the embedded timestamp for recency BEFORE
+        any parsing or processing (FR-002). There is NO cookie/CSRF and NO `X-API-Key` on this plane.
+
+      * OPERATOR/ADMIN plane — mounted under `/admin/billing/...`, called by a HUMAN operator/admin in the
+        console. Authenticated by the opaque `admin_session` cookie (E005) established by
+        `POST /admin/auth/login`, NOT by any signature or `X-API-Key`. RBAC is `owner > admin > viewer`
+        (src/server/auth/rbac.ts): connection MANAGEMENT and the reconciliation trigger require `admin` or
+        higher; the read-only subscription registry and billing-event ledger require `viewer` or higher. The
+        minimum role is declared per operation via `x-rbac.minRole` and enforced server-side. Every state-
+        changing admin call additionally carries a double-submit `X-CSRF-Token` header that MUST equal the
+        non-HttpOnly CSRF cookie issued at login; a missing/mismatched token is refused fail-closed with
+        `403 forbidden`. GET operations do not require it. (Mirrors the E008 `licensing-api.openapi.yaml`
+        and E009 admin-plane conventions.)
+
+
+    WEBHOOK SIGNATURE VERIFICATION (FR-002; SC-001 — verify BEFORE process). On every delivery the server:
+    (1) resolves `{connectionId}` to a `billing_connection` (unknown → `404 connection_not_found`, no state
+    change); (2) recomputes the provider HMAC over the RAW, unmodified request body using the connection's
+    CURRENT signing secret (`signing_secret_ref`) — and, within an in-progress rotation window, the PREVIOUS
+    secret (`signing_secret_prev`) too — and compares in constant time; a missing/invalid signature →
+    `401 invalid_signature` (no state change, never enqueued, never dead-lettered); (3) checks the signed
+    timestamp against a bounded recency tolerance (default ~5 min) to defeat replay — outside tolerance →
+    `400 stale_timestamp` (no state change). Only AFTER these pass is the event parsed, normalized by the
+    per-provider adapter into the internal canonical model (FR-004), deduped, and applied.
+
+
+    IDEMPOTENCY (FR-003; SC-002). Each event is deduped by the provider event id (the `billing_event`
+    `UNIQUE (tenant_id, provider, provider_event_id)` key), recorded TRANSACTIONALLY in the same commit as
+    its side effect (`INSERT … ON CONFLICT DO NOTHING`), so an at-least-once redelivery is applied AT MOST
+    ONCE. A duplicate delivery is a successful idempotent no-op — `200` with `outcome: "duplicate"` — and
+    writes no second ledger row and re-applies nothing. Likewise an out-of-order/stale event older than the
+    subscription's `last_applied_event_at` does not advance state and acks `duplicate` (recorded in the
+    ledger with `outcome: "rejected"`, `reason: "stale_event"`, FR-016).
+
+
+    DEAD-LETTER (FR-020). A validly-signed event for an unknown/unmapped subscription or an unhandled type,
+    or an event that fails AFTER acknowledgement, is DEAD-LETTERED for operator attention (ledger
+    `outcome: "deadletter"`) and acked `200` with `outcome: "deadletter"` — never silently dropped. This is
+    distinct from a signature/timestamp/schema FAILURE, which is rejected INLINE (`4xx`) with no ledger row
+    and no state change.
+
+
+    FAST ACK + RATE LIMITING (FR-019). The endpoint acknowledges quickly (verify → dedupe → apply is a
+    local tenant-scoped transaction; durable processing is decoupled from ack per FR-019) with a minimal ack
+    `{ received: true, outcome }` — refusals and the resulting license-lifecycle changes are INTERNAL and are
+    NOT detailed back to the provider. The plane is rate-limited per connection to absorb provider retry
+    storms; an over-limit delivery is refused `429 rate_limited` with a `Retry-After` header. The 200-vs-202
+    choice is DETERMINISTIC per deployment (not per request): a synchronous deployment ALWAYS acks `200`
+    (outcome decided inline); a deployment that fully defers durable processing (FR-019) ALWAYS acks `202`
+    (verified + accepted, processing deferred). Same ack shape; the provider treats both as success and does
+    not retry on either.
+
+
+    PERMANENT PCI / NO CARD DATA (FR-018; ADR-0011). E014 NEVER initiates a charge and NEVER accepts, parses,
+    logs, or stores card/PAN/CVV/expiry or raw cardholder data — the provider owns all payment processing.
+    The webhook body is a provider event envelope from which the adapter extracts ONLY allow-listed,
+    non-sensitive billing-lifecycle metadata (canonical type, subscription id, plan/price id, status flags);
+    the `billing_event` ledger persists a minimized `payloadSummary`, never the raw payload. No field in any
+    request or response of this contract carries card/PAN data.
+
+
+    SIGNING-SECRET WRITE-ONLY INVARIANT (FR-015; SC-007). The provider inbound-HMAC signing secret is
+    WRITE-ONLY: it is accepted on `POST`/`PATCH`/rotate-secret requests and is NEVER returned by ANY response
+    — the connection read model (`ConnectionPublic`) is the exact secret-excluding projection of the
+    `billing_connection_public` view (it omits `signing_secret_ref`/`signing_secret_prev`). This is a
+    distinct secret CLASS from the E004 Ed25519 license signing key (which is no-read/no-export); the HMAC
+    secret must be readable server-side to verify each webhook, so it is envelope-encrypted at rest (or an
+    opaque `<VAR>_FILE`/KMS ref), never plaintext at rest, and never surfaced through the API. Rotation keeps
+    BOTH the old and new secret valid during a bounded transition window (US5-AC2).
+
+
+    E008 OVERLAY (ADR-0011; grace is NOT a license status). E014 drives, it does not re-implement: lifecycle
+    transitions call the existing E008 services and the `license.status` enum (`active`/`suspended`/`revoked`,
+    `revoked` terminal) is UNCHANGED. Grace is a billing OVERLAY on the new `subscription` row
+    (`billing_state` ∈ `active`/`past_due`/`grace`/`canceled`/`refunded`, plus `grace_expires_at`). During
+    `past_due`/`grace` the license stays `active` (usable); a scheduled job drives `active → suspended` on
+    grace expiry (time-driven, FR-008); refund/chargeback drives `→ revoked` (terminal, FR-010). E013
+    propagates suspension/revocation to connected clients; E014 only sets `license.status`.
+
+
+    TENANT SCOPING (FR-014, fail-closed). Webhook effects are confined to the tenant that owns the resolving
+    `{connectionId}`; admin operations are scoped to the session's tenant. There is NO tenant path/query
+    parameter on either plane and it can never be widened by the caller. On the admin plane a cross-tenant id
+    resolves to `404` (never `403`), indistinguishable from a non-existent one.
+
+
+    AUDIT (FR-013). Every billing-driven license mutation appends one row to the E002 `audit_log` in the same
+    transaction, carrying the triggering `provider_event_id`; a signing secret or raw hardware/card datum is
+    never logged.
+
+
+    ERROR MODEL. Project-standard structured JSON `{ code, message, details? }` with a stable, enumerated
+    snake_case `code` (matches E008/E009/E013). Each DISTINCT refusal reason has a distinct, testable code.
+    Field naming is camelCase throughout the bodies (the data-model's snake_case column names — e.g.
+    `signing_secret_ref`, `last_applied_event_at`, `provider_event_id` — map to camelCase wire fields).
+
+
+    VERSIONING & MEDIA TYPE. The webhook ingestion plane is API-versioned under `/v1`; the admin/console
+    plane is deliberately UNVERSIONED (`/admin/...`), the established platform convention (the same `/v1` +
+    `/admin` split as E004/E008/E009). Every request and response body is `application/json` (UTF-8); a
+    non-JSON body is rejected `400 validation_error`. The webhook body is verified over its RAW bytes BEFORE
+    JSON parsing, so a malformed body is still signature-checked first.
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: webhook-ingestion
+    description: >
+      WEBHOOK plane — the external billing provider POSTs signed subscription/payment events. Provider
+      HMAC signature over the raw body (`providerSignature`); verify-before-process + timestamp recency;
+      idempotent by provider event id; rate-limited; fast minimal ack (FR-001/002/003/019/020).
+  - name: billing-connections
+    description: >
+      ADMIN plane — operator configuration of a provider connection: type + WRITE-ONLY signing secret
+      (never returned), the plan mapping, and grace policy; secret rotation with a transition window.
+      Session cookie + RBAC (`admin`) + CSRF on mutation (FR-015).
+  - name: billing-registry
+    description: >
+      ADMIN plane — read-only operator views: managed subscriptions (billing_state/grace/linked license)
+      and the append-only billing-event ledger incl. the dead-letter queue. Session cookie + RBAC
+      (`viewer`) (FR-012/013/020).
+  - name: reconciliation
+    description: >
+      ADMIN plane — trigger on-demand reconciliation against the provider's authoritative subscription
+      state to self-heal missed/dropped/out-of-order webhooks. Session cookie + RBAC (`admin`) + CSRF
+      (FR-017; US6).
+
+paths:
+  # --- WEBHOOK INGESTION plane (provider HMAC signature) ------------------------------------------
+  /v1/billing/webhooks/{connectionId}:
+    parameters:
+      - $ref: '#/components/parameters/ConnectionIdPath'
+    post:
+      tags: [webhook-ingestion]
+      operationId: ingestBillingWebhook
+      summary: Ingest a signed billing webhook (verify → dedupe → apply)
+      description: >
+        The external billing provider POSTs a signed subscription/payment event; the server VERIFIES the
+        provider HMAC signature over the RAW body and the signed timestamp's recency BEFORE any processing,
+        then dedupes by provider event id and applies the mapped E008 lifecycle change (FR-001/002/003).
+        The `{connectionId}` resolves the tenant + `billing_connection` holding the signing secret; effects
+        are confined to that tenant (FR-014).
+
+
+        ORDER OF EVALUATION (fail-closed, no state change until all pass):
+
+          1. Resolve `{connectionId}` → a `billing_connection`. Unknown → `404 connection_not_found`
+             (the id is an unguessable UUID, so this is not a tenant-enumeration oracle).
+          2. Recompute the provider HMAC over the RAW request bytes using the connection's CURRENT secret
+             (and, during a rotation transition window, the PREVIOUS secret too) and compare in constant
+             time. Missing/invalid → `401 invalid_signature` — NOT enqueued, NOT dead-lettered (FR-002/020).
+          3. Check the signed timestamp against the recency tolerance (default ~5 min). Outside → `400
+             stale_timestamp`. A structurally malformed body → `400 validation_error`.
+          4. Check the resolved connection's `status`. A `disabled` connection is checked ONLY AFTER
+             signature + timestamp verification (verify-before-process is preserved), so only a genuinely
+             provider-signed delivery reaches it: the verified event is NOT applied — it is recorded
+             `outcome: "deadletter"`, `reason: "connection_disabled"` and acked `200` with
+             `outcome: "deadletter"` (FR-020). The provider still gets a fast success ack (no retry storm);
+             the operator can replay from the dead-letter queue after re-enabling the connection.
+
+
+        Only then (an `active` connection) is the event parsed, normalized by the per-provider adapter into the internal canonical
+        model (FR-004), deduped, and applied TRANSACTIONALLY with its `billing_event` ledger row. Success
+        outcomes (all acked fast; refusals/lifecycle changes are INTERNAL, not detailed to the provider):
+
+          * `outcome: "applied"` — the event advanced state: a mapped lifecycle change was applied via the
+            E008 services (provision / extend / grace / reinstate / revoke) and audited with the
+            `provider_event_id` (FR-005/006/007/009/010/013).
+          * `outcome: "duplicate"` — an idempotent no-op that changed NO state: either a redelivery of an
+            already-processed event id (deduped by `UNIQUE (tenant, provider, provider_event_id)`, applied
+            at most once, FR-003/SC-002) OR an out-of-order/stale event older than the subscription's
+            `last_applied_event_at` (recency guard — ledger `outcome: "rejected"`, `reason: "stale_event"`,
+            FR-016).
+          * `outcome: "deadletter"` — a validly-signed but unmapped/unhandled event (unknown subscription
+            or unhandled type), a validly-signed delivery to a `disabled` connection
+            (`reason: "connection_disabled"`), or a failure AFTER ack, recorded for operator attention
+            (never silently dropped, FR-020).
+
+
+        The endpoint acknowledges quickly and is rate-limited at TWO granularities — per resolved connection
+        AND per source IP (the per-IP limit, applied BEFORE connection resolution/signature verify, bounds a
+        flood of unknown/invalid `{connectionId}` values) — to absorb provider retry storms (FR-019); an
+        over-limit delivery → `429 rate_limited`. NO card/PAN data is accepted, parsed,
+        or stored (FR-018) — the adapter extracts only allow-listed non-sensitive billing metadata.
+      security:
+        - providerSignature: []
+      x-priority: P1
+      requestBody:
+        required: true
+        description: >
+          The provider's RAW signed event envelope. The signature is over these exact bytes, so the body is
+          verified BEFORE it is parsed. Shape is provider-specific and normalized by the adapter; NO card/PAN
+          data is ever accepted or stored (FR-018).
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookEnvelope' }
+            examples:
+              subscriptionDeleted:
+                summary: Stripe-style subscription cancellation event
+                value:
+                  id: "evt_1PJ2k8LkdIwHu7ix2s9Xa3bT"
+                  type: "customer.subscription.deleted"
+                  created: 1752829200
+                  data:
+                    object:
+                      id: "sub_1PABcdLkdIwHu7ix9ZyXwVuT"
+                      status: "canceled"
+                      plan: { id: "price_1Pro_monthly" }
+              invoicePaid:
+                summary: Stripe-style successful-payment (renewal) event
+                value:
+                  id: "evt_1PJ5m2LkdIwHu7ixQ0pR4cKm"
+                  type: "invoice.paid"
+                  created: 1752829800
+                  data:
+                    object:
+                      id: "in_1PABefLkdIwHu7ix7WvUtSrQ"
+                      subscription: "sub_1PABcdLkdIwHu7ix9ZyXwVuT"
+                      status: "paid"
+      responses:
+        '200':
+          description: >
+            Ack — the delivery was verified and its outcome decided (`applied` / `duplicate` / `deadletter`).
+            Minimal by design: refusals and the resulting license-lifecycle changes are internal and are
+            not detailed to the provider.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookAck' }
+              examples:
+                applied:
+                  summary: Event applied (state advanced)
+                  value: { received: true, outcome: applied }
+                duplicate:
+                  summary: Idempotent no-op (redelivery or stale/out-of-order)
+                  value: { received: true, outcome: duplicate }
+                deadletter:
+                  summary: Unmapped/unhandled — recorded for operator attention
+                  value: { received: true, outcome: deadletter }
+        '202':
+          description: >
+            Accepted — returned INSTEAD of `200` by a deployment configured for the DECOUPLED / deferred-
+            processing mode (FR-019: durable processing decoupled from acknowledgement). The 200-vs-202
+            choice is a DETERMINISTIC per-deployment mode, NOT a per-request or arbitrary choice: a
+            synchronous deployment ALWAYS acks `200` (outcome decided inline); a decoupled deployment ALWAYS
+            acks `202` (delivery verified + accepted, durable processing deferred). Same ack shape either
+            way; the provider MUST treat BOTH `200` and `202` as successful receipt and MUST NOT retry on
+            either. Within a given deployment the status is fixed and observable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookAck' }
+              examples:
+                accepted:
+                  value: { received: true, outcome: applied }
+        '400': { $ref: '#/components/responses/WebhookBadRequest' }
+        '401': { $ref: '#/components/responses/InvalidSignature' }
+        '404': { $ref: '#/components/responses/ConnectionNotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  # --- ADMIN plane: billing connections (config) -------------------------------------------------
+  /admin/billing/connections:
+    get:
+      tags: [billing-connections]
+      operationId: listBillingConnections
+      summary: List the tenant's provider connections (secret excluded)
+      description: >
+        List the session tenant's `billing_connection` rows in the secret-EXCLUDING projection
+        (`ConnectionPublic`, the `billing_connection_public` view): provider, status, custody scheme, plan
+        mapping, and grace policy — NEVER the signing secret (FR-015, SC-007). Connection configuration is
+        a management concern, so RBAC is `admin` or higher (distinct from the `viewer`-readable subscription/
+        event registries). Bounded to a hard cap of 1000; not paginated. Tenant-scoped (FR-014).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      responses:
+        '200':
+          description: The tenant's provider connections (secret-excluding projection).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectionList' }
+              examples:
+                one:
+                  value:
+                    connections:
+                      - id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+                        provider: stripe
+                        status: active
+                        secretCustodyScheme: keystore-aes256gcm-v1
+                        secretRotatedAt: null
+                        planMap:
+                          price_1Pro_monthly: { productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+                        defaultGraceSeconds: 1209600
+                        graceOverrides: {}
+                        createdAt: "2026-07-19T09:00:00Z"
+                        updatedAt: "2026-07-19T09:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [billing-connections]
+      operationId: createBillingConnection
+      summary: Connect a billing provider (secret is write-only)
+      description: >
+        Create a `billing_connection` for a provider (FR-015; US5): the provider type, the WRITE-ONLY inbound
+        webhook `signingSecret` (accepted here, NEVER returned by any response), the subscription-plan→catalog-
+        plan `planMap`, and the grace policy (`defaultGraceSeconds` + `graceOverrides`). One connection per
+        `(tenant, provider)` — a second → `409 duplicate_connection`. The `planMap` is app-validated against
+        the E007 catalog; a mapping to an unknown/archived product/plan → `409 invalid_plan_map`. The
+        response is the secret-excluding `ConnectionPublic`; its `id` is the `{connectionId}` the provider
+        will POST webhooks to. Audited (FR-013). RBAC: `admin` or higher; CSRF required.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateConnectionRequest' }
+            examples:
+              stripe:
+                value:
+                  provider: stripe
+                  signingSecret: "whsec_9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+                  planMap:
+                    price_1Pro_monthly: { productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+                  defaultGraceSeconds: 1209600
+                  graceOverrides: { price_1Enterprise_annual: 2592000 }
+      responses:
+        '201':
+          description: Connection created — the secret-excluding projection. The signing secret is never returned.
+          headers:
+            Location:
+              description: Canonical path of the created connection (`/admin/billing/connections/{id}`); its `id` is the webhook `{connectionId}`.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectionPublic' }
+              examples:
+                created:
+                  value:
+                    id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+                    provider: stripe
+                    status: active
+                    secretCustodyScheme: keystore-aes256gcm-v1
+                    secretRotatedAt: null
+                    planMap:
+                      price_1Pro_monthly: { productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+                    defaultGraceSeconds: 1209600
+                    graceOverrides: { price_1Enterprise_annual: 2592000 }
+                    createdAt: "2026-07-19T09:00:00Z"
+                    updatedAt: "2026-07-19T09:00:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/ConnectionConflict' }
+
+  /admin/billing/connections/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ConnectionId'
+    patch:
+      tags: [billing-connections]
+      operationId: updateBillingConnection
+      summary: Update a provider connection (plan map / grace / status; secret write-only)
+      description: >
+        Update a `billing_connection` (FR-015): its `status` (`active`/`disabled` — a disabled connection
+        stops verifying/mapping new webhooks without deleting the row), the `planMap`, and the grace policy.
+        The WRITE-ONLY `signingSecret` MAY be supplied to REPLACE the current secret immediately (no
+        transition window) — for a GRACEFUL rotation that keeps the old secret valid during a window, use
+        `POST /admin/billing/connections/{id}/rotate-secret` instead. The `provider` is immutable (it is the
+        natural key + FK target). All fields optional; only supplied fields change. The response is the
+        secret-excluding projection. `planMap` is re-validated against the E007 catalog → `409
+        invalid_plan_map` on a bad mapping. Audited (FR-013). RBAC: `admin` or higher; CSRF required.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateConnectionRequest' }
+            examples:
+              retune:
+                summary: Change grace policy and plan map
+                value:
+                  defaultGraceSeconds: 604800
+                  planMap:
+                    price_1Pro_monthly: { productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+              disable:
+                summary: Disable the connection (stop processing new webhooks)
+                value: { status: disabled }
+      responses:
+        '200':
+          description: Connection updated — the secret-excluding projection. The signing secret is never returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectionPublic' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ConnectionNotFoundAdmin' }
+        '409': { $ref: '#/components/responses/InvalidPlanMap' }
+
+  /admin/billing/connections/{id}/rotate-secret:
+    parameters:
+      - $ref: '#/components/parameters/ConnectionId'
+    post:
+      tags: [billing-connections]
+      operationId: rotateConnectionSecret
+      summary: Rotate the webhook signing secret (old + new valid during a transition window)
+      description: >
+        Rotate the connection's inbound-HMAC signing secret (FR-015; US5-AC2). The supplied WRITE-ONLY
+        `signingSecret` becomes the CURRENT secret (`signing_secret_ref`); the outgoing secret is retained as
+        the PREVIOUS secret (`signing_secret_prev`) and `secretRotatedAt` is stamped. During the bounded
+        transition window (app-config), the webhook verifier accepts a signature valid under EITHER secret,
+        so in-flight deliveries signed with the old secret are not rejected; once the window closes the
+        previous secret is dropped. Neither secret is ever returned — the response is the secret-excluding
+        projection with the new `secretRotatedAt`. Audited (FR-013). RBAC: `admin` or higher; CSRF required.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RotateSecretRequest' }
+            examples:
+              rotate:
+                value: { signingSecret: "whsec_2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw" }
+      responses:
+        '200':
+          description: >
+            Secret rotated — both old and new are accepted during the transition window. The response is the
+            secret-excluding projection with the updated `secretRotatedAt`. No secret material is returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectionPublic' }
+              examples:
+                rotated:
+                  value:
+                    id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+                    provider: stripe
+                    status: active
+                    secretCustodyScheme: keystore-aes256gcm-v1
+                    secretRotatedAt: "2026-07-19T12:30:00Z"
+                    planMap:
+                      price_1Pro_monthly: { productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+                    defaultGraceSeconds: 1209600
+                    graceOverrides: {}
+                    createdAt: "2026-07-19T09:00:00Z"
+                    updatedAt: "2026-07-19T12:30:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ConnectionNotFoundAdmin' }
+
+  # --- ADMIN plane: registry reads ---------------------------------------------------------------
+  /admin/billing/subscriptions:
+    get:
+      tags: [billing-registry]
+      operationId: listBillingSubscriptions
+      summary: List managed subscriptions (billing state, grace, linked license)
+      description: >
+        List the tenant's managed `subscription` rows (FR-012): the provider + external subscription id, the
+        billing overlay state (`active`/`past_due`/`grace`/`canceled`/`refunded`), the `graceExpiresAt`
+        auto-suspend deadline, the `lastAppliedEventAt` recency anchor, and the linked E008 `licenseId` (+
+        its current `licenseStatus`). Optional filters `?billingState`, `?provider`, and `?licenseId` narrow
+        the set (AND). Bounded to a hard cap of 1000; not paginated. Tenant-scoped (FR-014). READ: `viewer`
+        or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: viewer }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/BillingStateFilter'
+        - $ref: '#/components/parameters/ProviderFilter'
+        - $ref: '#/components/parameters/LicenseIdQuery'
+      responses:
+        '200':
+          description: The tenant's managed subscriptions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubscriptionList' }
+              examples:
+                mixed:
+                  value:
+                    subscriptions:
+                      - id: "a1c2e3f4-2222-4b3c-9d4e-5f6071829304"
+                        provider: stripe
+                        externalSubscriptionId: "sub_1PABcdLkdIwHu7ix9ZyXwVuT"
+                        licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                        licenseStatus: active
+                        billingState: grace
+                        graceExpiresAt: "2026-08-02T09:00:00Z"
+                        lastAppliedEventAt: "2026-07-19T09:00:00Z"
+                        createdAt: "2026-05-01T00:00:00Z"
+                        updatedAt: "2026-07-19T09:00:00Z"
+                      - id: "b2d3f4a5-3333-4c4d-ae5f-60718293a4b5"
+                        provider: stripe
+                        externalSubscriptionId: "sub_1PXYzwLkdIwHu7ix4KmNpQrS"
+                        licenseId: "f6071829-4444-4d5e-bf60-718293a4b5c6"
+                        licenseStatus: active
+                        billingState: active
+                        graceExpiresAt: null
+                        lastAppliedEventAt: "2026-07-18T00:00:00Z"
+                        createdAt: "2026-06-01T00:00:00Z"
+                        updatedAt: "2026-07-18T00:00:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/billing/events:
+    get:
+      tags: [billing-registry]
+      operationId: listBillingEvents
+      summary: Browse the billing-event ledger (incl. the dead-letter queue)
+      description: >
+        List the tenant's append-only `billing_event` ledger (FR-013/020): the provider event id, canonical
+        type, occurred/received timestamps, the resolved `subscriptionId` (null when unmapped), the
+        `outcome` (`applied`/`deadletter`/`rejected`), and the `reason` for a non-applied outcome. The
+        `?outcome=deadletter` filter yields the operator DEAD-LETTER queue (unmapped/unhandled/failed-after-
+        ack events for attention, FR-020); `?subscriptionId` and `?provider` narrow the trail. Duplicate
+        REDELIVERIES are never stored as ledger rows (the idempotency UNIQUE forbids a second row), so
+        `duplicate` is a webhook-ack value only, never a ledger `outcome`. No card/PAN data appears — only
+        the minimized `payloadSummary`. Bounded to a hard cap of 1000; not paginated. READ: `viewer` or
+        higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: viewer }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/EventOutcomeFilter'
+        - $ref: '#/components/parameters/SubscriptionIdQuery'
+        - $ref: '#/components/parameters/ProviderFilter'
+      responses:
+        '200':
+          description: The tenant's billing-event ledger rows.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BillingEventList' }
+              examples:
+                trail:
+                  value:
+                    events:
+                      - id: "c3e4f5a6-4444-4d5e-bf60-718293a4b5c6"
+                        provider: stripe
+                        providerEventId: "evt_1PJ2k8LkdIwHu7ix2s9Xa3bT"
+                        type: subscription.canceled
+                        subscriptionId: "a1c2e3f4-2222-4b3c-9d4e-5f6071829304"
+                        occurredAt: "2026-07-19T09:00:00Z"
+                        receivedAt: "2026-07-19T09:00:01Z"
+                        outcome: applied
+                        reason: null
+                        payloadSummary: { planKey: price_1Pro_monthly, subscriptionStatus: canceled }
+                      - id: "d4f5a6b7-5555-4e6f-c071-8293a4b5c6d7"
+                        provider: stripe
+                        providerEventId: "evt_1PJunknown0000000000000000"
+                        type: subscription.updated
+                        subscriptionId: null
+                        occurredAt: "2026-07-19T09:05:00Z"
+                        receivedAt: "2026-07-19T09:05:01Z"
+                        outcome: deadletter
+                        reason: unmapped_event
+                        payloadSummary: { externalSubscriptionId: "sub_unmapped" }
+                      - id: "e5a6b7c8-6666-4f70-d182-93a4b5c6d7e8"
+                        provider: stripe
+                        providerEventId: "evt_1PJstale00000000000000000"
+                        type: subscription.updated
+                        subscriptionId: "a1c2e3f4-2222-4b3c-9d4e-5f6071829304"
+                        occurredAt: "2026-07-01T00:00:00Z"
+                        receivedAt: "2026-07-19T09:10:00Z"
+                        outcome: rejected
+                        reason: stale_event
+                        payloadSummary: null
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # --- ADMIN plane: reconciliation ---------------------------------------------------------------
+  /admin/billing/reconcile:
+    post:
+      tags: [reconciliation]
+      operationId: triggerReconciliation
+      summary: Trigger on-demand reconciliation against the provider
+      description: >
+        Trigger a reconciliation that syncs license state against the provider's AUTHORITATIVE subscription
+        state to self-heal missed/dropped/out-of-order webhooks (FR-017; US6, SC-009). Optionally scope it:
+        omit the body (or send `{}`) to reconcile all of the tenant's active connections; supply
+        `connectionId` to scope to one provider connection, or `subscriptionId` to reconcile a single
+        subscription. Because reconciliation calls the external provider API and runs in a decoupled,
+        fail-open worker, the trigger is asynchronous: it returns `202 Accepted` with a `jobId`; any
+        resulting corrections apply the same recency guard (FR-016) and are audited with the reconciling
+        snapshot as the triggering source (FR-013). Concurrent/overlapping triggers for the SAME scope are
+        SAFE and non-duplicative: every correction re-applies the recency guard so a second in-flight pass is
+        a no-op, and the fail-open worker COALESCES redundant same-scope jobs rather than double-applying —
+        each trigger still returns `202`, so a retry storm of triggers can neither corrupt state nor spawn
+        conflicting corrections. RBAC: `admin` or higher; CSRF required.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P3
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReconcileRequest' }
+            examples:
+              all:
+                summary: Reconcile the whole tenant
+                value: {}
+              oneConnection:
+                summary: Reconcile a single connection
+                value: { connectionId: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293" }
+              oneSubscription:
+                summary: Reconcile a single subscription
+                value: { subscriptionId: "a1c2e3f4-2222-4b3c-9d4e-5f6071829304" }
+      responses:
+        '202':
+          description: >
+            Reconciliation accepted and enqueued to the fail-open worker. Corrections (if any) land
+            asynchronously and are visible via the subscription registry and the billing-event ledger.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReconcileAccepted' }
+              examples:
+                accepted:
+                  value:
+                    jobId: "f6b7c8d9-7777-4081-e293-a4b5c6d7e8f9"
+                    status: accepted
+                    scope: tenant
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ReconcileScopeNotFound' }
+
+components:
+  securitySchemes:
+    providerSignature:
+      type: apiKey
+      in: header
+      name: Stripe-Signature
+      description: >
+        WEBHOOK plane credential — the PROVIDER HMAC SIGNATURE over the RAW request body, NOT a tenant
+        `X-API-Key` and NOT the human `admin_session` cookie. Carried in a provider-specific signature
+        header of the form `t=<unix-ts>,v1=<hex-hmac>` (Stripe `Stripe-Signature`; Paddle `Paddle-Signature`;
+        the per-provider adapter selects the header — modeled here as `Stripe-Signature`, the representative
+        case). The server resolves `{connectionId}` to the `billing_connection`, recomputes the HMAC over the
+        RAW, unmodified bytes with the connection's CURRENT signing secret (and the PREVIOUS secret during a
+        rotation window), and compares in constant time; it also verifies the embedded `t` timestamp against
+        a bounded recency tolerance (default ~5 min) to defeat replay. Verification happens BEFORE any parsing
+        or processing (FR-002): a missing/invalid signature → `401 invalid_signature`, an out-of-tolerance
+        timestamp → `400 stale_timestamp`, both with NO state change. OpenAPI cannot express "HMAC over the
+        raw body + timestamp recency" structurally; it is documented here and enforced server-side. There is
+        no CSRF on this plane (it is signature, not cookie, auth).
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        ADMIN plane credential (NOT the webhook `providerSignature` and NOT a machine `X-API-Key`). The
+        opaque `admin_session` cookie established by the E005 `POST /admin/auth/login`, set `HttpOnly` +
+        `Secure` + `SameSite=Strict`, scoped to `Path=/admin`, with a bounded `Max-Age`. Server-side
+        revocable; never a JWT and never returned in any body. RBAC (`owner > admin > viewer`) is enforced
+        per operation via `x-rbac.minRole`; every state-changing call additionally requires a matching
+        `X-CSRF-Token`.
+
+  parameters:
+    ConnectionIdPath:
+      name: connectionId
+      in: path
+      required: true
+      description: >
+        The `billing_connection` id (UUID) the provider POSTs its webhooks to. Resolves the tenant + the
+        connection holding the signing secret; an unknown id → `404 connection_not_found`. It is an
+        unguessable server-minted UUID, so a `404` is not a tenant-enumeration oracle.
+      schema: { type: string, format: uuid }
+      example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+    ConnectionId:
+      name: id
+      in: path
+      required: true
+      description: A `billing_connection` id (UUID) within the session's tenant.
+      schema: { type: string, format: uuid }
+      example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: >
+        Double-submit CSRF token, REQUIRED on every state-changing `/admin/billing` request (create/update/
+        rotate-secret connection, reconcile). MUST equal the value of the non-HttpOnly CSRF cookie issued
+        alongside the session; a missing or mismatched token is refused fail-closed with `403 forbidden` and
+        the mutation is not applied. GET (read) operations do not require it. Not used on the `/v1` webhook
+        plane, which is signature (not cookie) auth.
+      schema: { type: string }
+    BillingStateFilter:
+      name: billingState
+      in: query
+      required: false
+      description: Filter managed subscriptions by billing-overlay state. Omit to return all states.
+      schema:
+        type: string
+        enum: [active, past_due, grace, canceled, refunded]
+    ProviderFilter:
+      name: provider
+      in: query
+      required: false
+      description: Filter to a single billing provider. Combines (AND) with other filters.
+      schema:
+        type: string
+        enum: [stripe, paddle, generic]
+    LicenseIdQuery:
+      name: licenseId
+      in: query
+      required: false
+      description: Filter managed subscriptions to the one linked to this E008 license (UUID). Combines (AND).
+      schema: { type: string, format: uuid }
+    EventOutcomeFilter:
+      name: outcome
+      in: query
+      required: false
+      description: >
+        Filter the billing-event ledger by outcome. `deadletter` yields the operator dead-letter queue
+        (FR-020). `duplicate` is a webhook-ack value only (redeliveries are never stored) and is not a valid
+        ledger filter. Omit to return all stored outcomes.
+      schema:
+        type: string
+        enum: [applied, deadletter, rejected]
+    SubscriptionIdQuery:
+      name: subscriptionId
+      in: query
+      required: false
+      description: Filter the ledger to events resolved to this subscription (UUID). Combines (AND).
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }` (matches E008/E009/E013). `code`
+        is a stable, enumerated snake_case machine-readable value; `message` is human-readable; `details` is
+        optional structured context whose shape depends on `code`. No field ever carries a signing secret,
+        card/PAN data, or a raw hardware identifier; and no admin-plane field discloses another tenant's
+        existence — cross-tenant access resolves to `404` (never `403`).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error code (snake_case). Enumerated; new codes require a contract change.
+            Each refusal reason is a DISTINCT, testable code. EXCEPTION (deliberate): the two authorization-
+            failure reasons — RBAC role-deny and CSRF-token failure — SHARE the single `403 forbidden` code
+            rather than splitting into two codes, so a caller cannot probe WHICH authorization check failed;
+            they are disambiguated for the operator/audit trail only, via `details` (`{ reason: "csrf" }` vs
+            `{ minRole, role }`), and are NOT separate client-actionable codes.
+          enum:
+            - validation_error       # 400 — malformed body / bad query value / missing required field (both planes)
+            - invalid_signature      # 401 — webhook: missing/invalid provider HMAC signature over the raw body (FR-002)
+            - stale_timestamp        # 400 — webhook: signature timestamp outside the recency tolerance (FR-002)
+            - connection_not_found   # 404 — webhook: unknown {connectionId}; admin: unknown connection in the tenant
+            - rate_limited           # 429 — webhook rate limit exceeded (FR-019); carries Retry-After
+            - unauthenticated        # 401 — admin: missing/expired/revoked session
+            - forbidden              # 403 — admin: RBAC deny or CSRF failure (fail-closed)
+            - not_found              # 404 — admin: unknown subscription (reconcile scope) in the session's tenant
+            - duplicate_connection   # 409 — admin: a connection already exists for (tenant, provider) (FR-015)
+            - invalid_plan_map       # 409 — admin: planMap references an unknown/archived E007 product/plan (FR-005/015)
+          example: invalid_signature
+        message:
+          type: string
+          description: Human-readable summary. Never contains a signing secret, card/PAN data, or a raw identifier.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value? }`;
+            `invalid_signature` → `{ reason: "missing" | "mismatch" }` (the secret/signature is never echoed);
+            `stale_timestamp` → `{ toleranceSeconds, skewSeconds? }`;
+            `connection_not_found` → `{ connectionId }`;
+            `rate_limited` → `{ retryAfterSeconds }` (also surfaced via the `Retry-After` header);
+            `unauthenticated` → NO `details` (the body is `{ code, message }` only — there is no structured context to add);
+            `forbidden` → `{ minRole, role }` (RBAC deny) or `{ reason: "csrf" }` (CSRF failure);
+            `not_found` → the missing id (`{ subscriptionId }` or `{ connectionId }`);
+            `duplicate_connection` → `{ provider }`;
+            `invalid_plan_map` → `{ planKey, reason: "unknown_plan" | "archived_plan" | "unknown_product" }`.
+            It never carries a signing secret, card/PAN data, or a raw identifier.
+
+    # --- Shared value types -----------------------------------------------------------------------
+    Provider:
+      type: string
+      description: >
+        The billing provider / adapter discriminator (data-model `billing_connection.provider`; FR-004).
+        One connection per provider per tenant. `generic` is the provider-agnostic adapter for a
+        Stripe-style HMAC webhook.
+      enum: [stripe, paddle, generic]
+      example: stripe
+
+    ConnectionStatus:
+      type: string
+      description: >
+        Connection config lifecycle. `active` = verifying + mapping webhooks; `disabled` = retained but no
+        longer APPLYING new webhooks (without deleting the row). A `disabled` connection STILL verifies the
+        provider signature + timestamp (verify-before-process is preserved), but a verified delivery is NOT
+        mapped to a lifecycle change — it is dead-lettered (`outcome: "deadletter"`,
+        `reason: "connection_disabled"`) and acked `200` with `outcome: "deadletter"` (FR-020), so the
+        provider gets a fast success ack and the operator can replay after re-enabling.
+      enum: [active, disabled]
+
+    BillingState:
+      type: string
+      description: >
+        The billing OVERLAY state on `subscription` (data-model §5/§6) — distinct from the E008
+        `license.status`. During `past_due`/`grace` the linked license stays `active` (usable); grace
+        expiry drives `active → suspended` (`canceled`); a refund/chargeback drives `→ revoked`
+        (`refunded`, terminal). `refunded` is terminal and never resurrected (FR-010).
+      enum: [active, past_due, grace, canceled, refunded]
+      example: grace
+
+    LicenseStatus:
+      type: string
+      description: >
+        The linked E008 license's current lifecycle status (reused, unchanged — `active`/`suspended`/
+        `revoked`, `revoked` terminal). E014 DRIVES this via the E008 services; it is shown here for
+        operator context.
+      enum: [active, suspended, revoked]
+
+    EventOutcome:
+      type: string
+      description: >
+        The stored `billing_event` outcome (data-model §7). `applied` = a side effect committed (`reason`
+        null); `deadletter` = unmapped/unhandled/failed-after-ack, recorded for operator attention (FR-020);
+        `rejected` = a post-verification reject recorded for visibility (e.g. the stale-event recency guard,
+        FR-016). `duplicate` (a redelivery no-op) is NEVER a stored row — it is a webhook-ack value only,
+        because the idempotency UNIQUE forbids a second row.
+      enum: [applied, deadletter, rejected]
+
+    AckOutcome:
+      type: string
+      description: >
+        The webhook acknowledgement outcome. `applied` = the event advanced state (a mapped lifecycle change
+        was applied); `duplicate` = an idempotent no-op that changed no state (a redelivery of an already-
+        processed event id, OR an out-of-order/stale event older than `lastAppliedEventAt`), applied at most
+        once; `deadletter` = a validly-signed but unmapped/unhandled event (or a post-ack failure) recorded
+        for operator attention, never silently dropped (FR-003/016/020).
+
+
+        This ACK vocabulary INTENTIONALLY differs from the stored `EventOutcome`
+        (`applied`/`deadletter`/`rejected`): the ack set never carries `rejected` and the stored set never
+        carries `duplicate`. Mapping — ack `applied` ↔ stored `applied`; ack `deadletter` ↔ stored
+        `deadletter`; ack `duplicate` ↔ EITHER no stored row at all (a redelivery — the idempotency UNIQUE
+        forbids a second row) OR a stored `rejected` row (a stale/out-of-order event, `reason: "stale_event"`,
+        FR-016). The two `duplicate` conditions (redelivery vs stale) are DELIBERATELY collapsed into one ack
+        value: the minimal ack does not let the provider distinguish them, because neither changed state and
+        the provider action (none — treat as success) is identical.
+      enum: [applied, duplicate, deadletter]
+
+    BillingEventReason:
+      type: string
+      description: >
+        The reason a non-`applied` event was dead-lettered or rejected (data-model §7). `unmapped_event` = an
+        unknown/unmapped subscription or an unhandled event type (dead-letter, FR-020); `connection_disabled`
+        = a validly-signed delivery to a `disabled` connection (dead-letter, FR-020); `processing_error` = a
+        failure after acknowledgement (dead-letter); `stale_event` = older than the subscription's
+        `lastAppliedEventAt` (rejected by the recency guard, FR-016). Null when `outcome = applied`.
+      enum: [unmapped_event, connection_disabled, processing_error, stale_event]
+
+    PlanMapping:
+      type: object
+      description: >
+        A single provider-plan → E007-catalog mapping value: the target product + plan a provisioned license
+        is issued under (data-model `billing_connection.plan_map`). App-validated against the E007 catalog
+        (an unknown/archived target → `409 invalid_plan_map`).
+      additionalProperties: false
+      required: [productId, planId]
+      properties:
+        productId:
+          type: string
+          format: uuid
+          description: The E007 product the mapped license is issued under.
+          example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        planId:
+          type: string
+          format: uuid
+          description: The E007 plan whose effective definition is snapshotted into the provisioned license (E008).
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+
+    PlanMap:
+      type: object
+      description: >
+        The subscription-plan→catalog-plan mapping (data-model `billing_connection.plan_map`; FR-015): a map
+        of the PROVIDER plan/price id (the key, as it appears in webhooks) to the target E007 `{productId,
+        planId}`. Drives provisioning on a subscription-created event (FR-005). An empty map is valid (no
+        auto-provisioning configured yet).
+      additionalProperties: { $ref: '#/components/schemas/PlanMapping' }
+      example:
+        price_1Pro_monthly: { productId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", planId: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+
+    GraceOverrides:
+      type: object
+      description: >
+        Per-plan grace-duration overrides (data-model `billing_connection.grace_overrides`; FR-011): a map of
+        provider plan key → grace window in SECONDS, overriding `defaultGraceSeconds` for that plan. An empty
+        map means every plan uses the default.
+      additionalProperties:
+        type: integer
+        minimum: 1
+        description: Grace window in seconds for this plan (positive).
+      example: { price_1Enterprise_annual: 2592000 }
+
+    WebhookSigningSecret:
+      type: string
+      description: >
+        The provider inbound-HMAC webhook signing secret — WRITE-ONLY. Accepted on create / update /
+        rotate-secret and used ONLY to verify the raw-body HMAC of incoming webhooks (FR-002). It is a
+        distinct secret CLASS from the E004 Ed25519 license signing key: it is stored custody-wrapped
+        (envelope-encrypted at rest, or an opaque `<VAR>_FILE`/KMS ref), NEVER plaintext at rest, and is
+        NEVER returned by any response, log, or the `billing_connection_public` projection (FR-015, SC-007).
+        For `secretCustodyScheme: secretref-file` this value is an opaque secret-file/ref NAME rather than the
+        raw secret material.
+      writeOnly: true
+      minLength: 8
+      maxLength: 512
+      example: "whsec_9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+
+    # --- Webhook plane ----------------------------------------------------------------------------
+    WebhookEnvelope:
+      type: object
+      description: >
+        The provider's RAW signed event envelope, exactly as the billing provider POSTed it. The provider
+        HMAC signature is computed over these RAW bytes, so the server verifies the signature + timestamp
+        BEFORE parsing/processing (FR-002). Its concrete shape is provider-specific (Stripe/Paddle/…) and is
+        normalized by the per-provider adapter into ONE internal canonical model (FR-004), so this contract
+        models only the common envelope loosely (`additionalProperties: true`). NO card/PAN/CVV/expiry or raw
+        cardholder data is ever accepted, parsed, or stored (FR-018) — the adapter extracts only allow-listed,
+        non-sensitive billing-lifecycle metadata into the minimized ledger `payloadSummary`.
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          description: The provider event id — the idempotency key deduped by `UNIQUE (tenant, provider, provider_event_id)` (FR-003).
+          example: "evt_1PJ2k8LkdIwHu7ix2s9Xa3bT"
+        type:
+          type: string
+          description: The provider event type (normalized by the adapter to a canonical type), e.g. "customer.subscription.deleted".
+          example: "customer.subscription.deleted"
+        created:
+          type: integer
+          description: The provider event timestamp (epoch seconds). The signed timestamp in the signature header is what the recency check uses.
+          example: 1752829200
+        data:
+          type: object
+          additionalProperties: true
+          description: The provider event payload (subscription/invoice objects). NEVER card/PAN data — only billing-lifecycle fields are read.
+
+    WebhookAck:
+      type: object
+      description: >
+        The minimal webhook acknowledgement. Deliberately terse: it confirms receipt and the decided outcome
+        only — the internal refusals and the resulting E008 license-lifecycle changes are NOT detailed back
+        to the provider (FR-019).
+      additionalProperties: false
+      required: [received, outcome]
+      properties:
+        received:
+          type: boolean
+          description: Always `true` on a `200`/`202` ack — the signed delivery was accepted.
+          const: true
+          example: true
+        outcome: { $ref: '#/components/schemas/AckOutcome' }
+
+    # --- Admin: connections -----------------------------------------------------------------------
+    ConnectionPublic:
+      type: object
+      description: >
+        The secret-EXCLUDING projection of a `billing_connection` (the `billing_connection_public` view) —
+        the ONLY connection representation any response returns. It NEVER includes `signingSecret` /
+        `signing_secret_ref` / `signing_secret_prev` (FR-015, SC-007). `id` is the webhook `{connectionId}`.
+      required: [id, provider, status, secretCustodyScheme, secretRotatedAt, planMap, defaultGraceSeconds, graceOverrides, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Server-generated connection UUID (also the webhook `{connectionId}`), unique within the tenant.
+          example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+        provider: { $ref: '#/components/schemas/Provider' }
+        status: { $ref: '#/components/schemas/ConnectionStatus' }
+        secretCustodyScheme:
+          type: string
+          description: >
+            How the signing secret is wrapped/resolved (data-model `secret_custody_scheme`), e.g.
+            `keystore-aes256gcm-v1` (default) | `secretref-file` | `kms-aws`. Names the custody tier only —
+            never the secret itself.
+          example: keystore-aes256gcm-v1
+        secretRotatedAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            When the signing secret was last rotated (start of the current transition window during which the
+            previous secret is still accepted); `null` if never rotated.
+        planMap: { $ref: '#/components/schemas/PlanMap' }
+        defaultGraceSeconds:
+          type: integer
+          minimum: 1
+          description: The default grace window (seconds) after cancel/payment-failure before auto-suspend (FR-011). Default 1209600 (~14d).
+          example: 1209600
+        graceOverrides: { $ref: '#/components/schemas/GraceOverrides' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ConnectionList:
+      type: object
+      required: [connections]
+      properties:
+        connections:
+          type: array
+          description: >
+            The tenant's provider connections (secret-excluding), ordered by `createdAt` DESCENDING (ties
+            broken by `id`) for a stable, deterministic result. Bounded to a hard cap of 1000 and NOT
+            paginated: if the tenant has more than 1000 connections, only the newest 1000 by that order are
+            returned and `truncated` is `true`.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/ConnectionPublic' }
+        truncated:
+          type: boolean
+          default: false
+          description: >
+            The truncation signal for this non-paginated list: `true` when the tenant has MORE than 1000
+            connections and the result was capped to the newest 1000 (older rows omitted); omitted or `false`
+            when the full set fits. Narrow with a filter if set.
+
+    CreateConnectionRequest:
+      type: object
+      description: >
+        Connect a billing provider (FR-015). `provider` and the WRITE-ONLY `signingSecret` are required; the
+        plan map and grace policy are optional (sensible defaults). The response never echoes the secret.
+      additionalProperties: false
+      required: [provider, signingSecret]
+      properties:
+        provider: { $ref: '#/components/schemas/Provider' }
+        signingSecret: { $ref: '#/components/schemas/WebhookSigningSecret' }
+        secretCustodyScheme:
+          type: string
+          description: >
+            Optional custody scheme for the secret (default `keystore-aes256gcm-v1`). Free-text at the column
+            level (a new adapter needs no migration), but VALIDATED at the API against the set of schemes the
+            DEPLOYMENT actually supports (built-ins: `keystore-aes256gcm-v1` | `secretref-file` | `kms-aws`):
+            an unrecognized/unsupported scheme is rejected `400 validation_error`
+            (`details.field: "secretCustodyScheme"`), so a connection is never stored with a custody scheme
+            whose secret cannot be resolved at verify time. For `secretref-file` the `signingSecret` value is
+            an opaque secret-file/ref name resolved at runtime rather than raw material.
+          example: keystore-aes256gcm-v1
+        planMap: { $ref: '#/components/schemas/PlanMap' }
+        defaultGraceSeconds:
+          type: integer
+          minimum: 1
+          default: 1209600
+          description: The default grace window (seconds) (FR-011). Defaults to ~14d if omitted.
+        graceOverrides: { $ref: '#/components/schemas/GraceOverrides' }
+
+    UpdateConnectionRequest:
+      type: object
+      description: >
+        Update a connection (FR-015). All fields optional; only supplied fields change. `provider` is
+        immutable and cannot be changed here. A supplied `signingSecret` REPLACES the current secret
+        immediately (no transition window) — use rotate-secret for a graceful rotation. At least one field
+        must be present.
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        status: { $ref: '#/components/schemas/ConnectionStatus' }
+        signingSecret: { $ref: '#/components/schemas/WebhookSigningSecret' }
+        secretCustodyScheme:
+          type: string
+          description: Optional new custody scheme (see create).
+          example: keystore-aes256gcm-v1
+        planMap: { $ref: '#/components/schemas/PlanMap' }
+        defaultGraceSeconds:
+          type: integer
+          minimum: 1
+          description: New default grace window (seconds) (FR-011).
+        graceOverrides: { $ref: '#/components/schemas/GraceOverrides' }
+
+    RotateSecretRequest:
+      type: object
+      description: >
+        Rotate the connection's signing secret (FR-015; US5-AC2). The new WRITE-ONLY `signingSecret` becomes
+        current; the outgoing secret is retained for a bounded transition window during which both verify.
+      additionalProperties: false
+      required: [signingSecret]
+      properties:
+        signingSecret: { $ref: '#/components/schemas/WebhookSigningSecret' }
+        secretCustodyScheme:
+          type: string
+          description: Optional custody scheme for the new secret (defaults to the connection's current scheme).
+          example: keystore-aes256gcm-v1
+
+    # --- Admin: subscriptions ---------------------------------------------------------------------
+    SubscriptionSummary:
+      type: object
+      description: >
+        One managed `subscription` in the operator registry (FR-012): the external subscription↔license link,
+        the billing overlay state + grace deadline, the recency anchor, and the linked E008 license. Carries
+        no PII and no card/PAN data (only pseudonymous provider/license ids).
+      required: [id, provider, externalSubscriptionId, licenseId, billingState, graceExpiresAt, lastAppliedEventAt, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Server-generated subscription UUID, unique within the tenant.
+          example: "a1c2e3f4-2222-4b3c-9d4e-5f6071829304"
+        provider: { $ref: '#/components/schemas/Provider' }
+        externalSubscriptionId:
+          type: string
+          description: The provider subscription id (`sub_…`) — the resolve key an incoming event maps to exactly one row (FR-012).
+          example: "sub_1PABcdLkdIwHu7ix9ZyXwVuT"
+        licenseId:
+          type: string
+          format: uuid
+          description: The linked E008 license (1:1). E014 drives its `status` from billing state (FR-005/012).
+          example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+        licenseStatus:
+          allOf: [{ $ref: '#/components/schemas/LicenseStatus' }]
+          description: The linked license's current E008 status (informational context for the operator).
+        billingState: { $ref: '#/components/schemas/BillingState' }
+        graceExpiresAt:
+          type: [string, "null"]
+          format: date-time
+          description: The auto-suspend deadline while in `past_due`/`grace` (FR-007/008); `null` otherwise.
+        lastAppliedEventAt:
+          type: [string, "null"]
+          format: date-time
+          description: The `occurredAt` of the most-recently-applied event — the monotonic recency guard (FR-016); `null` if none applied yet.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    SubscriptionList:
+      type: object
+      required: [subscriptions]
+      properties:
+        subscriptions:
+          type: array
+          description: >
+            The tenant's managed subscriptions, ordered by `createdAt` DESCENDING (ties broken by `id`) for a
+            stable, deterministic result. Bounded to a hard cap of 1000 and NOT paginated: if the tenant has
+            more than 1000 subscriptions, only the newest 1000 by that order are returned and `truncated` is
+            `true`.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/SubscriptionSummary' }
+        truncated:
+          type: boolean
+          default: false
+          description: >
+            The truncation signal for this non-paginated list: `true` when the tenant has MORE than 1000
+            subscriptions and the result was capped to the newest 1000 (older rows omitted); omitted or
+            `false` when the full set fits. Narrow with the `billingState`/`provider`/`licenseId` filters if
+            set.
+
+    # --- Admin: billing events (ledger) -----------------------------------------------------------
+    BillingEvent:
+      type: object
+      description: >
+        One append-only `billing_event` ledger row (FR-013/020): a signature-verified, post-dedup webhook (or
+        reconciliation snapshot). Duplicate redeliveries are never stored (the idempotency UNIQUE forbids a
+        second row). Carries NO card/PAN data — only the minimized, allow-listed `payloadSummary`.
+      required: [id, provider, providerEventId, type, subscriptionId, occurredAt, receivedAt, outcome, reason]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Server-generated ledger row UUID, unique within the tenant.
+          example: "c3e4f5a6-4444-4d5e-bf60-718293a4b5c6"
+        provider: { $ref: '#/components/schemas/Provider' }
+        providerEventId:
+          type: string
+          description: The provider event id — the idempotency key (FR-003).
+          example: "evt_1PJ2k8LkdIwHu7ix2s9Xa3bT"
+        type:
+          type: string
+          description: The adapter-normalized canonical event type (FR-004).
+          example: subscription.canceled
+        subscriptionId:
+          type: [string, "null"]
+          format: uuid
+          description: The resolved subscription (UUID), or `null` when the event was unmapped (dead-letter, FR-020).
+        occurredAt:
+          type: string
+          format: date-time
+          description: The provider event timestamp — drives ordering + the recency guard (FR-016).
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the server received/acked the event — drives the retention prune.
+        outcome: { $ref: '#/components/schemas/EventOutcome' }
+        reason:
+          oneOf:
+            - { $ref: '#/components/schemas/BillingEventReason' }
+            - type: "null"
+          description: The dead-letter/reject reason; `null` when `outcome = applied`.
+        payloadSummary:
+          type: [object, "null"]
+          additionalProperties: true
+          description: >
+            Minimized, allow-listed non-sensitive billing metadata (e.g. canonical type, plan/price key,
+            subscription status) — NEVER card/PAN/CVV/expiry or raw PII (FR-018/021). May be `null`.
+
+    BillingEventList:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          description: >
+            The tenant's billing-event ledger rows, ordered by `receivedAt` DESCENDING (ties broken by `id`)
+            — newest first — for a stable, deterministic result. Bounded to a hard cap of 1000 and NOT
+            paginated: if the tenant has more than 1000 matching events, only the newest 1000 by that order
+            are returned and `truncated` is `true`.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/BillingEvent' }
+        truncated:
+          type: boolean
+          default: false
+          description: >
+            The truncation signal for this non-paginated ledger: `true` when more than 1000 events match and
+            the result was capped to the newest 1000 by `receivedAt` (older rows omitted); omitted or `false`
+            when the full set fits. Narrow with the `outcome`/`subscriptionId`/`provider` filters if set.
+
+    # --- Admin: reconciliation --------------------------------------------------------------------
+    ReconcileRequest:
+      type: object
+      description: >
+        Optionally scope an on-demand reconciliation (FR-017; US6). Omit the body (or send `{}`) to reconcile
+        all of the tenant's active connections; supply `connectionId` for one connection, or `subscriptionId`
+        for a single subscription. Supply at most one scope.
+      additionalProperties: false
+      properties:
+        connectionId:
+          type: string
+          format: uuid
+          description: Scope the reconciliation to a single provider connection (within the session's tenant).
+          example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+        subscriptionId:
+          type: string
+          format: uuid
+          description: Scope the reconciliation to a single managed subscription (within the session's tenant).
+          example: "a1c2e3f4-2222-4b3c-9d4e-5f6071829304"
+      not:
+        required: [connectionId, subscriptionId]
+
+    ReconcileAccepted:
+      type: object
+      description: >
+        Acknowledgement that a reconciliation was accepted and enqueued to the fail-open worker (FR-017).
+        Corrections apply asynchronously (subject to the recency guard) and surface via the subscription
+        registry and the billing-event ledger.
+      required: [jobId, status, scope]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: >
+            Identifier of the enqueued reconciliation job — for correlation in logs/audit ONLY. There is NO
+            job-status endpoint and the jobId is NOT pollable; the outcome is not returned synchronously. Any
+            corrections surface asynchronously via the subscription registry (`GET /admin/billing/
+            subscriptions`) and the billing-event ledger (`GET /admin/billing/events`).
+          example: "f6b7c8d9-7777-4081-e293-a4b5c6d7e8f9"
+        status:
+          type: string
+          enum: [accepted]
+          description: Always `accepted` — the job is enqueued, not yet complete.
+        scope:
+          type: string
+          enum: [tenant, connection, subscription]
+          description: The resolved reconciliation scope (`tenant` when no scope was supplied).
+          example: tenant
+
+  responses:
+    # --- Webhook plane ---
+    WebhookBadRequest:
+      description: >
+        The signed delivery was accepted for verification but refused with NO state change: either the signed
+        timestamp is outside the recency tolerance (`stale_timestamp`, FR-002) or the body is malformed
+        (`validation_error`). Not enqueued, not dead-lettered.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            staleTimestamp:
+              value:
+                code: stale_timestamp
+                message: "The webhook signature timestamp is outside the accepted tolerance."
+                details: { toleranceSeconds: 300 }
+            malformed:
+              value:
+                code: validation_error
+                message: "The request body is not valid JSON."
+                details: { field: body }
+    InvalidSignature:
+      description: >
+        The provider HMAC signature over the raw body is missing or does not verify against the connection's
+        current (or in-window previous) signing secret (FR-002). Rejected inline with NO state change; never
+        enqueued or dead-lettered. The secret and the computed signature are never echoed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missing:
+              value:
+                code: invalid_signature
+                message: "Missing webhook signature header."
+                details: { reason: missing }
+            mismatch:
+              value:
+                code: invalid_signature
+                message: "The webhook signature did not verify."
+                details: { reason: mismatch }
+    ConnectionNotFound:
+      description: >
+        No `billing_connection` resolves for the supplied `{connectionId}`. NO state change. The id is an
+        unguessable UUID, so this is not a tenant-enumeration oracle.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknown:
+              value:
+                code: connection_not_found
+                message: "No such billing connection."
+                details: { connectionId: "00000000-0000-4000-8000-000000000000" }
+    RateLimited:
+      description: >
+        The webhook rate limit for this connection was exceeded (FR-019) — the delivery is refused fast so a
+        provider retry storm cannot degrade processing; the provider should retry after the delay. No state
+        change.
+      headers:
+        Retry-After:
+          description: Seconds the provider should wait before retrying.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            rateLimited:
+              value:
+                code: rate_limited
+                message: "Too many webhook deliveries; retry after the indicated delay."
+                details: { retryAfterSeconds: 30 }
+
+    # --- Admin plane ---
+    BadRequest:
+      description: Validation error — malformed body or a bad query/path value on the admin plane.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingSecret:
+              value:
+                code: validation_error
+                message: "signingSecret is required."
+                details: { field: signingSecret }
+            badGrace:
+              value:
+                code: validation_error
+                message: "defaultGraceSeconds must be a positive integer."
+                details: { field: defaultGraceSeconds }
+    Unauthorized:
+      description: No valid session — the `admin_session` cookie is missing, expired, or revoked.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noSession:
+              value: { code: unauthenticated, message: "Authentication required." }
+    Forbidden:
+      description: >
+        Authenticated but refused fail-closed: either the session's role is below the operation's
+        `x-rbac.minRole`, or a mutation's `X-CSRF-Token` is missing or mismatched. Both are recorded as an
+        auditable security event.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the admin role."
+                details: { minRole: admin, role: viewer }
+            csrfFailure:
+              value:
+                code: forbidden
+                message: "Missing or invalid CSRF token."
+                details: { reason: csrf }
+    ConnectionNotFoundAdmin:
+      description: >
+        The referenced `billing_connection` does not exist within the session's tenant. A cross-tenant id
+        resolves here (never `403`), indistinguishable from a non-existent one (FR-014).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknown:
+              value:
+                code: connection_not_found
+                message: "No such billing connection in this tenant."
+                details: { connectionId: "00000000-0000-4000-8000-000000000000" }
+    ReconcileScopeNotFound:
+      description: >
+        The reconciliation scope (`connectionId` or `subscriptionId`) does not resolve within the session's
+        tenant. A cross-tenant id resolves here (never `403`), FR-014.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownSubscription:
+              value:
+                code: not_found
+                message: "No such subscription in this tenant."
+                details: { subscriptionId: "00000000-0000-4000-8000-000000000000" }
+            unknownConnection:
+              value:
+                code: connection_not_found
+                message: "No such billing connection in this tenant."
+                details: { connectionId: "00000000-0000-4000-8000-000000000000" }
+    ConnectionConflict:
+      description: >
+        A create conflict — the create operation can return EITHER of two `409` codes, disambiguated by
+        `code`: `duplicate_connection` (a connection already exists for this `(tenant, provider)` — one per
+        provider per tenant, FR-015; update or rotate the existing one instead) OR `invalid_plan_map` (the
+        supplied `planMap` references a product/plan that does not resolve to an active E007 catalog entry,
+        FR-005/015). No connection is created in either case.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            duplicate:
+              value:
+                code: duplicate_connection
+                message: "A connection for this provider already exists in this tenant."
+                details: { provider: stripe }
+            invalidPlanMap:
+              value:
+                code: invalid_plan_map
+                message: "A mapped plan does not reference an active catalog plan."
+                details: { planKey: price_1Pro_monthly, reason: unknown_plan }
+    InvalidPlanMap:
+      description: >
+        The `planMap` references a product/plan that does not resolve to an active E007 catalog entry in this
+        tenant (FR-005/015). No change is made.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownPlan:
+              value:
+                code: invalid_plan_map
+                message: "A mapped plan does not reference an active catalog plan."
+                details: { planKey: price_1Pro_monthly, reason: unknown_plan }
+            archivedPlan:
+              value:
+                code: invalid_plan_map
+                message: "A mapped plan references an archived catalog plan."
+                details: { planKey: price_1Enterprise_annual, reason: archived_plan }
