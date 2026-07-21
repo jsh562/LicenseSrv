@@ -102,6 +102,20 @@ export interface EnforcementHarness {
 export interface HarnessOptions {
   /** ENFORCEMENT_RATE_MAX for this app instance; default 100000 so functional suites never trip the limiter. */
   rateMax?: number;
+  /**
+   * Fastify `forceCloseConnections` passthrough. Only the perf suite (which binds a REAL loopback listener
+   * for autocannon) sets `true`, so `app.close()` force-destroys keep-alive sockets and teardown returns
+   * promptly. Omitted (undefined) for every other suite → Fastify's default is unchanged.
+   */
+  forceCloseConnections?: boolean | "idle";
+  /**
+   * Optional teardown budget (ms) for the pg pool drain in {@link EnforcementHarness.stop}. Only the perf
+   * suite sets it: its autocannon real-socket load can occasionally leave a pool client stuck mid-query, and
+   * `pool.end()` would then wait indefinitely and blow the test hook budget. When set, `stop()` caps the
+   * drain at this budget and ALWAYS proceeds to stop the container. Omitted (undefined) for every other
+   * suite → `pool.end()` is awaited UNBOUNDED exactly as before (no behavior change).
+   */
+  teardownTimeoutMs?: number;
 }
 
 /** Spin the full US1 enforcement harness (container + migrations + real signer + seeded catalog). */
@@ -118,13 +132,24 @@ export async function startHarness(slugSuffix: string, opts: HarnessOptions = {}
 
   const container = await new PostgreSqlContainer("postgres:16-alpine").start();
   const pool = makePool(container.getConnectionUri(), 12);
+  if (opts.teardownTimeoutMs && opts.teardownTimeoutMs > 0) {
+    // Perf suite only: its bounded teardown can stop the Postgres container while pg sockets are still open
+    // (an abandoned drain, or a client left stuck mid-query by the abrupt autocannon real-socket load).
+    // Backend termination (FATAL 57P01) then emits 'error' on those clients; a CHECKED-OUT client has no
+    // pool error listener, so Node would surface it as an UNCAUGHT exception and redden the run. Attach
+    // no-op 'error' handlers (the pool, and every client as it connects) so these BENIGN teardown-time
+    // socket errors are swallowed. Other suites drain cleanly before stopping the container, never opt in,
+    // and are unaffected.
+    pool.on("error", () => undefined);
+    pool.on("connect", (client) => client.on("error", () => undefined));
+  }
   await runMigrations(pool, MIGRATIONS_DIR);
   await provisionTenant(pool, { id: tenantA, slug: `acme-${slugSuffix}` });
   await provisionTenant(pool, { id: tenantB, slug: `other-${slugSuffix}` });
   await seedUser(pool, tenantA, "admin@acme.test", "admin");
   await seedUser(pool, tenantB, "admin@other.test", "admin");
 
-  const app = createApp({ pool, apiKeySecret: SECRET });
+  const app = createApp({ pool, apiKeySecret: SECRET, forceCloseConnections: opts.forceCloseConnections });
   await app.ready();
 
   const authA = await loginAs(app, `acme-${slugSuffix}`, "admin@acme.test");
@@ -270,7 +295,27 @@ export async function startHarness(slugSuffix: string, opts: HarnessOptions = {}
     if (prevRate === undefined) delete process.env.ENFORCEMENT_RATE_MAX;
     else process.env.ENFORCEMENT_RATE_MAX = prevRate;
     await app.close();
-    await pool.end();
+    // Drain the pg pool. Normally this completes in milliseconds. The perf suite (which sets
+    // `teardownTimeoutMs`) drives a REAL loopback listener under autocannon load that can leave a pool client
+    // stuck mid-query at an abrupt teardown; there an unbounded `pool.end()` would wait indefinitely and blow
+    // the test hook budget. When a budget is set we cap the drain and ALWAYS proceed to stop the container so
+    // teardown is prompt and deterministic. A late settle of the abandoned drain is swallowed so it never
+    // surfaces as an unhandled rejection. Every other suite passes no budget → `pool.end()` is awaited
+    // unbounded exactly as before.
+    const budgetMs = opts.teardownTimeoutMs;
+    if (budgetMs && budgetMs > 0) {
+      const drain = pool.end();
+      drain.catch(() => undefined); // swallow a late rejection of an abandoned (timed-out) drain
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const budget = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, budgetMs);
+        timer.unref?.();
+      });
+      await Promise.race([drain.then(() => undefined, () => undefined), budget]);
+      if (timer) clearTimeout(timer);
+    } else {
+      await pool.end();
+    }
     await container.stop();
   };
 

@@ -66,5 +66,9 @@ export function registerSigning(app, deps) {
     // Publish the signer for issuance (E008) + air-gap (E010) — the single key-using surface (project-plan
     // Shared Artifact Surface). Consumers call app.signer.sign(tenantId, claims); the private key never leaks.
     app.decorate("signer", module.signer);
+    // Publish the keystore custody so E014 billing can envelope-encrypt the inbound webhook HMAC secret under
+    // the same master key (a distinct, lower-tier secret class — never the Ed25519 signing key). Only the
+    // generic AES-256-GCM wrap/unwrap capability is shared; the signing key stays behind the Signer boundary.
+    app.decorate("custody", module.custody);
     registerSigningRoutes(app, deps.pool, module);
 }

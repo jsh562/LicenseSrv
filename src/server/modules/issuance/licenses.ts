@@ -79,6 +79,13 @@ export function mapLicenseRow(row: unknown): License {
  * Issue a signed license under an active plan for a customer. Snapshots the effective plan definition,
  * signs the claims (503 signer_unavailable with no license on any signer fault), and stores the license.
  * 404 unknown plan/customer; 409 plan_not_issuable for an archived plan.
+ *
+ * TX-COMPOSABLE SEAM (E014, HINT-002): an OPTIONAL `q?: TxQuery` lets a caller run the customer check and
+ * the license INSERT + audit INSIDE its own transaction — so a billing-driven provision commits the new
+ * license atomically with the idempotency-claim ledger row and the subscription link (true exactly-once).
+ * When `q` is omitted the behaviour is identical to before (self-managed `withTenant` transactions), so
+ * every existing caller/test is unaffected. The effective-plan read and the signer call stay outside the tx
+ * (a read of catalog rows the tx never mutates; the signer must not hold a DB transaction open).
  */
 export async function issueLicense(
   pool: pg.Pool,
@@ -86,6 +93,7 @@ export async function issueLicense(
   tenantId: string,
   actor: string,
   input: { planId: string; customerId: string; expiresAt?: string | null },
+  q?: TxQuery,
 ): Promise<IssuedLicense> {
   const eff = await getEffectivePlanDefinition(pool, tenantId, input.planId);
   if (!eff) throw new IssuanceError("not_found", 404, "unknown plan");
@@ -95,7 +103,9 @@ export async function issueLicense(
     throw new IssuanceError("plan_not_issuable", 409, `the plan references an archived entitlement (${eff.archivedEntitlementKeys.join(", ")})`);
   }
 
-  const customer = await withTenant(pool, tenantId, (q) => q("SELECT status FROM customer WHERE id = $1", [input.customerId]));
+  const customer = q
+    ? await q("SELECT status FROM customer WHERE id = $1", [input.customerId])
+    : await withTenant(pool, tenantId, (qq) => qq("SELECT status FROM customer WHERE id = $1", [input.customerId]));
   if (!customer.rowCount) throw new IssuanceError("not_found", 404, "unknown customer");
   // FR-019: an erased (anonymized) customer must not receive new licenses.
   if ((customer.rows[0] as { status: string }).status !== "active") {
@@ -127,10 +137,10 @@ export async function issueLicense(
     throw e;
   }
 
-  const license = await withTenant(pool, tenantId, async (q): Promise<License> => {
+  const doInsert = async (qq: TxQuery): Promise<License> => {
     let r;
     try {
-      r = await q(
+      r = await qq(
         `INSERT INTO license
            (id, tenant_id, product_id, plan_id, customer_id, issued_at, expires_at, max_activations,
             entitlements, token_version, nonce, license_token)
@@ -157,9 +167,10 @@ export async function issueLicense(
       }
       throw e;
     }
-    await writeAudit(q, { actor, action: "license.issued", target: licenseId, after: { planId: input.planId, customerId: input.customerId } });
+    await writeAudit(qq, { actor, action: "license.issued", target: licenseId, after: { planId: input.planId, customerId: input.customerId } });
     return toLicense(r.rows[0] as Row);
-  });
+  };
+  const license = q ? await doInsert(q) : await withTenant(pool, tenantId, doInsert);
 
   return { ...license, licenseKey: token };
 }

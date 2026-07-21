@@ -148,11 +148,47 @@ describe("tenancy & data foundation (integration, real Postgres)", () => {
       }),
     );
 
+    // E014 billing metadata for tenantC (must be erased) + a control connection for tenantB (must survive).
+    // Owner-level raw inserts: the append-only billing_event ledger has no app-role DELETE grant (FR-021).
+    await privileged(pool, async (q) => {
+      await q(
+        `INSERT INTO billing_connection (id, tenant_id, provider, signing_secret_ref, secret_custody_scheme)
+         VALUES ($1, $2, 'stripe', $3, 'keystore-aes256gcm-v1')`,
+        [randomUUID(), tenantC, Buffer.from([1, 2, 3])],
+      );
+      await q(
+        `INSERT INTO billing_event
+           (id, tenant_id, provider, provider_event_id, type, subscription_id, occurred_at, outcome, reason, payload_summary)
+         VALUES ($1, $2, 'stripe', 'evt_gdpr_c', 'subscription.renewed', NULL, now(), 'deadletter', 'unmapped_event', NULL)`,
+        [randomUUID(), tenantC],
+      );
+      await q(
+        `INSERT INTO billing_connection (id, tenant_id, provider, signing_secret_ref, secret_custody_scheme)
+         VALUES ($1, $2, 'stripe', $3, 'keystore-aes256gcm-v1')`,
+        [randomUUID(), tenantB, Buffer.from([9])],
+      );
+    });
+
     const auditBefore = await countAudit(pool, tenantC);
     await eraseTenantPersonalData(pool, tenantC);
     const after = await exportTenant(pool, tenantC);
     expect(after.users.length).toBe(0);
     expect(after.apiKeys.length).toBe(0);
+
+    // billing_connection + append-only billing_event erased for tenantC; tenantB's connection untouched (FR-021).
+    const billingC = await privileged(pool, (q) =>
+      q(
+        `SELECT (SELECT count(*)::int FROM billing_connection WHERE tenant_id = $1) AS c,
+                (SELECT count(*)::int FROM billing_event      WHERE tenant_id = $1) AS e`,
+        [tenantC],
+      ),
+    );
+    expect((billingC.rows[0] as { c: number; e: number }).c).toBe(0);
+    expect((billingC.rows[0] as { c: number; e: number }).e).toBe(0);
+    const billingB = await privileged(pool, (q) =>
+      q("SELECT count(*)::int AS n FROM billing_connection WHERE tenant_id = $1", [tenantB]),
+    );
+    expect((billingB.rows[0] as { n: number }).n).toBeGreaterThan(0);
     // append-only audit event records preserved (count grew by the erase event)
     expect(await countAudit(pool, tenantC)).toBeGreaterThan(auditBefore);
     // PII payloads redacted; tenant tombstoned

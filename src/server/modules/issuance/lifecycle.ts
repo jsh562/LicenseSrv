@@ -2,6 +2,13 @@
 // one tenant transaction, validates the transition, updates, and audits. Transitions: active↔suspended;
 // active/suspended→revoked (terminal). Revoke is idempotent. Transfer reassigns the customer within the
 // per-license transfer limit. Any invalid transition is refused (409 invalid_transition), license unchanged.
+//
+// TX-COMPOSABLE SEAM (E014, HINT-002): suspend/reinstate/revoke each accept an OPTIONAL `q?: TxQuery`. When
+// omitted they behave exactly as before (self-managed `withTenant` transaction — every existing caller/test
+// is unaffected). When a caller supplies its own transaction `q` (the billing webhook's single verify →
+// claim → apply commit, or the grace worker's suspend+overlay tx), the transition runs INSIDE that tx so the
+// license side effect and the idempotency-claim ledger row commit atomically (true exactly-once). The seam
+// only threads the query function through; the state machine and audit semantics are identical either way.
 import type pg from "pg";
 
 import { writeAudit } from "../../audit/index.js";
@@ -26,37 +33,46 @@ async function updateReturning(q: TxQuery, id: string, set: string, params: unkn
   return mapLicenseRow(r.rows[0]);
 }
 
+/**
+ * Run `fn` in the caller's transaction `q` when supplied (tx-composable seam, HINT-002), else in a fresh
+ * self-managed `withTenant` tenant transaction (the default standalone behaviour). Keeps every existing
+ * caller unchanged while letting E014 compose a transition into its single verify→claim→apply commit.
+ */
+function inTx<T>(pool: pg.Pool, tenantId: string, q: TxQuery | undefined, fn: (q: TxQuery) => Promise<T>): Promise<T> {
+  return q ? fn(q) : withTenant(pool, tenantId, fn);
+}
+
 /** Revoke a license (terminal). Idempotent: revoking a revoked license is a no-op. */
-export async function revokeLicense(pool: pg.Pool, tenantId: string, actor: string, id: string): Promise<License> {
-  return withTenant(pool, tenantId, async (q): Promise<License> => {
-    const cur = await lockLicense(q, id);
+export async function revokeLicense(pool: pg.Pool, tenantId: string, actor: string, id: string, q?: TxQuery): Promise<License> {
+  return inTx(pool, tenantId, q, async (qq): Promise<License> => {
+    const cur = await lockLicense(qq, id);
     if (cur.status === "revoked") {
-      return mapLicenseRow((await q(`SELECT ${LICENSE_SELECT} FROM license WHERE id = $1`, [id])).rows[0]);
+      return mapLicenseRow((await qq(`SELECT ${LICENSE_SELECT} FROM license WHERE id = $1`, [id])).rows[0]);
     }
-    const license = await updateReturning(q, id, "status = 'revoked'", []);
-    await writeAudit(q, { actor, action: "license.revoked", target: id });
+    const license = await updateReturning(qq, id, "status = 'revoked'", []);
+    await writeAudit(qq, { actor, action: "license.revoked", target: id });
     return license;
   });
 }
 
 /** Suspend an active license. Refused (409) if not active. */
-export async function suspendLicense(pool: pg.Pool, tenantId: string, actor: string, id: string): Promise<License> {
-  return withTenant(pool, tenantId, async (q): Promise<License> => {
-    const cur = await lockLicense(q, id);
+export async function suspendLicense(pool: pg.Pool, tenantId: string, actor: string, id: string, q?: TxQuery): Promise<License> {
+  return inTx(pool, tenantId, q, async (qq): Promise<License> => {
+    const cur = await lockLicense(qq, id);
     if (cur.status !== "active") throw new IssuanceError("invalid_transition", 409, "only an active license can be suspended");
-    const license = await updateReturning(q, id, "status = 'suspended'", []);
-    await writeAudit(q, { actor, action: "license.suspended", target: id });
+    const license = await updateReturning(qq, id, "status = 'suspended'", []);
+    await writeAudit(qq, { actor, action: "license.suspended", target: id });
     return license;
   });
 }
 
 /** Reinstate a suspended license to active. Refused (409) if not suspended. */
-export async function reinstateLicense(pool: pg.Pool, tenantId: string, actor: string, id: string): Promise<License> {
-  return withTenant(pool, tenantId, async (q): Promise<License> => {
-    const cur = await lockLicense(q, id);
+export async function reinstateLicense(pool: pg.Pool, tenantId: string, actor: string, id: string, q?: TxQuery): Promise<License> {
+  return inTx(pool, tenantId, q, async (qq): Promise<License> => {
+    const cur = await lockLicense(qq, id);
     if (cur.status !== "suspended") throw new IssuanceError("invalid_transition", 409, "only a suspended license can be reinstated");
-    const license = await updateReturning(q, id, "status = 'active'", []);
-    await writeAudit(q, { actor, action: "license.reinstated", target: id });
+    const license = await updateReturning(qq, id, "status = 'active'", []);
+    await writeAudit(qq, { actor, action: "license.reinstated", target: id });
     return license;
   });
 }

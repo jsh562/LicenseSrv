@@ -41,10 +41,10 @@ description: "Task list for feature implementation: Billing-driven Entitlement A
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Extend coverage globs for src/server/modules/billing/** (>=80% gate) in vitest.config.ts
-- [ ] T002 {FR-011,FR-016,FR-019,FR-021,FR-022} billing config keys (grace, ts-tolerance/stale, rate-limit, retention, rotation window) in src/server/config/index.ts
-- [ ] T003 {FR-011,FR-016,FR-019,FR-021,FR-022} BillingConfig loader + grace/tolerance/retention/rotation resolver (retention > idempotency floor) in src/server/modules/billing/config.ts
-- [ ] T004 {FR-002} Raw-body content-type parser SCOPED to the webhook route (raw bytes for HMAC; JSON unchanged elsewhere — HINT-001) in src/server/app.ts
+- [X] T001 Extend coverage globs for src/server/modules/billing/** (>=80% gate) in vitest.config.ts
+- [X] T002 {FR-011,FR-016,FR-019,FR-021,FR-022} billing config keys (grace, ts-tolerance/stale, rate-limit, retention, rotation window) in src/server/config/index.ts
+- [X] T003 {FR-011,FR-016,FR-019,FR-021,FR-022} BillingConfig loader + grace/tolerance/retention/rotation resolver (retention > idempotency floor) in src/server/modules/billing/config.ts
+- [X] T004 {FR-002} Raw-body content-type parser SCOPED to the webhook route (raw bytes for HMAC; JSON unchanged elsewhere — HINT-001) in src/server/app.ts
 
 ---
 
@@ -52,20 +52,20 @@ description: "Task list for feature implementation: Billing-driven Entitlement A
 
 **The migration `0010`, the module scaffold + seam, and the shared building blocks — `signature.ts` (verify), `events.ts` (canonical model + mapper + stale guard), the three repos, and the adapters — block every delivery story (webhook ingestion AND lifecycle consume them). Complete before any US phase. Unit tests (T009–T011) are TDD-first and precede their implementations.**
 
-- [ ] T005 {FR-003,FR-012,FR-021} Migration 0010: 3 tables + indexes (UNIQUE idempotency (tenant,provider,event_id), UNIQUE 1:1 (tenant,license_id), grace + BRIN prune) in migrations/0010_billing.sql
-- [ ] T006 {FR-014,FR-015} Migration 0010: ENABLE+FORCE RLS + tenant_isolation policies + grants (append-only ledger) + secret-excluding billing_connection_public view in migrations/0010_billing.sql
-- [ ] T007 Module scaffold: registerBilling seam (pool + signer + effective + custody + config) + BillingError in src/server/modules/billing/index.ts → exports: registerBilling, BillingError
-- [ ] T008 Register registerBilling after registerEnforcement in src/server/modules/index.ts ← T007:registerBilling
-- [ ] T009 [P] Unit (TDD): HMAC-raw-body vectors + recency (stale AND future-skew) + constant-time + current/prev secret in src/server/modules/billing/__tests__/signature.unit.test.ts
-- [ ] T010 [P] Unit (TDD): event→action mapper (per type) + stale-event guard + adapter normalization (allow-list, no card/PAN) in src/server/modules/billing/__tests__/events.unit.test.ts
-- [ ] T011 [P] Unit (TDD): idempotency dedup ON CONFLICT DO NOTHING (duplicate = no 2nd row) + dead-letter outcome shape in src/server/modules/billing/__tests__/ledger-repo.unit.test.ts
-- [ ] T012 [P] {FR-002} signature.ts: verify raw-body HMAC-SHA256 + timestamp recency + constant-time (adapter header, current+prev secret) in src/server/modules/billing/signature.ts
-- [ ] T013 [P] {FR-004,FR-016} events.ts: canonical model + adapter interface + event→action mapper + stale-event guard in src/server/modules/billing/events.ts → exports: CanonicalEvent
-- [ ] T014 [P] {FR-003,FR-020} ledger-repo.ts: idempotency dedup (INSERT ... ON CONFLICT DO NOTHING in-tx) + dead-letter + ledger reads in src/server/modules/billing/ledger-repo.ts
-- [ ] T015 [P] {FR-011,FR-015,FR-022} connection-repo.ts: CRUD + E004 secret custody (current+prev) + grace policy in src/server/modules/billing/connection-repo.ts → exports: ConnectionRepo
-- [ ] T016 [P] {FR-012} subscription-repo.ts: resolve by external id, 1:1 link (set once), state/grace/anchor in src/server/modules/billing/subscription-repo.ts → exports: SubscriptionRepo
-- [ ] T017 {FR-004,FR-018} [COMPLETES FR-004] adapters: stripe + generic → CanonicalEvent + allow-list summary (no card/PAN) in src/server/modules/billing/adapters/ ← T013:CanonicalEvent
-- [ ] T018 [P] {FR-021} [COMPLETES FR-021] 0010 IT: forced RLS (unset GUC→0) + idempotency + 1:1 link + secret excluded in src/server/modules/billing/__tests__/migration.integration.test.ts after:T006
+- [X] T005 {FR-003,FR-012,FR-021} Migration 0010: 3 tables + indexes (UNIQUE idempotency (tenant,provider,event_id), UNIQUE 1:1 (tenant,license_id), grace + BRIN prune) in migrations/0010_billing.sql
+- [X] T006 {FR-014,FR-015} Migration 0010: ENABLE+FORCE RLS + tenant_isolation policies + grants (append-only ledger) + secret-excluding billing_connection_public view in migrations/0010_billing.sql
+- [X] T007 Module scaffold: registerBilling seam (pool + signer + effective + custody + config) + BillingError in src/server/modules/billing/index.ts → exports: registerBilling, BillingError
+- [X] T008 Register registerBilling after registerEnforcement in src/server/modules/index.ts ← T007:registerBilling
+- [X] T009 [P] Unit (TDD): HMAC-raw-body vectors + recency (stale AND future-skew) + constant-time + current/prev secret in src/server/modules/billing/__tests__/signature.unit.test.ts
+- [X] T010 [P] Unit (TDD): event→action mapper (per type) + stale-event guard + adapter normalization (allow-list, no card/PAN) in src/server/modules/billing/__tests__/events.unit.test.ts
+- [X] T011 [P] Unit (TDD): idempotency dedup ON CONFLICT DO NOTHING (duplicate = no 2nd row) + dead-letter outcome shape in src/server/modules/billing/__tests__/ledger-repo.unit.test.ts
+- [X] T012 [P] {FR-002} signature.ts: verify raw-body HMAC-SHA256 + timestamp recency + constant-time (adapter header, current+prev secret) in src/server/modules/billing/signature.ts
+- [X] T013 [P] {FR-004,FR-016} events.ts: canonical model + adapter interface + event→action mapper + stale-event guard in src/server/modules/billing/events.ts → exports: CanonicalEvent
+- [X] T014 [P] {FR-003,FR-020} ledger-repo.ts: idempotency dedup (INSERT ... ON CONFLICT DO NOTHING in-tx) + dead-letter + ledger reads in src/server/modules/billing/ledger-repo.ts
+- [X] T015 [P] {FR-011,FR-015,FR-022} connection-repo.ts: CRUD + E004 secret custody (current+prev) + grace policy in src/server/modules/billing/connection-repo.ts → exports: ConnectionRepo
+- [X] T016 [P] {FR-012} subscription-repo.ts: resolve by external id, 1:1 link (set once), state/grace/anchor in src/server/modules/billing/subscription-repo.ts → exports: SubscriptionRepo
+- [X] T017 {FR-004,FR-018} [COMPLETES FR-004] adapters: stripe + generic → CanonicalEvent + allow-list summary (no card/PAN) in src/server/modules/billing/adapters/ ← T013:CanonicalEvent
+- [X] T018 [P] {FR-021} [COMPLETES FR-021] 0010 IT: forced RLS (unset GUC→0) + idempotency + 1:1 link + secret excluded in src/server/modules/billing/__tests__/migration.integration.test.ts after:T006
 
 ---
 
@@ -73,10 +73,10 @@ description: "Task list for feature implementation: Billing-driven Entitlement A
 
 **Independent test**: the provider POSTs a validly-signed event (in-tolerance timestamp) → `200 {received:true, outcome}` and it is processed exactly once; a missing/invalid signature → `401 invalid_signature` with NO state change and NO ledger row; a stale/future-dated timestamp → `400 stale_timestamp`; the same `provider_event_id` redelivered → `200 outcome:duplicate`, an idempotent no-op that writes no second row and re-applies nothing (SC-001/002).
 
-- [ ] T019 [P] [US1] {FR-001,FR-002} IT (TDD): valid-signed→once; bad/missing sig→401 no change; stale/future ts→400 in src/server/modules/billing/__tests__/webhook-verify.integration.test.ts
-- [ ] T020 [P] [US1] {FR-003} IT (TDD): same event_id redelivered→200 duplicate no-op (applied once, no 2nd row) in src/server/modules/billing/__tests__/idempotency.integration.test.ts
-- [ ] T021 [US1] {FR-001,FR-002,FR-003} [COMPLETES FR-002,FR-003] webhook.ts: verify→dedupe→apply in one tx, fast ack in src/server/modules/billing/webhook.ts
-- [ ] T022 [US1] {FR-001,FR-019} [COMPLETES FR-001] routes.ts: POST /v1/billing/webhooks/:connectionId (providerSignature, rate-limited) in src/server/modules/billing/routes.ts after:T021
+- [X] T019 [P] [US1] {FR-001,FR-002} IT (TDD): valid-signed→once; bad/missing sig→401 no change; stale/future ts→400 in src/server/modules/billing/__tests__/webhook-verify.integration.test.ts
+- [X] T020 [P] [US1] {FR-003} IT (TDD): same event_id redelivered→200 duplicate no-op (applied once, no 2nd row) in src/server/modules/billing/__tests__/idempotency.integration.test.ts
+- [X] T021 [US1] {FR-001,FR-002,FR-003} [COMPLETES FR-002,FR-003] webhook.ts: verify→dedupe→apply in one tx, fast ack in src/server/modules/billing/webhook.ts
+- [X] T022 [US1] {FR-001,FR-019} [COMPLETES FR-001] routes.ts: POST /v1/billing/webhooks/:connectionId (providerSignature, rate-limited) in src/server/modules/billing/routes.ts after:T021
 
 ---
 
@@ -84,10 +84,10 @@ description: "Task list for feature implementation: Billing-driven Entitlement A
 
 **Independent test**: a subscription-created/activated event provisions a license via the E008 issuance path per the connection plan map and links it 1:1 to the subscription; a renewal / invoice-paid event extends the linked license (E007 effective entitlements) and keeps it active with any grace cleared; every billing-driven mutation appends an `audit_log` row carrying the triggering `provider_event_id` (SC-003/008).
 
-- [ ] T023 [P] [US2] {FR-005} IT (TDD): subscription-created→provision (E008) + 1:1 link per plan map; unmapped→deadletter in src/server/modules/billing/__tests__/provision.integration.test.ts
-- [ ] T024 [P] [US2] {FR-006,FR-013} IT (TDD): renewal/invoice-paid→extend + active, grace cleared; audited w/ event id in src/server/modules/billing/__tests__/renewal.integration.test.ts
-- [ ] T025 [US2] {FR-005,FR-012,FR-013} [COMPLETES FR-005,FR-012] lifecycle.ts: provision (E008 issue) + link sub (set once) + audit in src/server/modules/billing/lifecycle.ts ← T016:SubscriptionRepo
-- [ ] T026 [US2] {FR-006,FR-013} [COMPLETES FR-006] lifecycle.ts: extend on renewal (E007 effective, keep active, clear grace) + audit in src/server/modules/billing/lifecycle.ts after:T025
+- [X] T023 [P] [US2] {FR-005} IT (TDD): subscription-created→provision (E008) + 1:1 link per plan map; unmapped→deadletter in src/server/modules/billing/__tests__/provision.integration.test.ts
+- [X] T024 [P] [US2] {FR-006,FR-013} IT (TDD): renewal/invoice-paid→extend + active, grace cleared; audited w/ event id in src/server/modules/billing/__tests__/renewal.integration.test.ts
+- [X] T025 [US2] {FR-005,FR-012,FR-013} [COMPLETES FR-005,FR-012] lifecycle.ts: provision (E008 issue) + link sub (set once) + audit in src/server/modules/billing/lifecycle.ts ← T016:SubscriptionRepo
+- [X] T026 [US2] {FR-006,FR-013} [COMPLETES FR-006] lifecycle.ts: extend on renewal (E007 effective, keep active, clear grace) + audit in src/server/modules/billing/lifecycle.ts after:T025
 
 ---
 
@@ -95,11 +95,11 @@ description: "Task list for feature implementation: Billing-driven Entitlement A
 
 **Independent test**: a cancellation or payment-failure event moves the linked license into a bounded grace window (`billing_state`=grace/past_due, `grace_expires_at` set, license stays `active`/usable, not immediately suspended); after the window elapses with no recovery the TIME-driven fail-open grace worker drives E008 `suspend` (even with no further webhook); a successful payment during grace (or from suspended) reinstates the license via E008 and clears grace (SC-004/005).
 
-- [ ] T027 [P] [US3] {FR-007} IT (TDD): cancel/fail→grace/past_due, license stays active, grace_expires_at set, no suspend in src/server/modules/billing/__tests__/grace.integration.test.ts
-- [ ] T028 [P] [US3] {FR-008,FR-009} IT (TDD): grace elapsed→worker suspends; payment in grace/suspended→reinstate+clear in src/server/modules/billing/__tests__/grace-worker.integration.test.ts
-- [ ] T029 [US3] {FR-007,FR-011,FR-013} [COMPLETES FR-007,FR-011] lifecycle.ts: grace overlay on cancel/fail (→grace/past_due, grace_expires_at) in src/server/modules/billing/lifecycle.ts after:T026
-- [ ] T030 [US3] {FR-009,FR-013} [COMPLETES FR-009] lifecycle.ts: recovery-on-payment (reinstate via E008 if suspended, clear grace) in src/server/modules/billing/lifecycle.ts after:T029
-- [ ] T031 [US3] {FR-008,FR-013} [COMPLETES FR-008] grace-worker.ts: grace-expiry→E008 suspend (TIME-driven, fail-open, synthetic audit); from main.ts in src/server/modules/billing/grace-worker.ts
+- [X] T027 [P] [US3] {FR-007} IT (TDD): cancel/fail→grace/past_due, license stays active, grace_expires_at set, no suspend in src/server/modules/billing/__tests__/grace.integration.test.ts
+- [X] T028 [P] [US3] {FR-008,FR-009} IT (TDD): grace elapsed→worker suspends; payment in grace/suspended→reinstate+clear in src/server/modules/billing/__tests__/grace-worker.integration.test.ts
+- [X] T029 [US3] {FR-007,FR-011,FR-013} [COMPLETES FR-007,FR-011] lifecycle.ts: grace overlay on cancel/fail (→grace/past_due, grace_expires_at) in src/server/modules/billing/lifecycle.ts after:T026
+- [X] T030 [US3] {FR-009,FR-013} [COMPLETES FR-009] lifecycle.ts: recovery-on-payment (reinstate via E008 if suspended, clear grace) in src/server/modules/billing/lifecycle.ts after:T029
+- [X] T031 [US3] {FR-008,FR-013} [COMPLETES FR-008] grace-worker.ts: grace-expiry→E008 suspend (TIME-driven, fail-open, synthetic audit); from main.ts in src/server/modules/billing/grace-worker.ts
 
 ---
 
@@ -107,8 +107,8 @@ description: "Task list for feature implementation: Billing-driven Entitlement A
 
 **Independent test**: a refund or chargeback event on a linked subscription drives E008 `revoke` (terminal, `billing_state`=refunded); any later billing event for that subscription is an idempotent no-op that does NOT resurrect the revoked license (SC-006).
 
-- [ ] T032 [P] [US4] {FR-010} IT (TDD): refund/chargeback→revoke (terminal); a later event does not resurrect a revoked license in src/server/modules/billing/__tests__/revoke.integration.test.ts
-- [ ] T033 [US4] {FR-010,FR-013} [COMPLETES FR-010] lifecycle.ts: refund/chargeback→E008 revoke (terminal, not-resurrected guard) + audit in src/server/modules/billing/lifecycle.ts after:T030
+- [X] T032 [P] [US4] {FR-010} IT (TDD): refund/chargeback→revoke (terminal); a later event does not resurrect a revoked license in src/server/modules/billing/__tests__/revoke.integration.test.ts
+- [X] T033 [US4] {FR-010,FR-013} [COMPLETES FR-010] lifecycle.ts: refund/chargeback→E008 revoke (terminal, not-resurrected guard) + audit in src/server/modules/billing/lifecycle.ts after:T030
 
 ---
 
@@ -116,11 +116,11 @@ description: "Task list for feature implementation: Billing-driven Entitlement A
 
 **Independent test**: an operator (admin RBAC + CSRF) creates a billing connection with a write-only signing secret + plan map + grace policy → stored and used to verify/map webhooks, with the secret NEVER returned by any response or the public view; a `viewer` can list connections (secret-excluded); rotate-secret keeps BOTH the old and new secret valid during the bounded transition window, then drops the superseded secret (SC-007).
 
-- [ ] T034 [P] [US5] {FR-015} IT (TDD): create connection (secret write-only, never returned); list via view; cross-tenant→404 in src/server/modules/billing/__tests__/connections.integration.test.ts
-- [ ] T035 [P] [US5] {FR-022} IT (TDD): rotate-secret→current+prev both accepted in window; superseded dropped after in src/server/modules/billing/__tests__/rotation.integration.test.ts
-- [ ] T036 [US5] {FR-015} routes.ts: admin /admin/billing/connections POST/GET/PATCH (RBAC admin+CSRF, planMap validated vs E007) in src/server/modules/billing/routes.ts after:T022 ← T015:ConnectionRepo
-- [ ] T037 [US5] {FR-022} [COMPLETES FR-022] routes.ts: POST /admin/billing/connections/:id/rotate-secret (current+prev window, never returned) in src/server/modules/billing/routes.ts after:T036
-- [ ] T038 [US5] {FR-015} [COMPLETES FR-015] Minimal operator billing surface (connection + plan map + grace policy; secret write-only) in src/admin-ui/ billing page after:T037
+- [X] T034 [P] [US5] {FR-015} IT (TDD): create connection (secret write-only, never returned); list via view; cross-tenant→404 in src/server/modules/billing/__tests__/connections.integration.test.ts
+- [X] T035 [P] [US5] {FR-022} IT (TDD): rotate-secret→current+prev both accepted in window; superseded dropped after in src/server/modules/billing/__tests__/rotation.integration.test.ts
+- [X] T036 [US5] {FR-015} routes.ts: admin /admin/billing/connections POST/GET/PATCH (RBAC admin+CSRF, planMap validated vs E007) in src/server/modules/billing/routes.ts after:T022 ← T015:ConnectionRepo
+- [X] T037 [US5] {FR-022} [COMPLETES FR-022] routes.ts: POST /admin/billing/connections/:id/rotate-secret (current+prev window, never returned) in src/server/modules/billing/routes.ts after:T036
+- [X] T038 [US5] {FR-015} [COMPLETES FR-015] Minimal operator billing surface (connection + plan map + grace policy; secret write-only) in src/admin-ui/ billing page after:T037
 
 ---
 
@@ -128,24 +128,24 @@ description: "Task list for feature implementation: Billing-driven Entitlement A
 
 **Independent test**: simulate a missed cancel webhook (license left active while the provider shows cancelled) → run reconciliation (periodic or POST /admin/billing/reconcile, async `202 {jobId}`) → the license is corrected to grace/suspended per policy against the provider's authoritative state, recency-guarded, fail-open; an out-of-order event older than `last_applied_event_at` is ignored (ledger `outcome:rejected`, `reason:stale_event`) and never regresses newer state (SC-009/010).
 
-- [ ] T039 [P] [US6] {FR-017} IT (TDD): missed cancel (active, provider canceled)→reconcile→corrected to grace/suspended in src/server/modules/billing/__tests__/reconcile.integration.test.ts
-- [ ] T040 [P] [US6] {FR-016} IT (TDD): out-of-order (older than last_applied_event_at)→ignored (rejected, stale_event) in src/server/modules/billing/__tests__/stale-event.integration.test.ts
-- [ ] T041 [US6] {FR-017,FR-013} reconcile-worker.ts: periodic + on-demand self-heal (recency-guarded, fail-open, synthetic audit); from main.ts in src/server/modules/billing/reconcile-worker.ts → exports: reconcile
-- [ ] T042 [US6] {FR-017} [COMPLETES FR-017] routes.ts: POST /admin/billing/reconcile (RBAC admin+CSRF, async 202 {jobId}) in src/server/modules/billing/routes.ts after:T037 ← T041:reconcile
-- [ ] T043 [US6] {FR-016} [COMPLETES FR-016] events.ts: finalize stale-event guard (occurred_at ≤ last_applied_event_at→rejected) for webhook + reconcile in src/server/modules/billing/events.ts after:T013
+- [X] T039 [P] [US6] {FR-017} IT (TDD): missed cancel (active, provider canceled)→reconcile→corrected to grace/suspended in src/server/modules/billing/__tests__/reconcile.integration.test.ts
+- [X] T040 [P] [US6] {FR-016} IT (TDD): out-of-order (older than last_applied_event_at)→ignored (rejected, stale_event) in src/server/modules/billing/__tests__/stale-event.integration.test.ts
+- [X] T041 [US6] {FR-017,FR-013} reconcile-worker.ts: periodic + on-demand self-heal (recency-guarded, fail-open, synthetic audit); from main.ts in src/server/modules/billing/reconcile-worker.ts → exports: reconcile
+- [X] T042 [US6] {FR-017} [COMPLETES FR-017] routes.ts: POST /admin/billing/reconcile (RBAC admin+CSRF, async 202 {jobId}) in src/server/modules/billing/routes.ts after:T037 ← T041:reconcile
+- [X] T043 [US6] {FR-016} [COMPLETES FR-016] events.ts: finalize stale-event guard (occurred_at ≤ last_applied_event_at→rejected) for webhook + reconcile in src/server/modules/billing/events.ts after:T013
 
 ---
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T044 {FR-019} routes.ts: rate-limit wiring — webhook per-connection + per-IP (pre-resolution) + admin; 429 + Retry-After; audited in src/server/modules/billing/routes.ts after:T042
-- [ ] T045 {FR-020} [COMPLETES FR-020] routes.ts: GET /admin/billing/subscriptions + /events (ledger + dead-letter; viewer RBAC) in src/server/modules/billing/routes.ts after:T044
-- [ ] T046 [P] {FR-013} [COMPLETES FR-013] Audit IT: webhook→audit w/ event id; worker/reconcile→synthetic actor + sub id in src/server/modules/billing/__tests__/audit.integration.test.ts
-- [ ] T047 [P] {FR-014} [COMPLETES FR-014] Isolation IT: cross-tenant webhook/admin→404; RLS unset-GUC→0 rows in src/server/modules/billing/__tests__/isolation.integration.test.ts
-- [ ] T048 [P] {FR-018} [COMPLETES FR-018] Security IT: no card/PAN in ledger (webhook + reconcile); secret never in response/log/view in src/server/modules/billing/__tests__/secret-leakage.test.ts
-- [ ] T049 [P] {FR-019} [COMPLETES FR-019] Perf IT: webhook ack latency < ~200ms (fast ack; durable processing decoupled) in src/server/modules/billing/__tests__/perf.integration.test.ts
-- [ ] T050 Enforce >=80% line+branch coverage of src/server/modules/billing/** in vitest.config.ts after:T049
-- [ ] T051 [P] Add billing CI workflow (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep) in .github/workflows/billing.yml mirroring activation.yml
+- [X] T044 {FR-019} routes.ts: rate-limit wiring — webhook per-connection + per-IP (pre-resolution) + admin; 429 + Retry-After; audited in src/server/modules/billing/routes.ts after:T042
+- [X] T045 {FR-020} [COMPLETES FR-020] routes.ts: GET /admin/billing/subscriptions + /events (ledger + dead-letter; viewer RBAC) in src/server/modules/billing/routes.ts after:T044
+- [X] T046 [P] {FR-013} [COMPLETES FR-013] Audit IT: webhook→audit w/ event id; worker/reconcile→synthetic actor + sub id in src/server/modules/billing/__tests__/audit.integration.test.ts
+- [X] T047 [P] {FR-014} [COMPLETES FR-014] Isolation IT: cross-tenant webhook/admin→404; RLS unset-GUC→0 rows in src/server/modules/billing/__tests__/isolation.integration.test.ts
+- [X] T048 [P] {FR-018} [COMPLETES FR-018] Security IT: no card/PAN in ledger (webhook + reconcile); secret never in response/log/view in src/server/modules/billing/__tests__/secret-leakage.test.ts
+- [X] T049 [P] {FR-019} [COMPLETES FR-019] Perf IT: webhook ack latency < ~200ms (fast ack; durable processing decoupled) in src/server/modules/billing/__tests__/perf.integration.test.ts
+- [X] T050 Enforce >=80% line+branch coverage of src/server/modules/billing/** in vitest.config.ts after:T049
+- [X] T051 [P] Add billing CI workflow (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep) in .github/workflows/billing.yml mirroring activation.yml
 
 ---
 

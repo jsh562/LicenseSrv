@@ -320,3 +320,71 @@ export const activationApi = {
 };
 
 export type ActivationApi = typeof activationApi;
+
+// --- Billing (E014) -------------------------------------------------------------------------------
+
+export type BillingProvider = "stripe" | "paddle" | "generic";
+export type ConnectionStatus = "active" | "disabled";
+
+/** A provider-plan → E007-catalog mapping value. */
+export interface PlanMapping {
+  productId: string;
+  planId: string;
+}
+export type PlanMap = Record<string, PlanMapping>;
+
+/**
+ * The secret-EXCLUDING connection read model (the `billing_connection_public` view). The inbound webhook
+ * signing secret is WRITE-ONLY and is NEVER present here — it is never returned by any API (FR-015).
+ */
+export interface BillingConnection {
+  id: string;
+  provider: BillingProvider;
+  status: ConnectionStatus;
+  secretCustodyScheme: string;
+  secretRotatedAt: string | null;
+  planMap: PlanMap;
+  defaultGraceSeconds: number;
+  graceOverrides: Record<string, number>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateConnectionInput {
+  provider: BillingProvider;
+  /** WRITE-ONLY: sent on create, never returned. */
+  signingSecret: string;
+  planMap?: PlanMap;
+  defaultGraceSeconds?: number;
+  graceOverrides?: Record<string, number>;
+}
+
+export interface UpdateConnectionInput {
+  status?: ConnectionStatus;
+  planMap?: PlanMap;
+  defaultGraceSeconds?: number;
+  graceOverrides?: Record<string, number>;
+}
+
+export interface ReconcileAccepted {
+  jobId: string;
+  status: "accepted";
+  scope: "tenant" | "connection" | "subscription";
+}
+
+/** The billing API surface (mirrors src/server/modules/billing/routes.ts admin plane). Secret is write-only. */
+export const billingApi = {
+  listConnections: () =>
+    request<{ connections: BillingConnection[] }>("GET", "/admin/billing/connections").then((r) => r.connections),
+  createConnection: (input: CreateConnectionInput) =>
+    request<BillingConnection>("POST", "/admin/billing/connections", input),
+  updateConnection: (id: string, input: UpdateConnectionInput) =>
+    request<BillingConnection>("PATCH", `/admin/billing/connections/${id}`, input),
+  // The new secret is write-only; the response is the secret-excluding projection.
+  rotateSecret: (id: string, signingSecret: string) =>
+    request<BillingConnection>("POST", `/admin/billing/connections/${id}/rotate-secret`, { signingSecret }),
+  reconcile: (scope: { connectionId?: string; subscriptionId?: string } = {}) =>
+    request<ReconcileAccepted>("POST", "/admin/billing/reconcile", scope),
+};
+
+export type BillingApi = typeof billingApi;

@@ -15,6 +15,8 @@ import { configSummary, loadConfig } from "./config/index.js";
 import { applySecretFile } from "./config/secrets.js";
 import { makePool } from "./db/client.js";
 import { registerHealth } from "./health/index.js";
+import { startGraceWorker } from "./modules/billing/grace-worker.js";
+import { startReconcileWorker } from "./modules/billing/reconcile-worker.js";
 import { loadEnforcementConfig } from "./modules/enforcement/config.js";
 import { startCrlWorker } from "./modules/enforcement/crl-worker.js";
 import { makeCrossTenantProbe, startCanary } from "./observability/canary.js";
@@ -120,6 +122,39 @@ export async function startServer(env = process.env) {
     catch (err) {
         app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "CRL publication worker failed to start (fail-open)");
     }
+    // Billing grace-expiry auto-suspend worker (E014/US3, FR-008): a periodic TIME-driven job that suspends a
+    // license via the E008 service when its subscription's grace window elapses with no recovering payment —
+    // even absent any further webhook. FAIL-OPEN and cancelable exactly like the CRL worker above: the cadence
+    // timer is unref'd, a fault on any tenant/subscription/sweep is caught + logged and NEVER crashes boot
+    // (grace re-fires on the next sweep; recovery from suspended is still allowed). Its lifecycle is tied to
+    // app.close() for clean shutdown.
+    let graceWorker;
+    try {
+        graceWorker = startGraceWorker(pool, { logger: app.log });
+        app.log.info({}, "billing grace-expiry worker started");
+        app.addHook("onClose", async () => graceWorker?.stop());
+    }
+    catch (err) {
+        app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "billing grace-expiry worker failed to start (fail-open)");
+    }
+    // Billing reconciliation worker (E014/US6, FR-017): a periodic self-heal that syncs each managed
+    // subscription against the provider's AUTHORITATIVE state to recover from missed/dropped/out-of-order
+    // webhooks — recency-guarded so it never regresses newer state. FAIL-OPEN and cancelable exactly like the
+    // grace worker above: the cadence timer is unref'd, a per-tenant/per-subscription fault is caught + logged
+    // and NEVER crashes boot, and with no live provider wired (the default no-op fetch) each sweep is a no-op.
+    // Reads the billing seam's `providerFetch` (a real provider adapter in production). Tied to app.close().
+    let reconcileWorker;
+    try {
+        const billing = app.billing;
+        if (billing) {
+            reconcileWorker = startReconcileWorker(billing, billing.providerFetch, { logger: app.log });
+            app.log.info({}, "billing reconciliation worker started");
+            app.addHook("onClose", async () => reconcileWorker?.stop());
+        }
+    }
+    catch (err) {
+        app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "billing reconciliation worker failed to start (fail-open)");
+    }
     const shutdown = async (signal) => {
         app.log.info({ signal }, "shutting down");
         try {
@@ -134,7 +169,7 @@ export async function startServer(env = process.env) {
     };
     process.on("SIGTERM", () => void shutdown("SIGTERM"));
     process.on("SIGINT", () => void shutdown("SIGINT"));
-    return { app, pool, config, metricsListener, canary, crlWorker };
+    return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker };
 }
 // CLI entry: `node dist/server/main.js` (the image's serve command).
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`;

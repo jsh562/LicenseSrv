@@ -7,6 +7,8 @@ import { buildRequestLog, createLogger, outcomeFromStatus } from "./observabilit
 import { enterRequestContext, genReqId, sanitizeClientRequestId, setContextTenant } from "./observability/request-context.js";
 /** Logger config used when a caller does not supply `config` (e.g. integration tests). */
 const DEFAULT_LOGGER_CONFIG = { logLevel: "info", logFormat: "json" };
+/** The billing webhook ingestion prefix (E014). Deliveries here carry a provider HMAC over the raw body. */
+const WEBHOOK_PATH_PREFIX = "/v1/billing/webhooks/";
 /**
  * The modular-monolith application skeleton (TR-010). Establishes the tenant-resolution
  * auth context (machine/runtime API key -> tenant + scopes, TR-009) and registers the
@@ -14,8 +16,9 @@ const DEFAULT_LOGGER_CONFIG = { logLevel: "info", logFormat: "json" };
  */
 export function createApp(deps) {
     const app = Fastify({
-        // Pre-built pino instance (Fastify 5 `loggerInstance`); level/format from config (OR-001/004).
-        loggerInstance: createLogger(deps.config ?? DEFAULT_LOGGER_CONFIG),
+        // Pre-built pino instance (Fastify 5 `loggerInstance`); level/format from config (OR-001/004). A caller
+        // may inject its own instance (tests capture the stream to prove no secret is ever logged, FR-018/022).
+        loggerInstance: deps.loggerInstance ?? createLogger(deps.config ?? DEFAULT_LOGGER_CONFIG),
         // We emit exactly ONE structured line per request ourselves (Phase 3), so Fastify's default
         // request/response auto-logging is suppressed to avoid the extra pair of lines (OR-001).
         disableRequestLogging: true,
@@ -44,6 +47,33 @@ export function createApp(deps) {
         // fail-open internally, so it never throws into the response path (OR-014).
         recordRed({ route: req.routeOptions.url ?? "unmatched", method: req.method, outcome, durationMs });
     });
+    // Raw-body capture for the billing webhook plane (E014, HINT-001/FR-002). The provider HMAC is over the
+    // RAW bytes, so it must be verifiable BEFORE any parse. We override the default application/json parser to
+    // receive the raw Buffer, stash it on `req.rawBody` ONLY for the webhook route prefix, and still return
+    // parsed JSON for EVERY route — so JSON parsing elsewhere is unchanged (the parser is faithful to the
+    // default: empty body → 400, malformed JSON → 400). The webhook handler reads `req.rawBody`; all other
+    // handlers see the parsed body exactly as before.
+    app.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+        const buf = body;
+        if (req.url.startsWith(WEBHOOK_PATH_PREFIX))
+            req.rawBody = buf;
+        if (buf.length === 0) {
+            // Match Fastify's default: an application/json request with an empty body is a 400.
+            const err = Object.assign(new Error("Body cannot be empty when content-type is set to 'application/json'"), {
+                statusCode: 400,
+                code: "FST_ERR_CTP_EMPTY_JSON_BODY",
+            });
+            done(err, undefined);
+            return;
+        }
+        try {
+            done(null, JSON.parse(buf.toString("utf8")));
+        }
+        catch (e) {
+            const err = Object.assign(e instanceof Error ? e : new Error(String(e)), { statusCode: 400 });
+            done(err, undefined);
+        }
+    });
     // Human admin console (E005) authenticates via session cookies, not the machine X-API-Key.
     void app.register(cookie);
     app.addHook("preHandler", async (req, reply) => {
@@ -51,6 +81,11 @@ export function createApp(deps) {
             return; // reserved non-tenant routes (probes etc.)
         if (req.url.startsWith("/admin/"))
             return; // human session-auth path (E005); guarded by its own module
+        // The billing webhook plane (E014) is authenticated by the PROVIDER HMAC SIGNATURE over the raw body,
+        // NOT the machine X-API-Key — the connection resolves the tenant, and the module verifies the signature
+        // before any processing (FR-002/AD-001). It must bypass this API-key gate (there is no tenant context yet).
+        if (req.url.startsWith(WEBHOOK_PATH_PREFIX))
+            return;
         const raw = req.headers["x-api-key"];
         if (typeof raw !== "string") {
             await reply.code(401).send({ error: "missing api key" });

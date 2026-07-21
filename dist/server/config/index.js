@@ -46,6 +46,16 @@ const schema = z.object({
     enforcementHeartbeatGraceBeats: z.coerce.number().int().positive().default(2), // tolerate 2 missed beats
     enforcementCrlNextUpdateSecs: z.coerce.number().int().positive().default(86_400), // 1 day
     enforcementOfflineToleranceSecs: z.coerce.number().int().positive().default(3_600), // 1 hour
+    // E014 billing windows — sane defaults: grace ~2 weeks (provider dunning order), signature tolerance
+    // ~5 min, per-connection/per-IP webhook rate ceilings, ledger retention ~1 year, secret rotation ~24h.
+    // The billing module clamps retention above the idempotency floor (≥48h) at load. Retune without a migration.
+    billingDefaultGraceSeconds: z.coerce.number().int().positive().default(1_209_600), // 14 days
+    billingSignatureToleranceSecs: z.coerce.number().int().positive().default(300), // 5 minutes
+    billingWebhookRateMaxPerConnection: z.coerce.number().int().positive().default(120),
+    billingWebhookRateMaxPerIp: z.coerce.number().int().positive().default(300),
+    billingWebhookRateWindow: z.string().min(1).default("1 minute"),
+    billingLedgerRetentionSecs: z.coerce.number().int().positive().default(31_536_000), // 365 days
+    billingSecretRotationWindowSecs: z.coerce.number().int().positive().default(86_400), // 24 hours
 });
 /**
  * Resolve + validate `DATABASE_URL` (with `<VAR>_FILE` support) on its own. The migration job needs the
@@ -84,6 +94,13 @@ export function loadConfig(env = process.env) {
         enforcementHeartbeatGraceBeats: env.ENFORCEMENT_HEARTBEAT_GRACE_BEATS,
         enforcementCrlNextUpdateSecs: env.ENFORCEMENT_CRL_NEXT_UPDATE_SECS,
         enforcementOfflineToleranceSecs: env.ENFORCEMENT_OFFLINE_TOLERANCE_SECS,
+        billingDefaultGraceSeconds: env.BILLING_DEFAULT_GRACE_SECONDS,
+        billingSignatureToleranceSecs: env.BILLING_SIGNATURE_TOLERANCE_SECS,
+        billingWebhookRateMaxPerConnection: env.BILLING_WEBHOOK_RATE_MAX_PER_CONNECTION,
+        billingWebhookRateMaxPerIp: env.BILLING_WEBHOOK_RATE_MAX_PER_IP,
+        billingWebhookRateWindow: env.BILLING_WEBHOOK_RATE_WINDOW,
+        billingLedgerRetentionSecs: env.BILLING_LEDGER_RETENTION_SECS,
+        billingSecretRotationWindowSecs: env.BILLING_SECRET_ROTATION_WINDOW_SECS,
         // Secrets follow the <VAR>_FILE convention (file wins; unset → empty, telemetry stays fail-open).
         fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
         otlpAuthToken: readSecret(env, "OTEL_EXPORTER_OTLP_AUTH_TOKEN") ?? "",
@@ -138,6 +155,14 @@ export function configSummary(c) {
         enforcementHeartbeatGraceBeats: c.enforcementHeartbeatGraceBeats,
         enforcementCrlNextUpdateSecs: c.enforcementCrlNextUpdateSecs,
         enforcementOfflineToleranceSecs: c.enforcementOfflineToleranceSecs,
+        // E014 billing windows (non-secret; deployment-wide defaults, per-connection grace policy resolved live).
+        billingDefaultGraceSeconds: c.billingDefaultGraceSeconds,
+        billingSignatureToleranceSecs: c.billingSignatureToleranceSecs,
+        billingWebhookRateMaxPerConnection: c.billingWebhookRateMaxPerConnection,
+        billingWebhookRateMaxPerIp: c.billingWebhookRateMaxPerIp,
+        billingWebhookRateWindow: c.billingWebhookRateWindow,
+        billingLedgerRetentionSecs: c.billingLedgerRetentionSecs,
+        billingSecretRotationWindowSecs: c.billingSecretRotationWindowSecs,
         // Secrets are never summarised: presence-only, never the value.
         fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",
         otlpAuthToken: c.otlpAuthToken ? "***" : "(unset)",

@@ -1,0 +1,57 @@
+name: billing
+
+# CI for billing-driven entitlement automation (E014): the server billing module (webhook ingestion plane
+# verify→dedupe→apply, the subscription↔license grace overlay driving the E008 lifecycle, the operator config
+# + registry admin plane, and the fail-open grace + reconciliation workers wired into main.ts), consuming the
+# E004 signer + keystore custody, the E007 effective plan, and the E008 issuance/lifecycle services. Gates:
+# typecheck + lint, the real-Postgres integration suite (Testcontainers) with the >=80% coverage gate, a
+# production-scope dependency audit, and a semgrep scan over the billing sources.
+
+on:
+  push:
+    paths:
+      - "src/server/modules/billing/**"
+      - "migrations/0010_billing.sql"
+      - "src/server/app.ts"
+      - "src/server/main.ts"
+      - ".github/workflows/billing.yml"
+  pull_request:
+    paths:
+      - "src/server/modules/billing/**"
+      - "migrations/0010_billing.sql"
+      - "src/server/app.ts"
+      - "src/server/main.ts"
+      - ".github/workflows/billing.yml"
+
+jobs:
+  server:
+    name: server (billing module + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker → Testcontainers spins up Postgres 16 for the billing integration suite
+      # (webhook verify→dedupe→apply; provision→renew→grace→auto-suspend→revoke; reconcile; RLS isolation;
+      # audit attribution; no-card-data + secret-never-leaked; two-granularity rate-limit; fast-ack perf).
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  semgrep:
+    name: semgrep (billing)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/billing

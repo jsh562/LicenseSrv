@@ -22,7 +22,13 @@ let nonce: string;
 let port: number;
 
 beforeAll(async () => {
-  h = await startHarness("perf");
+  // This is the ONLY suite that binds a REAL loopback listener + autocannon load, so it owns two teardown
+  // hardenings (both scoped to this harness instance; other enforcement suites are unaffected):
+  //   - forceCloseConnections:true → app.close() force-destroys the listener's open/keep-alive sockets
+  //     instead of waiting for them to drain, so app.close() returns promptly.
+  //   - teardownTimeoutMs → caps the pg pool drain in stop() (the autocannon load can leave a pool client
+  //     stuck mid-query, making pool.end() hang) and still stops the container, so teardown is deterministic.
+  h = await startHarness("perf", { forceCloseConnections: true, teardownTimeoutMs: 15_000 });
   const lic = await h.issueLicense();
   const act = await h.activateMachine(lic.id, h.sigs("p1", "p2", "p3", "p4", "p5"));
   activationId = act.activationId;
@@ -40,10 +46,13 @@ beforeAll(async () => {
 }, 240_000);
 
 afterAll(async () => {
-  // The autocannon load + fetch keep-alive can leave idle sockets on the bound listener; force them shut so
-  // app.close() during teardown returns promptly even under heavy CI/coverage load (avoids a hook timeout).
+  // The autocannon load can leave open/idle sockets on the bound listener; force them shut so app.close()
+  // returns promptly. stop() then tears down within its bounded teardown budget (see startHarness above), so
+  // the hook can never exceed its cap even under heavy CI/coverage load. This is belt-and-suspenders on top
+  // of the app's forceCloseConnections:true (which app.close() already honors).
+  h?.app.server.closeIdleConnections?.();
   h?.app.server.closeAllConnections?.();
-  await h?.stop(); // app.close() also closes the listener bound above
+  await h?.stop(); // app.close() also closes the listener bound above; the pg pool drain is budget-capped
 }, 240_000);
 
 // The online-path SLO (FR-020/SC-008). p97.5 is the closest published autocannon percentile >= p95.
@@ -69,13 +78,12 @@ describe("online validate performance (integration, real Postgres + real signer)
     const url = `http://127.0.0.1:${port}/v1/validate`;
     const payload = JSON.stringify({ activationId, nonce });
 
-    // Warm up so JIT/route-compile/pool-connect costs are excluded from the measured window.
+    // Warm up so JIT/route-compile/pool-connect costs are excluded from the measured window. We warm via
+    // in-process inject (same route/handler/JIT + DB pool as the real request) rather than global fetch: the
+    // latter opens undici keep-alive sockets that linger at teardown. autocannon (below) remains the REAL,
+    // over-the-socket load driver and is unchanged, so the measured percentiles are unaffected.
     for (let i = 0; i < 25; i++) {
-      await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-api-key": h.validateKey },
-        body: payload,
-      }).then((r) => r.text());
+      await h.validate(h.validateKey, { activationId, nonce });
     }
 
     const result = await autocannon({

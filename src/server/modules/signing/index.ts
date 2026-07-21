@@ -18,6 +18,13 @@ declare module "fastify" {
   interface FastifyInstance {
     signerReady?: () => boolean;
     signer?: Signer;
+    /**
+     * The unlocked keystore custody (generic AES-256-GCM wrap/unwrap). Published alongside the signer so a
+     * later module (E014 billing) can envelope-encrypt a DISTINCT lower-tier secret (the inbound webhook
+     * HMAC secret) under the same master-key custody -- no new crypto, no new key custody. The Ed25519
+     * signing key never crosses this boundary; only the generic wrap/unwrap capability is exposed.
+     */
+    custody?: Custody;
   }
 }
 
@@ -112,6 +119,10 @@ export function registerSigning(app: FastifyInstance, deps: AppDeps): void {
   // Publish the signer for issuance (E008) + air-gap (E010) — the single key-using surface (project-plan
   // Shared Artifact Surface). Consumers call app.signer.sign(tenantId, claims); the private key never leaks.
   app.decorate("signer", module.signer);
+  // Publish the keystore custody so E014 billing can envelope-encrypt the inbound webhook HMAC secret under
+  // the same master key (a distinct, lower-tier secret class — never the Ed25519 signing key). Only the
+  // generic AES-256-GCM wrap/unwrap capability is shared; the signing key stays behind the Signer boundary.
+  app.decorate("custody", module.custody);
 
   registerSigningRoutes(app, deps.pool, module);
 }

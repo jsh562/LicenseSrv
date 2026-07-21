@@ -1,0 +1,5 @@
+E014 Billing-driven Entitlement Automation — QC PASSED on 2026-07-20.
+Enforced gate npm run test:cov exit 0: 88 files/551 tests passed, 9 skipped, 0 failed.
+Global coverage: lines 92.65%, branches 82.17% (>=80/80). Billing module: lines 90.67%, branches 83.27% (>=80).
+typecheck+lint+build clean. npm audit --omit=dev: 0 vulns. Perf p95 ~45ms (<200ms SLO).
+See qc-report.md. QC Auditor PASS + Story Verifier PASS-WITH-NOTES. No blocking defects.

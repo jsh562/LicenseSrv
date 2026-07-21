@@ -38,6 +38,18 @@ export interface AppConfig {
   enforcementHeartbeatGraceBeats: number; // ENFORCEMENT_HEARTBEAT_GRACE_BEATS — missed beats tolerated before lapse (FR-007)
   enforcementCrlNextUpdateSecs: number; // ENFORCEMENT_CRL_NEXT_UPDATE_SECS — CRL validity horizon TTL (FR-009/010)
   enforcementOfflineToleranceSecs: number; // ENFORCEMENT_OFFLINE_TOLERANCE_SECS — per-plan offline-tolerance default (FR-015)
+  // Billing-driven entitlement automation (E014, FR-011/016/019/021/022; per {SAD:ADR-0011}). Deployment-
+  // wide DEFAULTS for the grace window, the webhook signature timestamp tolerance, the per-connection +
+  // per-source-IP webhook rate ceilings, the append-only ledger retention horizon (GDPR; floored above the
+  // idempotency / provider-retry window), and the signing-secret rotation transition window. The billing
+  // module (`modules/billing/config.ts`) reads the same SCREAMING_SNAKE keys LIVE. All defaulted + non-secret.
+  billingDefaultGraceSeconds: number; // BILLING_DEFAULT_GRACE_SECONDS — default grace window (~14d) (FR-011)
+  billingSignatureToleranceSecs: number; // BILLING_SIGNATURE_TOLERANCE_SECS — webhook timestamp recency tolerance (~5m) (FR-002/016)
+  billingWebhookRateMaxPerConnection: number; // BILLING_WEBHOOK_RATE_MAX_PER_CONNECTION — per-connection webhook rate ceiling (FR-019)
+  billingWebhookRateMaxPerIp: number; // BILLING_WEBHOOK_RATE_MAX_PER_IP — per-source-IP (pre-resolution) webhook rate ceiling (FR-019)
+  billingWebhookRateWindow: string; // BILLING_WEBHOOK_RATE_WINDOW — rate-limit window, e.g. "1 minute" (FR-019)
+  billingLedgerRetentionSecs: number; // BILLING_LEDGER_RETENTION_SECS — append-only ledger retention horizon (~365d, floored ≥48h) (FR-021)
+  billingSecretRotationWindowSecs: number; // BILLING_SECRET_ROTATION_WINDOW_SECS — signing-secret rotation transition window (~24h) (FR-022)
 }
 
 /** Thrown when required configuration is missing/invalid. Message lists each offending setting. */
@@ -81,6 +93,16 @@ const schema = z.object({
   enforcementHeartbeatGraceBeats: z.coerce.number().int().positive().default(2), // tolerate 2 missed beats
   enforcementCrlNextUpdateSecs: z.coerce.number().int().positive().default(86_400), // 1 day
   enforcementOfflineToleranceSecs: z.coerce.number().int().positive().default(3_600), // 1 hour
+  // E014 billing windows — sane defaults: grace ~2 weeks (provider dunning order), signature tolerance
+  // ~5 min, per-connection/per-IP webhook rate ceilings, ledger retention ~1 year, secret rotation ~24h.
+  // The billing module clamps retention above the idempotency floor (≥48h) at load. Retune without a migration.
+  billingDefaultGraceSeconds: z.coerce.number().int().positive().default(1_209_600), // 14 days
+  billingSignatureToleranceSecs: z.coerce.number().int().positive().default(300), // 5 minutes
+  billingWebhookRateMaxPerConnection: z.coerce.number().int().positive().default(120),
+  billingWebhookRateMaxPerIp: z.coerce.number().int().positive().default(300),
+  billingWebhookRateWindow: z.string().min(1).default("1 minute"),
+  billingLedgerRetentionSecs: z.coerce.number().int().positive().default(31_536_000), // 365 days
+  billingSecretRotationWindowSecs: z.coerce.number().int().positive().default(86_400), // 24 hours
 });
 
 /**
@@ -120,6 +142,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     enforcementHeartbeatGraceBeats: env.ENFORCEMENT_HEARTBEAT_GRACE_BEATS,
     enforcementCrlNextUpdateSecs: env.ENFORCEMENT_CRL_NEXT_UPDATE_SECS,
     enforcementOfflineToleranceSecs: env.ENFORCEMENT_OFFLINE_TOLERANCE_SECS,
+    billingDefaultGraceSeconds: env.BILLING_DEFAULT_GRACE_SECONDS,
+    billingSignatureToleranceSecs: env.BILLING_SIGNATURE_TOLERANCE_SECS,
+    billingWebhookRateMaxPerConnection: env.BILLING_WEBHOOK_RATE_MAX_PER_CONNECTION,
+    billingWebhookRateMaxPerIp: env.BILLING_WEBHOOK_RATE_MAX_PER_IP,
+    billingWebhookRateWindow: env.BILLING_WEBHOOK_RATE_WINDOW,
+    billingLedgerRetentionSecs: env.BILLING_LEDGER_RETENTION_SECS,
+    billingSecretRotationWindowSecs: env.BILLING_SECRET_ROTATION_WINDOW_SECS,
     // Secrets follow the <VAR>_FILE convention (file wins; unset → empty, telemetry stays fail-open).
     fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
     otlpAuthToken: readSecret(env, "OTEL_EXPORTER_OTLP_AUTH_TOKEN") ?? "",
@@ -174,6 +203,14 @@ export function configSummary(c: AppConfig): Record<string, unknown> {
     enforcementHeartbeatGraceBeats: c.enforcementHeartbeatGraceBeats,
     enforcementCrlNextUpdateSecs: c.enforcementCrlNextUpdateSecs,
     enforcementOfflineToleranceSecs: c.enforcementOfflineToleranceSecs,
+    // E014 billing windows (non-secret; deployment-wide defaults, per-connection grace policy resolved live).
+    billingDefaultGraceSeconds: c.billingDefaultGraceSeconds,
+    billingSignatureToleranceSecs: c.billingSignatureToleranceSecs,
+    billingWebhookRateMaxPerConnection: c.billingWebhookRateMaxPerConnection,
+    billingWebhookRateMaxPerIp: c.billingWebhookRateMaxPerIp,
+    billingWebhookRateWindow: c.billingWebhookRateWindow,
+    billingLedgerRetentionSecs: c.billingLedgerRetentionSecs,
+    billingSecretRotationWindowSecs: c.billingSecretRotationWindowSecs,
     // Secrets are never summarised: presence-only, never the value.
     fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",
     otlpAuthToken: c.otlpAuthToken ? "***" : "(unset)",

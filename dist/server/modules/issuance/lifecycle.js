@@ -13,37 +13,45 @@ async function updateReturning(q, id, set, params) {
     const r = await q(`UPDATE license SET ${set}, updated_at = now() WHERE id = $1 RETURNING ${LICENSE_SELECT}`, [id, ...params]);
     return mapLicenseRow(r.rows[0]);
 }
+/**
+ * Run `fn` in the caller's transaction `q` when supplied (tx-composable seam, HINT-002), else in a fresh
+ * self-managed `withTenant` tenant transaction (the default standalone behaviour). Keeps every existing
+ * caller unchanged while letting E014 compose a transition into its single verify→claim→apply commit.
+ */
+function inTx(pool, tenantId, q, fn) {
+    return q ? fn(q) : withTenant(pool, tenantId, fn);
+}
 /** Revoke a license (terminal). Idempotent: revoking a revoked license is a no-op. */
-export async function revokeLicense(pool, tenantId, actor, id) {
-    return withTenant(pool, tenantId, async (q) => {
-        const cur = await lockLicense(q, id);
+export async function revokeLicense(pool, tenantId, actor, id, q) {
+    return inTx(pool, tenantId, q, async (qq) => {
+        const cur = await lockLicense(qq, id);
         if (cur.status === "revoked") {
-            return mapLicenseRow((await q(`SELECT ${LICENSE_SELECT} FROM license WHERE id = $1`, [id])).rows[0]);
+            return mapLicenseRow((await qq(`SELECT ${LICENSE_SELECT} FROM license WHERE id = $1`, [id])).rows[0]);
         }
-        const license = await updateReturning(q, id, "status = 'revoked'", []);
-        await writeAudit(q, { actor, action: "license.revoked", target: id });
+        const license = await updateReturning(qq, id, "status = 'revoked'", []);
+        await writeAudit(qq, { actor, action: "license.revoked", target: id });
         return license;
     });
 }
 /** Suspend an active license. Refused (409) if not active. */
-export async function suspendLicense(pool, tenantId, actor, id) {
-    return withTenant(pool, tenantId, async (q) => {
-        const cur = await lockLicense(q, id);
+export async function suspendLicense(pool, tenantId, actor, id, q) {
+    return inTx(pool, tenantId, q, async (qq) => {
+        const cur = await lockLicense(qq, id);
         if (cur.status !== "active")
             throw new IssuanceError("invalid_transition", 409, "only an active license can be suspended");
-        const license = await updateReturning(q, id, "status = 'suspended'", []);
-        await writeAudit(q, { actor, action: "license.suspended", target: id });
+        const license = await updateReturning(qq, id, "status = 'suspended'", []);
+        await writeAudit(qq, { actor, action: "license.suspended", target: id });
         return license;
     });
 }
 /** Reinstate a suspended license to active. Refused (409) if not suspended. */
-export async function reinstateLicense(pool, tenantId, actor, id) {
-    return withTenant(pool, tenantId, async (q) => {
-        const cur = await lockLicense(q, id);
+export async function reinstateLicense(pool, tenantId, actor, id, q) {
+    return inTx(pool, tenantId, q, async (qq) => {
+        const cur = await lockLicense(qq, id);
         if (cur.status !== "suspended")
             throw new IssuanceError("invalid_transition", 409, "only a suspended license can be reinstated");
-        const license = await updateReturning(q, id, "status = 'active'", []);
-        await writeAudit(q, { actor, action: "license.reinstated", target: id });
+        const license = await updateReturning(qq, id, "status = 'active'", []);
+        await writeAudit(qq, { actor, action: "license.reinstated", target: id });
         return license;
     });
 }

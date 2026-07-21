@@ -19,6 +19,10 @@ import { type AppConfig, configSummary, loadConfig } from "./config/index.js";
 import { applySecretFile } from "./config/secrets.js";
 import { makePool } from "./db/client.js";
 import { registerHealth } from "./health/index.js";
+import type { BillingDeps } from "./modules/billing/index.js";
+import { type GraceWorkerHandle, startGraceWorker } from "./modules/billing/grace-worker.js";
+import { type ReconcileWorkerHandle, startReconcileWorker } from "./modules/billing/reconcile-worker.js";
+import { type RetentionWorkerHandle, startBillingRetentionWorker } from "./modules/billing/retention-worker.js";
 import { loadEnforcementConfig } from "./modules/enforcement/config.js";
 import { type CrlWorkerHandle, startCrlWorker } from "./modules/enforcement/crl-worker.js";
 import type { Signer } from "./modules/signing/signer.js";
@@ -37,6 +41,12 @@ export interface Server {
   canary?: CanaryHandle;
   /** The signed-CRL publication worker (E013/US4), started fail-open and tied to app.close(). */
   crlWorker?: CrlWorkerHandle;
+  /** The billing grace-expiry auto-suspend worker (E014/US3), started fail-open and tied to app.close(). */
+  graceWorker?: GraceWorkerHandle;
+  /** The billing reconciliation worker (E014/US6), started fail-open and tied to app.close(). */
+  reconcileWorker?: ReconcileWorkerHandle;
+  /** The billing ledger-retention prune worker (E014/US1, FR-021), started fail-open and tied to app.close(). */
+  retentionWorker?: RetentionWorkerHandle;
 }
 
 type WithSigner = FastifyInstance & { signerReady?: () => boolean };
@@ -156,6 +166,68 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     );
   }
 
+  // Billing grace-expiry auto-suspend worker (E014/US3, FR-008): a periodic TIME-driven job that suspends a
+  // license via the E008 service when its subscription's grace window elapses with no recovering payment —
+  // even absent any further webhook. FAIL-OPEN and cancelable exactly like the CRL worker above: the cadence
+  // timer is unref'd, a fault on any tenant/subscription/sweep is caught + logged and NEVER crashes boot
+  // (grace re-fires on the next sweep; recovery from suspended is still allowed). Its lifecycle is tied to
+  // app.close() for clean shutdown.
+  let graceWorker: GraceWorkerHandle | undefined;
+  try {
+    graceWorker = startGraceWorker(pool, { logger: app.log });
+    app.log.info({}, "billing grace-expiry worker started");
+    app.addHook("onClose", async () => graceWorker?.stop());
+  } catch (err: unknown) {
+    app.log.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      "billing grace-expiry worker failed to start (fail-open)",
+    );
+  }
+
+  // Billing reconciliation worker (E014/US6, FR-017): a periodic self-heal that syncs each managed
+  // subscription against the provider's AUTHORITATIVE state to recover from missed/dropped/out-of-order
+  // webhooks — recency-guarded so it never regresses newer state. FAIL-OPEN and cancelable exactly like the
+  // grace worker above: the cadence timer is unref'd, a per-tenant/per-subscription fault is caught + logged
+  // and NEVER crashes boot, and with no live provider wired (the default no-op fetch) each sweep is a no-op.
+  // Reads the billing seam's `providerFetch` (a real provider adapter in production). Tied to app.close().
+  let reconcileWorker: ReconcileWorkerHandle | undefined;
+  try {
+    const billing = (app as FastifyInstance & { billing?: BillingDeps }).billing;
+    if (billing) {
+      reconcileWorker = startReconcileWorker(billing, billing.providerFetch, { logger: app.log });
+      app.log.info({}, "billing reconciliation worker started");
+      app.addHook("onClose", async () => reconcileWorker?.stop());
+    }
+  } catch (err: unknown) {
+    app.log.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      "billing reconciliation worker failed to start (fail-open)",
+    );
+  }
+
+  // Billing ledger-retention prune worker (E014/US1, FR-021/SC-015): a periodic PLATFORM-OWNER maintenance job
+  // that enforces the GDPR-bounded ledger retention horizon by DELETing `billing_event` rows older than
+  // `now - retention` (the horizon is clamped strictly above the idempotency floor so a still-redeliverable
+  // event id is never pruned, FR-003). The append-only ledger has NO app-role DELETE grant, so the prune runs
+  // on the schema-OWNER (privileged) connection — exactly the E013 `pruneExpiredCheckins` platform-owner path,
+  // just scheduled from the app process here (the delete never touches an RLS-forced app-role connection).
+  // FAIL-OPEN and cancelable like the workers above: the cadence timer is unref'd, a prune fault is caught +
+  // logged and NEVER crashes boot. Reads the live retention horizon from the billing seam. Tied to app.close().
+  let retentionWorker: RetentionWorkerHandle | undefined;
+  try {
+    const billing = (app as FastifyInstance & { billing?: BillingDeps }).billing;
+    if (billing) {
+      retentionWorker = startBillingRetentionWorker(pool, billing.config, { logger: app.log });
+      app.log.info({}, "billing ledger-retention worker started");
+      app.addHook("onClose", async () => retentionWorker?.stop());
+    }
+  } catch (err: unknown) {
+    app.log.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      "billing ledger-retention worker failed to start (fail-open)",
+    );
+  }
+
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, "shutting down");
     try {
@@ -170,7 +242,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
-  return { app, pool, config, metricsListener, canary, crlWorker };
+  return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker };
 }
 
 // CLI entry: `node dist/server/main.js` (the image's serve command).

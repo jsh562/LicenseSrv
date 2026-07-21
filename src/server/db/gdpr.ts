@@ -22,9 +22,10 @@ export async function exportTenant(pool: pg.Pool, tenantId: string): Promise<Ten
 }
 
 /**
- * Erase a tenant's personal data (TR-012, GDPR). Deletes the live PII-bearing tables
- * (roles, api keys, users) in FK-safe order while preserving the immutable audit event
- * records, and records the erasure itself as an audit event.
+ * Erase a tenant's personal data (TR-012, GDPR; E014 FR-021). Deletes the live PII-bearing tables
+ * (roles, api keys, users) in FK-safe order while preserving the immutable audit event records, erases the
+ * tenant's billing metadata (the pseudonymous provider connection/subscription refs + the append-only
+ * billing-event ledger), and records the erasure itself as an audit event.
  */
 export async function eraseTenantPersonalData(pool: pg.Pool, tenantId: string): Promise<void> {
   await withTenant(pool, tenantId, async (q) => {
@@ -34,10 +35,18 @@ export async function eraseTenantPersonalData(pool: pg.Pool, tenantId: string): 
     await writeAudit(q, { actor: "platform-admin", action: "tenant.personal_data_erased" });
   });
 
-  // Audit rows are append-only for the app role, so payload redaction + the tenant tombstone
-  // are explicit, privileged (owner) operations: the audit *event* records (actor/action/ts)
-  // are preserved, while any PII-bearing before/after/target payloads are redacted.
+  // Audit rows are append-only for the app role, so payload redaction + the tenant tombstone are explicit,
+  // privileged (owner) operations: the audit *event* records (actor/action/ts) are preserved, while any
+  // PII-bearing before/after/target payloads are redacted. The E014 billing metadata (FR-021) is erased in the
+  // SAME privileged block, and MUST run owner-level because the append-only `billing_event` ledger + the
+  // `subscription` overlay have NO app-role DELETE grant. The deletes respect the intra-tenant FK order
+  // (`billing_event` → `subscription` → `billing_connection`) and are scoped by explicit `tenant_id` (this
+  // connection bypasses RLS), removing the pseudonymous provider subscription/customer references. Idempotent:
+  // a re-run deletes zero rows.
   await privileged(pool, async (q) => {
+    await q("DELETE FROM billing_event WHERE tenant_id = $1", [tenantId]);
+    await q("DELETE FROM subscription WHERE tenant_id = $1", [tenantId]);
+    await q("DELETE FROM billing_connection WHERE tenant_id = $1", [tenantId]);
     await q("UPDATE audit_log SET before = NULL, after = NULL, target = NULL WHERE tenant_id = $1", [
       tenantId,
     ]);
