@@ -1,0 +1,3 @@
+Completed: 2026-07-24
+E015 Floating & Concurrent Seats — all 43 tasks (T001-T043) implemented and validated.
+Lease suite 121 tests; full repo 673 pass/9 skipped/0 fail; global coverage 93.16% line / 82.83% branch; lease module 96.57%/87.38%. perf p95 ~20-28ms.

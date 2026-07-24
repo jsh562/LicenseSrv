@@ -388,3 +388,55 @@ export const billingApi = {
 };
 
 export type BillingApi = typeof billingApi;
+
+// --- Leases / Concurrency (E015) ------------------------------------------------------------------
+
+export type ConcurrencyScope = "session" | "machine" | "user";
+export type LeaseState = "live" | "released" | "reclaimed";
+
+/**
+ * One lease as shown in the admin registry — pseudonymous and read-only. The signed lease handle and any raw
+ * holder reference are NEVER returned here; only the pseudonymous `holderKey` (a salted hash) is exposed.
+ */
+export interface LeaseSummary {
+  id: string;
+  holderKey: string;
+  scope: ConcurrencyScope;
+  status: LeaseState;
+  acquiredAt: string;
+  lastRenewedAt: string;
+  expiresAt: string;
+}
+
+/** A license's lease registry — the lease list plus a concurrency-used-vs-cap summary (bounded + truncated). */
+export interface LeaseRegistry {
+  concurrencyUsed: number;
+  maxConcurrent: number | null;
+  overageAllowance: number;
+  scope: ConcurrencyScope;
+  truncated: boolean;
+  leases: LeaseSummary[];
+}
+
+export interface ForceReleaseResult {
+  id: string;
+  status: "reclaimed";
+}
+
+function leaseStatusQs(status?: LeaseState): string {
+  return status ? `?status=${status}` : "";
+}
+
+/**
+ * The lease (Concurrency) API surface (mirrors the /admin plane of src/server/modules/lease/routes.ts). The
+ * runtime /v1 acquire/renew/release is called by the licensed app (API key), NOT the console — so it is not
+ * here. Admin force-release is a mutation: the CSRF token rides along automatically.
+ */
+export const leaseApi = {
+  listLeases: (licenseId: string, status?: LeaseState) =>
+    request<LeaseRegistry>("GET", `/admin/licenses/${licenseId}/leases${leaseStatusQs(status)}`),
+  forceRelease: (leaseId: string) =>
+    request<ForceReleaseResult>("POST", `/admin/leases/${leaseId}/force-release`),
+};
+
+export type LeaseApi = typeof leaseApi;

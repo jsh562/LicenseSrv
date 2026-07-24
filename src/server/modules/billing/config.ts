@@ -40,6 +40,17 @@ export const DEFAULT_LEDGER_RETENTION_SECS = 31_536_000; // 365 days
 export const IDEMPOTENCY_FLOOR_SECS = 172_800; // 48 hours
 export const DEFAULT_SECRET_ROTATION_WINDOW_SECS = 86_400; // 24 hours
 
+/**
+ * Clock-skew tolerance (seconds) absorbed at the JUST-ROTATED boundary of the rotation window. `secret_rotated_at`
+ * is stamped by the DB clock (`now()` in Postgres), but `isRotationWindowOpen` compares it against the APP-process
+ * clock. If the DB clock LEADS the app clock, a freshly-rotated secret's `secret_rotated_at` reads slightly in the
+ * FUTURE relative to the app, making the naive `elapsed >= 0` guard reject it and spuriously drop the previous
+ * secret for a legitimately-rotated connection. This BOUNDED negative-skew allowance keeps the previous secret
+ * offered across small DB-vs-app drift. It ONLY softens the just-rotated (lower) boundary; the window still closes
+ * correctly at `secretRotationWindowSecs` (the upper bound is unchanged).
+ */
+export const SECRET_ROTATION_SKEW_TOLERANCE_SECS = 120; // 2 minutes of DB-vs-app clock skew
+
 /** Coerce a positive-int env value, falling back to `dflt` on a missing / non-positive / non-numeric input. */
 function intEnv(raw: string | undefined, dflt: number): number {
   const n = Number(raw);
@@ -119,6 +130,12 @@ export function resolveRotationWindowSecs(config: BillingConfig): number {
  * Is the previous signing secret still accepted? True while `now - secretRotatedAt < rotationWindow`
  * (FR-022). A null `secretRotatedAt` (never rotated) → false. Drives whether the verifier is offered the
  * `signing_secret_prev` alongside the current secret.
+ *
+ * The lower boundary tolerates a small negative skew (`SECRET_ROTATION_SKEW_TOLERANCE_SECS`): `secret_rotated_at`
+ * is stamped by the DB clock while `now` is the app clock, so a just-rotated secret can read slightly future-dated
+ * when the DB clock leads the app. Within that bounded allowance the window is still OPEN (the previous secret
+ * stays offered). The upper boundary is unchanged — the window still closes once `elapsedSecs` reaches
+ * `secretRotationWindowSecs`, so this never extends acceptance past the configured window.
  */
 export function isRotationWindowOpen(
   config: BillingConfig,
@@ -127,5 +144,5 @@ export function isRotationWindowOpen(
 ): boolean {
   if (!secretRotatedAt) return false;
   const elapsedSecs = (now.getTime() - secretRotatedAt.getTime()) / 1000;
-  return elapsedSecs >= 0 && elapsedSecs < config.secretRotationWindowSecs;
+  return elapsedSecs >= -SECRET_ROTATION_SKEW_TOLERANCE_SECS && elapsedSecs < config.secretRotationWindowSecs;
 }

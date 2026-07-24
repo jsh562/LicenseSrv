@@ -40,10 +40,10 @@ description: "Task list for feature implementation: Floating & Concurrent Seats 
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Extend coverage globs for src/server/modules/lease/** (≥80% line+branch) in vitest.config.ts
-- [ ] T002 {FR-009,FR-012,FR-017,FR-026} lease config keys (timings, scope, cap/overage, rate-limit, handle toggle, holder-key salt) in src/server/config/index.ts
-- [ ] T003 Module scaffold: registerLease seam (pool + signer + effective + activation-read + config) + LeaseError + app.lease in src/server/modules/lease/index.ts → exports: registerLease, LeaseError
-- [ ] T004 Register registerLease after registerEnforcement (end of MODULES, after registerBilling) in src/server/modules/index.ts ← T003:registerLease
+- [X] T001 Extend coverage globs for src/server/modules/lease/** (≥80% line+branch) in vitest.config.ts
+- [X] T002 {FR-009,FR-012,FR-017,FR-026} lease config keys (timings, scope, cap/overage, rate-limit, handle toggle, holder-key salt) in src/server/config/index.ts
+- [X] T003 Module scaffold: registerLease seam (pool + signer + effective + activation-read + config) + LeaseError + app.lease in src/server/modules/lease/index.ts → exports: registerLease, LeaseError
+- [X] T004 Register registerLease after registerEnforcement (end of MODULES, after registerBilling) in src/server/modules/index.ts ← T003:registerLease
 
 ---
 
@@ -51,16 +51,16 @@ description: "Task list for feature implementation: Floating & Concurrent Seats 
 
 **The migration `0011`, the module scaffold + seam (Phase 1), and the shared building blocks — `config.ts` (timing/scope/cap/salt resolvers + the TTL≥3×heartbeat invariant), `holder-key.ts` (scope→salted-hash derivation), `handle.ts` (E004-signed lease handle), and `lease-repo.ts` (race-safe acquire, fence renew, release, oldest-first sweep, list) — block every delivery story (acquire AND renew/release/reclaim compose them). Complete before any US phase. Unit tests (T007–T009) are TDD-first and precede their implementations.**
 
-- [ ] T005 {FR-005,FR-009} Migration 0011: plan + license expand-only concurrency snapshot columns + CHECKs (TTL≥3×HB, scope/overage/policy) in migrations/0011_leases.sql
-- [ ] T006 {FR-014,FR-019,FR-021} Migration 0011: lease table + indexes (one_live/seat/reclaim/prune) + forced RLS/policy + grants (no DELETE) in migrations/0011_leases.sql
-- [ ] T007 [P] Unit (TDD): config resolvers — timings + TTL≥3×HB invariant + scope + cap/overage + rate-limit + salt in src/server/modules/lease/__tests__/config.unit.test.ts
-- [ ] T008 [P] Unit (TDD): scope→holder-key salted hash (session/machine/user) + generation-fence predicate + overage math in src/server/modules/lease/__tests__/derive.unit.test.ts
-- [ ] T009 [P] Unit (TDD): E004-signed lease handle (LICSRV-LEASE-v1) — tamper-evident verify, TTL-bounded, no key material in src/server/modules/lease/__tests__/handle.unit.test.ts
-- [ ] T010 [P] {FR-009,FR-012,FR-017,FR-023,FR-026} Timings + TTL≥3×HB + scope + cap/overage + rate-limit + handle toggle + salt resolvers in src/server/modules/lease/config.ts → exports: LeaseConfig
-- [ ] T011 [P] {FR-020,FR-023,FR-026} [COMPLETES FR-026] Scope→holder-key salted hash (session/machine/user; raw never stored) in src/server/modules/lease/holder-key.ts → exports: deriveHolderKey
-- [ ] T012 [P] {FR-022} E004-signed short-TTL lease handle (domain LICSRV-LEASE-v1; public + opaque keyId) in src/server/modules/lease/handle.ts → exports: signLeaseHandle
-- [ ] T013 {FR-003,FR-007,FR-008,FR-009,FR-010,FR-011} [COMPLETES FR-009] Advisory-lock acquire + fence renew + release + sweep + list in src/server/modules/lease/lease-repo.ts → exports: LeaseRepo
-- [ ] T014 [P] {FR-019,FR-021} [COMPLETES FR-021] Migration IT: RLS unset-GUC→0 + FK NO ACTION + one-live + nonce uniq in src/server/modules/lease/__tests__/migration.integration.test.ts after:T006
+- [X] T005 {FR-005,FR-009} Migration 0011: plan + license expand-only concurrency snapshot columns + CHECKs (TTL≥3×HB, scope/overage/policy) in migrations/0011_leases.sql
+- [X] T006 {FR-014,FR-019,FR-021} Migration 0011: lease table + indexes (one_live/seat/reclaim/prune) + forced RLS/policy + grants (no DELETE) in migrations/0011_leases.sql
+- [X] T007 [P] Unit (TDD): config resolvers — timings + TTL≥3×HB invariant + scope + cap/overage + rate-limit + salt in src/server/modules/lease/__tests__/config.unit.test.ts
+- [X] T008 [P] Unit (TDD): scope→holder-key salted hash (session/machine/user) + generation-fence predicate + overage math in src/server/modules/lease/__tests__/derive.unit.test.ts
+- [X] T009 [P] Unit (TDD): E004-signed lease handle (LICSRV-LEASE-v1) — tamper-evident verify, TTL-bounded, no key material in src/server/modules/lease/__tests__/handle.unit.test.ts
+- [X] T010 [P] {FR-009,FR-012,FR-017,FR-023,FR-026} Timings + TTL≥3×HB + scope + cap/overage + rate-limit + handle toggle + salt resolvers in src/server/modules/lease/config.ts → exports: LeaseConfig
+- [X] T011 [P] {FR-020,FR-023,FR-026} [COMPLETES FR-026] Scope→holder-key salted hash (session/machine/user; raw never stored) in src/server/modules/lease/holder-key.ts → exports: deriveHolderKey
+- [X] T012 [P] {FR-022} E004-signed short-TTL lease handle (domain LICSRV-LEASE-v1; public + opaque keyId) in src/server/modules/lease/handle.ts → exports: signLeaseHandle
+- [X] T013 {FR-003,FR-007,FR-008,FR-009,FR-010,FR-011} [COMPLETES FR-009] Advisory-lock acquire + fence renew + release + sweep + list in src/server/modules/lease/lease-repo.ts → exports: LeaseRepo
+- [X] T014 [P] {FR-019,FR-021} [COMPLETES FR-021] Migration IT: RLS unset-GUC→0 + FK NO ACTION + one-live + nonce uniq in src/server/modules/lease/__tests__/migration.integration.test.ts after:T006
 
 ---
 
@@ -68,12 +68,12 @@ description: "Task list for feature implementation: Floating & Concurrent Seats 
 
 **Independent test**: configure a license with a concurrency cap of 2; acquire two leases successfully; a third concurrent-session acquire is refused `409 seat_capacity_exhausted`; then fire many simultaneous acquires for one free seat and confirm exactly one succeeds — the live-lease count never exceeds the effective cap. An acquire against a license with no `max_concurrent` is refused fail-closed `403 no_concurrency_entitlement`; against a suspended/revoked/expired license `409 license_not_active`; a replayed `acquireToken` returns the original lease (200) with no second seat; a missing/wrong-scope key → 401/403 (SC-001/002/003/004/011/019/020).
 
-- [ ] T015 [P] [US1] {FR-004,FR-005,FR-006,FR-022} IT (TDD): acquire 201; absent-cap→403; non-active→409; hard-cap→409; signer→503 in src/server/modules/lease/__tests__/acquire.integration.test.ts
-- [ ] T016 [P] [US1] {FR-003} IT (TDD): concurrency race — N acquires, exactly C succeed, live≤effective cap (SC-002) in src/server/modules/lease/__tests__/concurrency-race.integration.test.ts
-- [ ] T017 [P] [US1] {FR-014,FR-023} IT (TDD): token replay→200 original; one-live re-acquire; machine shares seat (SC-016) in src/server/modules/lease/__tests__/idempotency-scope.integration.test.ts
-- [ ] T018 [US1] {FR-005,FR-006,FR-023} [COMPLETES FR-005,FR-006,FR-023] Entitlement fail-closed + scope→holder-key in src/server/modules/lease/acquire.ts ← T011:deriveHolderKey
-- [ ] T019 [US1] {FR-003,FR-004,FR-014,FR-022,FR-025} [COMPLETES FR-003,FR-004,FR-014,FR-025] Advisory-lock cap + token replay + gating + handle in src/server/modules/lease/acquire.ts after:T018
-- [ ] T020 [US1] {FR-001,FR-002} [COMPLETES FR-001] POST /v1/leases route (lease scope, rate-limited, 201 fresh/200 replay + Location) in src/server/modules/lease/routes.ts after:T019
+- [X] T015 [P] [US1] {FR-004,FR-005,FR-006,FR-022} IT (TDD): acquire 201; absent-cap→403; non-active→409; hard-cap→409; signer→503 in src/server/modules/lease/__tests__/acquire.integration.test.ts
+- [X] T016 [P] [US1] {FR-003} IT (TDD): concurrency race — N acquires, exactly C succeed, live≤effective cap (SC-002) in src/server/modules/lease/__tests__/concurrency-race.integration.test.ts
+- [X] T017 [P] [US1] {FR-014,FR-023} IT (TDD): token replay→200 original; one-live re-acquire; machine shares seat (SC-016) in src/server/modules/lease/__tests__/idempotency-scope.integration.test.ts
+- [X] T018 [US1] {FR-005,FR-006,FR-023} [COMPLETES FR-005,FR-006,FR-023] Entitlement fail-closed + scope→holder-key in src/server/modules/lease/acquire.ts ← T011:deriveHolderKey
+- [X] T019 [US1] {FR-003,FR-004,FR-014,FR-022,FR-025} [COMPLETES FR-003,FR-004,FR-014,FR-025] Advisory-lock cap + token replay + gating + handle in src/server/modules/lease/acquire.ts after:T018
+- [X] T020 [US1] {FR-001,FR-002} [COMPLETES FR-001] POST /v1/leases route (lease scope, rate-limited, 201 fresh/200 replay + Location) in src/server/modules/lease/routes.ts after:T019
 
 ---
 
@@ -81,11 +81,11 @@ description: "Task list for feature implementation: Floating & Concurrent Seats 
 
 **Independent test**: acquire a lease, renew it and confirm `expiresAt`/`lastRenewedAt` advance (server-computed) with no extra seat consumed and the live count unchanged; release it and confirm a different session can immediately acquire the freed seat; release again (and an unknown/cross-tenant leaseId) → `200` idempotent no-op that never drives the count below zero; a stale/fenced renew after reclaim → `409 lease_not_renewable`; with signed-handle mode on, a signer fault on renew → `503` leaving the lease and its seat unchanged (SC-005/006/008/021).
 
-- [ ] T021 [P] [US2] {FR-007,FR-011} IT (TDD): renew extends expiry keeps 1 seat; stale/fenced→409; signer→503 unchanged (SC-005/008/021) in src/server/modules/lease/__tests__/renew.integration.test.ts
-- [ ] T022 [P] [US2] {FR-008} IT (TDD): release frees seat; idempotent unknown/terminal→200 no-op, never <0 (SC-006) in src/server/modules/lease/__tests__/release.integration.test.ts
-- [ ] T023 [US2] {FR-007,FR-011,FR-022,FR-024} [COMPLETES FR-007,FR-011,FR-022] Fence-guarded renew + license re-check + handle refresh in src/server/modules/lease/renew.ts ← T013:LeaseRepo
-- [ ] T024 [US2] {FR-008} [COMPLETES FR-008] Idempotent release (unknown/terminal→no-op, never below zero) in src/server/modules/lease/release.ts ← T013:LeaseRepo
-- [ ] T025 [US2] {FR-002} [COMPLETES FR-002] POST /v1/leases/:leaseId/renew + /release (lease scope, rate-limited; release 200 no-op) in src/server/modules/lease/routes.ts after:T020
+- [X] T021 [P] [US2] {FR-007,FR-011} IT (TDD): renew extends expiry keeps 1 seat; stale/fenced→409; signer→503 unchanged (SC-005/008/021) in src/server/modules/lease/__tests__/renew.integration.test.ts
+- [X] T022 [P] [US2] {FR-008} IT (TDD): release frees seat; idempotent unknown/terminal→200 no-op, never <0 (SC-006) in src/server/modules/lease/__tests__/release.integration.test.ts
+- [X] T023 [US2] {FR-007,FR-011,FR-022,FR-024} [COMPLETES FR-007,FR-011,FR-022] Fence-guarded renew + license re-check + handle refresh in src/server/modules/lease/renew.ts ← T013:LeaseRepo
+- [X] T024 [US2] {FR-008} [COMPLETES FR-008] Idempotent release (unknown/terminal→no-op, never below zero) in src/server/modules/lease/release.ts ← T013:LeaseRepo
+- [X] T025 [US2] {FR-002} [COMPLETES FR-002] POST /v1/leases/:leaseId/renew + /release (lease scope, rate-limited; release 200 no-op) in src/server/modules/lease/routes.ts after:T020
 
 ---
 
@@ -93,10 +93,10 @@ description: "Task list for feature implementation: Floating & Concurrent Seats 
 
 **Independent test**: with a full cap, acquire a lease and stop heartbeating; advance the injected clock past TTL + grace; confirm the fail-open sweeper reclaims the seat (bounded, oldest-expired-first) so a new acquire succeeds with no operator action; submit a stale renew for the reclaimed lease → `409 lease_not_renewable`; a sweeper fault on one license never blocks acquire/renew/release elsewhere. A revoked license's live leases are proactively reclaimed within the sweep interval while a suspended license's lapse on the TTL+grace timer; every reclamation is attributed to a synthetic worker actor + the lease/license id (SC-007/008/017).
 
-- [ ] T026 [P] [US3] {FR-010} IT (TDD): past TTL+grace→sweeper reclaims, new acquire ok; fail-open one license (SC-007/008) in src/server/modules/lease/__tests__/reclaim.integration.test.ts
-- [ ] T027 [P] [US3] {FR-024} IT (TDD): revoke→proactive reclaim in sweep; suspend→timer; renew vs revoked→409 (SC-017/004) in src/server/modules/lease/__tests__/revoke-reclaim.integration.test.ts
-- [ ] T028 [US3] {FR-010,FR-018,FR-024} [COMPLETES FR-024] Fail-open sweeper (oldest-first) + revoke-reclaim + synthetic audit in src/server/modules/lease/reclaim-worker.ts → exports: reclaimSweep
-- [ ] T029 [US3] {FR-010} [COMPLETES FR-010] Start reclaim worker fail-open, unref'd, on app.close() in src/server/main.ts after:T028 ← T028:reclaimSweep
+- [X] T026 [P] [US3] {FR-010} IT (TDD): past TTL+grace→sweeper reclaims, new acquire ok; fail-open one license (SC-007/008) in src/server/modules/lease/__tests__/reclaim.integration.test.ts
+- [X] T027 [P] [US3] {FR-024} IT (TDD): revoke→proactive reclaim in sweep; suspend→timer; renew vs revoked→409 (SC-017/004) in src/server/modules/lease/__tests__/revoke-reclaim.integration.test.ts
+- [X] T028 [US3] {FR-010,FR-018,FR-024} [COMPLETES FR-024] Fail-open sweeper (oldest-first) + revoke-reclaim + synthetic audit in src/server/modules/lease/reclaim-worker.ts → exports: reclaimSweep
+- [X] T029 [US3] {FR-010} [COMPLETES FR-010] Start reclaim worker fail-open, unref'd, on app.close() in src/server/main.ts after:T028 ← T028:reclaimSweep
 
 ---
 
@@ -104,8 +104,8 @@ description: "Task list for feature implementation: Floating & Concurrent Seats 
 
 **Independent test**: with a hard cap, acquire at capacity is refused `409 seat_capacity_exhausted`; enable a soft cap with an allowance of 1 → one acquisition above the base cap succeeds, is flagged `overage: true`, and is metered to the append-only audit log with the concurrency level reached; a further acquisition beyond the allowance is refused (effective cap = `max_concurrent + allowance`; the audit meter is the authoritative record, the lease `overage` boolean is a non-authoritative flag; no card data or raw hardware ids) (SC-009).
 
-- [ ] T030 [P] [US4] {FR-012,FR-013} IT (TDD): hard cap refuse; soft admits in allowance (metered); beyond→refuse (SC-009) in src/server/modules/lease/__tests__/overage.integration.test.ts
-- [ ] T031 [US4] {FR-012,FR-013} [COMPLETES FR-012,FR-013] Soft-cap effective-cap admission + over-base overage audit meter in src/server/modules/lease/acquire.ts after:T019
+- [X] T030 [P] [US4] {FR-012,FR-013} IT (TDD): hard cap refuse; soft admits in allowance (metered); beyond→refuse (SC-009) in src/server/modules/lease/__tests__/overage.integration.test.ts
+- [X] T031 [US4] {FR-012,FR-013} [COMPLETES FR-012,FR-013] Soft-cap effective-cap admission + over-base overage audit meter in src/server/modules/lease/acquire.ts after:T019
 
 ---
 
@@ -113,23 +113,23 @@ description: "Task list for feature implementation: Floating & Concurrent Seats 
 
 **Independent test**: acquire two leases under a license, open the license's lease registry (GET, viewer RBAC) and confirm both live leases plus a concurrency-used-vs-cap summary appear — pseudonymous `holderKey`, status, acquired/last-renewed/expires timestamps, deterministically ordered, bounded to 1000 with `truncated`, NO handle; a viewer cannot force-release (`403` + security event) while an admin can (seat freed); a missing/mismatched CSRF token on force-release → `403` fail-closed (security event); a cross-tenant `licenseId`/`leaseId` → `404` (SC-010/012/013).
 
-- [ ] T032 [P] [US5] {FR-015} IT (TDD): registry live+ended (pseudonymous, used-vs-cap, truncated); viewer reads; cross-tenant→404 in src/server/modules/lease/__tests__/registry.integration.test.ts
-- [ ] T033 [P] [US5] {FR-016} IT (TDD): admin force-release frees seat; viewer→403 sec event; bad CSRF→403 (SC-010/013) in src/server/modules/lease/__tests__/force-release.integration.test.ts
-- [ ] T034 [US5] {FR-015} GET /admin/licenses/:licenseId/leases (session + viewer RBAC; bounded 1000 + truncated) in src/server/modules/lease/routes.ts after:T025 ← T013:LeaseRepo
-- [ ] T035 [US5] {FR-016,FR-018} [COMPLETES FR-016] POST /admin/leases/:leaseId/force-release (admin RBAC + CSRF, audited, idempotent) in src/server/modules/lease/routes.ts after:T034
-- [ ] T036 [US5] {FR-015} [COMPLETES FR-015] leaseApi + Concurrency/Leases page (registry + force-release) + Shell nav in src/admin-ui/src/pages/leases/Leases.tsx after:T035
+- [X] T032 [P] [US5] {FR-015} IT (TDD): registry live+ended (pseudonymous, used-vs-cap, truncated); viewer reads; cross-tenant→404 in src/server/modules/lease/__tests__/registry.integration.test.ts
+- [X] T033 [P] [US5] {FR-016} IT (TDD): admin force-release frees seat; viewer→403 sec event; bad CSRF→403 (SC-010/013) in src/server/modules/lease/__tests__/force-release.integration.test.ts
+- [X] T034 [US5] {FR-015} GET /admin/licenses/:licenseId/leases (session + viewer RBAC; bounded 1000 + truncated) in src/server/modules/lease/routes.ts after:T025 ← T013:LeaseRepo
+- [X] T035 [US5] {FR-016,FR-018} [COMPLETES FR-016] POST /admin/leases/:leaseId/force-release (admin RBAC + CSRF, audited, idempotent) in src/server/modules/lease/routes.ts after:T034
+- [X] T036 [US5] {FR-015} [COMPLETES FR-015] leaseApi + Concurrency/Leases page (registry + force-release) + Shell nav in src/admin-ui/src/pages/leases/Leases.tsx after:T035
 
 ---
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-- [ ] T037 {FR-017,FR-018} [COMPLETES FR-017] Rate-limit acquire/renew/release per API key (429 + Retry-After) + audit security event in src/server/modules/lease/routes.ts after:T035
-- [ ] T038 [P] {FR-018} [COMPLETES FR-018] Audit IT: every op + denials audited; reclaim→synthetic actor + ids in src/server/modules/lease/__tests__/audit.integration.test.ts
-- [ ] T039 [P] {FR-019} [COMPLETES FR-019] Isolation IT: cross-tenant→404 all routes; RLS unset-GUC→0 (SC-012) in src/server/modules/lease/__tests__/isolation.integration.test.ts
-- [ ] T040 [P] {FR-020} [COMPLETES FR-020] Security IT: no key/raw holder/handle secret/raw hw/card in any response/log/audit (SC-015) in src/server/modules/lease/__tests__/secret-leakage.test.ts
-- [ ] T041 [P] Perf IT: acquire/renew ack latency p95 < ~200ms in src/server/modules/lease/__tests__/perf.integration.test.ts
-- [ ] T042 Enforce ≥80% line+branch coverage of src/server/modules/lease/** in vitest.config.ts after:T041
-- [ ] T043 [P] Add lease CI (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep; SHA-pinned) in .github/workflows/lease.yml mirroring billing.yml
+- [X] T037 {FR-017,FR-018} [COMPLETES FR-017] Rate-limit acquire/renew/release per API key (429 + Retry-After) + audit security event in src/server/modules/lease/routes.ts after:T035
+- [X] T038 [P] {FR-018} [COMPLETES FR-018] Audit IT: every op + denials audited; reclaim→synthetic actor + ids in src/server/modules/lease/__tests__/audit.integration.test.ts
+- [X] T039 [P] {FR-019} [COMPLETES FR-019] Isolation IT: cross-tenant→404 all routes; RLS unset-GUC→0 (SC-012) in src/server/modules/lease/__tests__/isolation.integration.test.ts
+- [X] T040 [P] {FR-020} [COMPLETES FR-020] Security IT: no key/raw holder/handle secret/raw hw/card in any response/log/audit (SC-015) in src/server/modules/lease/__tests__/secret-leakage.test.ts
+- [X] T041 [P] Perf IT: acquire/renew ack latency p95 < ~200ms in src/server/modules/lease/__tests__/perf.integration.test.ts
+- [X] T042 Enforce ≥80% line+branch coverage of src/server/modules/lease/** in vitest.config.ts after:T041
+- [X] T043 [P] Add lease CI (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep; SHA-pinned) in .github/workflows/lease.yml mirroring billing.yml
 
 ---
 

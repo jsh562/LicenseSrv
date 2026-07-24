@@ -17,8 +17,11 @@ import { makePool } from "./db/client.js";
 import { registerHealth } from "./health/index.js";
 import { startGraceWorker } from "./modules/billing/grace-worker.js";
 import { startReconcileWorker } from "./modules/billing/reconcile-worker.js";
+import { startBillingRetentionWorker } from "./modules/billing/retention-worker.js";
 import { loadEnforcementConfig } from "./modules/enforcement/config.js";
 import { startCrlWorker } from "./modules/enforcement/crl-worker.js";
+import { loadLeaseConfig } from "./modules/lease/config.js";
+import { startReclaimWorker } from "./modules/lease/reclaim-worker.js";
 import { makeCrossTenantProbe, startCanary } from "./observability/canary.js";
 import { createLogger } from "./observability/logger.js";
 import { setPoolStatsSource, startMetricsListener } from "./observability/metrics.js";
@@ -155,6 +158,46 @@ export async function startServer(env = process.env) {
     catch (err) {
         app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "billing reconciliation worker failed to start (fail-open)");
     }
+    // Billing ledger-retention prune worker (E014/US1, FR-021/SC-015): a periodic PLATFORM-OWNER maintenance job
+    // that enforces the GDPR-bounded ledger retention horizon by DELETing `billing_event` rows older than
+    // `now - retention` (the horizon is clamped strictly above the idempotency floor so a still-redeliverable
+    // event id is never pruned, FR-003). The append-only ledger has NO app-role DELETE grant, so the prune runs
+    // on the schema-OWNER (privileged) connection — exactly the E013 `pruneExpiredCheckins` platform-owner path,
+    // just scheduled from the app process here (the delete never touches an RLS-forced app-role connection).
+    // FAIL-OPEN and cancelable like the workers above: the cadence timer is unref'd, a prune fault is caught +
+    // logged and NEVER crashes boot. Reads the live retention horizon from the billing seam. Tied to app.close().
+    let retentionWorker;
+    try {
+        const billing = app.billing;
+        if (billing) {
+            retentionWorker = startBillingRetentionWorker(pool, billing.config, { logger: app.log });
+            app.log.info({}, "billing ledger-retention worker started");
+            app.addHook("onClose", async () => retentionWorker?.stop());
+        }
+    }
+    catch (err) {
+        app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "billing ledger-retention worker failed to start (fail-open)");
+    }
+    // Floating-seat lease reclaim sweeper (E015/US3, FR-010/024): a periodic TIME-driven job that returns dead-
+    // machine seats to the pool (TTL + grace-lapsed live leases) and proactively reclaims a revoked license's
+    // live leases (revoke-reclaim), attributing every reclamation to a synthetic worker actor. FAIL-OPEN and
+    // cancelable exactly like the workers above: the cadence timer is unref'd, a per-tenant/sweep fault is
+    // caught + logged and NEVER crashes boot (or blocks the live acquire/renew/release surface). Tied to
+    // app.close() for clean shutdown.
+    let reclaimWorker;
+    try {
+        const leaseConfig = loadLeaseConfig(env);
+        reclaimWorker = startReclaimWorker(pool, {
+            intervalMs: leaseConfig.sweepSeconds * 1_000,
+            maxBatch: leaseConfig.sweepMaxBatch,
+            logger: app.log,
+        });
+        app.log.info({}, "lease reclaim worker started");
+        app.addHook("onClose", async () => reclaimWorker?.stop());
+    }
+    catch (err) {
+        app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "lease reclaim worker failed to start (fail-open)");
+    }
     const shutdown = async (signal) => {
         app.log.info({ signal }, "shutting down");
         try {
@@ -169,7 +212,7 @@ export async function startServer(env = process.env) {
     };
     process.on("SIGTERM", () => void shutdown("SIGTERM"));
     process.on("SIGINT", () => void shutdown("SIGINT"));
-    return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker };
+    return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker };
 }
 // CLI entry: `node dist/server/main.js` (the image's serve command).
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`;

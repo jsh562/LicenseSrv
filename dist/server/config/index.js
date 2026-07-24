@@ -56,6 +56,23 @@ const schema = z.object({
     billingWebhookRateWindow: z.string().min(1).default("1 minute"),
     billingLedgerRetentionSecs: z.coerce.number().int().positive().default(31_536_000), // 365 days
     billingSecretRotationWindowSecs: z.coerce.number().int().positive().default(86_400), // 24 hours
+    // E015 floating-seat lease defaults — heartbeat ~10m, TTL ~30m (≥ 3× heartbeat), grace ~5m, sweep ~1m,
+    // scope 'session', hard cap (overage 0), bounded sweep batch 1000, runtime rate ceiling sized for
+    // heartbeat cadence. The lease module clamps TTL ≥ 3× heartbeat at load. Retune without a migration.
+    leaseHeartbeatSeconds: z.coerce.number().int().positive().default(600), // 10 minutes
+    leaseTtlSeconds: z.coerce.number().int().positive().default(1_800), // 30 minutes
+    leaseGraceSeconds: z.coerce.number().int().min(0).default(300), // 5 minutes (0 allowed)
+    leaseSweepSeconds: z.coerce.number().int().positive().default(60), // 1 minute
+    leaseScope: z.enum(["session", "machine", "user"]).default("session"),
+    leaseOverageAllowance: z.coerce.number().int().min(0).default(0), // 0 = hard cap
+    leaseSweepMaxBatch: z.coerce.number().int().positive().default(1_000),
+    leaseRateMax: z.coerce.number().int().positive().default(120),
+    leaseRateWindow: z.string().min(1).default("1 minute"),
+    leaseSignedHandle: z
+        .enum(["true", "false", "1", "0"])
+        .transform((v) => v === "true" || v === "1")
+        .default("true"),
+    leaseHolderKeySalt: z.string().default("licensesrv-lease-salt"),
 });
 /**
  * Resolve + validate `DATABASE_URL` (with `<VAR>_FILE` support) on its own. The migration job needs the
@@ -101,7 +118,18 @@ export function loadConfig(env = process.env) {
         billingWebhookRateWindow: env.BILLING_WEBHOOK_RATE_WINDOW,
         billingLedgerRetentionSecs: env.BILLING_LEDGER_RETENTION_SECS,
         billingSecretRotationWindowSecs: env.BILLING_SECRET_ROTATION_WINDOW_SECS,
-        // Secrets follow the <VAR>_FILE convention (file wins; unset → empty, telemetry stays fail-open).
+        leaseHeartbeatSeconds: env.LEASE_HEARTBEAT_SECONDS,
+        leaseTtlSeconds: env.LEASE_TTL_SECONDS,
+        leaseGraceSeconds: env.LEASE_GRACE_SECONDS,
+        leaseSweepSeconds: env.LEASE_SWEEP_SECONDS,
+        leaseScope: env.LEASE_SCOPE,
+        leaseOverageAllowance: env.LEASE_OVERAGE_ALLOWANCE,
+        leaseSweepMaxBatch: env.LEASE_SWEEP_MAX_BATCH,
+        leaseRateMax: env.LEASE_RATE_MAX,
+        leaseRateWindow: env.LEASE_RATE_WINDOW,
+        leaseSignedHandle: env.LEASE_SIGNED_HANDLE,
+        // Secrets follow the <VAR>_FILE convention (file wins; unset → the documented default salt).
+        leaseHolderKeySalt: readSecret(env, "LEASE_HOLDER_KEY_SALT") ?? "licensesrv-lease-salt",
         fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
         otlpAuthToken: readSecret(env, "OTEL_EXPORTER_OTLP_AUTH_TOKEN") ?? "",
     });
@@ -163,7 +191,19 @@ export function configSummary(c) {
         billingWebhookRateWindow: c.billingWebhookRateWindow,
         billingLedgerRetentionSecs: c.billingLedgerRetentionSecs,
         billingSecretRotationWindowSecs: c.billingSecretRotationWindowSecs,
+        // E015 lease windows (non-secret; deployment-wide defaults, per-license snapshot resolved live).
+        leaseHeartbeatSeconds: c.leaseHeartbeatSeconds,
+        leaseTtlSeconds: c.leaseTtlSeconds,
+        leaseGraceSeconds: c.leaseGraceSeconds,
+        leaseSweepSeconds: c.leaseSweepSeconds,
+        leaseScope: c.leaseScope,
+        leaseOverageAllowance: c.leaseOverageAllowance,
+        leaseSweepMaxBatch: c.leaseSweepMaxBatch,
+        leaseRateMax: c.leaseRateMax,
+        leaseRateWindow: c.leaseRateWindow,
+        leaseSignedHandle: c.leaseSignedHandle,
         // Secrets are never summarised: presence-only, never the value.
+        leaseHolderKeySalt: c.leaseHolderKeySalt ? "***" : "(unset)",
         fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",
         otlpAuthToken: c.otlpAuthToken ? "***" : "(unset)",
     };

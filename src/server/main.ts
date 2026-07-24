@@ -25,6 +25,8 @@ import { type ReconcileWorkerHandle, startReconcileWorker } from "./modules/bill
 import { type RetentionWorkerHandle, startBillingRetentionWorker } from "./modules/billing/retention-worker.js";
 import { loadEnforcementConfig } from "./modules/enforcement/config.js";
 import { type CrlWorkerHandle, startCrlWorker } from "./modules/enforcement/crl-worker.js";
+import { loadLeaseConfig } from "./modules/lease/config.js";
+import { type ReclaimWorkerHandle, startReclaimWorker } from "./modules/lease/reclaim-worker.js";
 import type { Signer } from "./modules/signing/signer.js";
 import { type CanaryHandle, makeCrossTenantProbe, startCanary } from "./observability/canary.js";
 import { createLogger } from "./observability/logger.js";
@@ -47,6 +49,8 @@ export interface Server {
   reconcileWorker?: ReconcileWorkerHandle;
   /** The billing ledger-retention prune worker (E014/US1, FR-021), started fail-open and tied to app.close(). */
   retentionWorker?: RetentionWorkerHandle;
+  /** The floating-seat lease reclaim sweeper (E015/US3, FR-010/024), started fail-open and tied to app.close(). */
+  reclaimWorker?: ReclaimWorkerHandle;
 }
 
 type WithSigner = FastifyInstance & { signerReady?: () => boolean };
@@ -228,6 +232,29 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     );
   }
 
+  // Floating-seat lease reclaim sweeper (E015/US3, FR-010/024): a periodic TIME-driven job that returns dead-
+  // machine seats to the pool (TTL + grace-lapsed live leases) and proactively reclaims a revoked license's
+  // live leases (revoke-reclaim), attributing every reclamation to a synthetic worker actor. FAIL-OPEN and
+  // cancelable exactly like the workers above: the cadence timer is unref'd, a per-tenant/sweep fault is
+  // caught + logged and NEVER crashes boot (or blocks the live acquire/renew/release surface). Tied to
+  // app.close() for clean shutdown.
+  let reclaimWorker: ReclaimWorkerHandle | undefined;
+  try {
+    const leaseConfig = loadLeaseConfig(env);
+    reclaimWorker = startReclaimWorker(pool, {
+      intervalMs: leaseConfig.sweepSeconds * 1_000,
+      maxBatch: leaseConfig.sweepMaxBatch,
+      logger: app.log,
+    });
+    app.log.info({}, "lease reclaim worker started");
+    app.addHook("onClose", async () => reclaimWorker?.stop());
+  } catch (err: unknown) {
+    app.log.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      "lease reclaim worker failed to start (fail-open)",
+    );
+  }
+
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, "shutting down");
     try {
@@ -242,7 +269,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
-  return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker };
+  return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker };
 }
 
 // CLI entry: `node dist/server/main.js` (the image's serve command).

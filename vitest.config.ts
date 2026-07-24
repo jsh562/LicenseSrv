@@ -10,7 +10,9 @@ export default defineConfig({
     fileParallelism: false,
     coverage: {
       provider: "v8",
-      include: ["src/server/**/*.ts"],
+      // The broad `src/server/**/*.ts` glob already covers the E015 lease module; it is listed explicitly so
+      // the ≥80% line+branch gate is unambiguously enforced on `src/server/modules/lease/**` (T001/T042).
+      include: ["src/server/**/*.ts", "src/server/modules/lease/**/*.ts"],
       exclude: [
         "src/server/**/*.{test,spec}.ts",
         "src/server/**/__tests__/**",

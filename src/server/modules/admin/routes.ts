@@ -17,7 +17,7 @@ import { SESSION_COOKIE } from "../../console/session.js";
 import { createUser, listUsers, updateUser } from "./users.js";
 
 const roleSchema = z.enum(["owner", "admin", "viewer"]);
-const scopeSchema = z.enum(["activate", "validate", "admin"]);
+const scopeSchema = z.enum(["activate", "validate", "lease", "admin"]);
 
 const loginSchema = z.object({
   tenantSlug: z.string().min(1),

@@ -1,5 +1,8 @@
 export type Role = "owner" | "admin" | "viewer";
-export type Scope = "activate" | "validate" | "admin";
+// Runtime API-key capability scopes: `activate` (E009 node-lock), `validate` (E013 online enforcement),
+// `lease` (E015 floating/concurrent seats — the runtime acquire/renew/release plane, FR-002), and the
+// implicit console `admin` scope carried by human sessions.
+export type Scope = "activate" | "validate" | "lease" | "admin";
 
 const ROLE_RANK: Record<Role, number> = { viewer: 1, admin: 2, owner: 3 };
 

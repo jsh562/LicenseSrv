@@ -92,3 +92,16 @@ export async function listEvents(q, filters) {
       LIMIT $${params.length}`, params);
     return r.rows.map(toRecord);
 }
+/**
+ * Prune ledger rows older than the retention horizon (FR-021/SC-015). Deletes every `billing_event` whose
+ * server `received_at` predates `olderThanUnix` (epoch SECONDS). This is the PLATFORM RETENTION PATH: the app
+ * role holds SELECT/INSERT-only on `billing_event` (append-only, no DELETE grant), so this MUST run on a
+ * privileged (owner) transaction, NEVER under `withTenant` — exactly like the E013 `pruneExpiredCheckins`
+ * check-in prune. The caller derives `olderThanUnix = now - retention`, with `retention` clamped strictly above
+ * the idempotency floor (`IDEMPOTENCY_FLOOR_SECS`) so a still-redeliverable event id is never pruned (FR-003).
+ * The `billing_event_prune` BRIN index on `received_at` makes the age-range delete cheap. Returns the count.
+ */
+export async function pruneBillingEvents(q, olderThanUnix) {
+    const r = await q(`DELETE FROM billing_event WHERE received_at < to_timestamp($1)`, [olderThanUnix]);
+    return { deleted: r.rowCount ?? 0 };
+}

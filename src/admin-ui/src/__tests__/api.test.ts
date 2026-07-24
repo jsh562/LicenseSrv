@@ -3,7 +3,7 @@
 // fetch (this file must NOT mock ../api — it is the unit under test).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { activationApi, adminApi, ApiError, catalogApi, licensingApi, readCookie } from "../api";
+import { activationApi, adminApi, ApiError, catalogApi, leaseApi, licensingApi, readCookie } from "../api";
 
 function mockFetch(status: number, body: unknown): ReturnType<typeof vi.fn> {
   const fn = vi.fn().mockResolvedValue({
@@ -173,6 +173,21 @@ describe("activationApi client", () => {
     expect(calls).toEqual([
       ["GET", "/admin/licenses/l1/activations"],
       ["POST", "/admin/licenses/l1/activations/a1/deactivate"],
+    ]);
+  });
+});
+
+describe("leaseApi client", () => {
+  it("exposes the lease registry + force-release endpoints at the expected method + path", async () => {
+    const fn = mockFetch(200, { concurrencyUsed: 0, maxConcurrent: 5, overageAllowance: 0, scope: "session", truncated: false, leases: [], id: "lease-1", status: "reclaimed" });
+    await leaseApi.listLeases("l1");
+    await leaseApi.listLeases("l1", "live");
+    await leaseApi.forceRelease("lease-1");
+    const calls = fn.mock.calls.map((c) => [(c[1] as RequestInit).method, c[0]]);
+    expect(calls).toEqual([
+      ["GET", "/admin/licenses/l1/leases"],
+      ["GET", "/admin/licenses/l1/leases?status=live"],
+      ["POST", "/admin/leases/lease-1/force-release"],
     ]);
   });
 });

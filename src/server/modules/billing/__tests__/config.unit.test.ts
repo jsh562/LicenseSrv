@@ -17,6 +17,7 @@ import {
   resolveLedgerRetentionSecs,
   resolveRotationWindowSecs,
   resolveToleranceSecs,
+  SECRET_ROTATION_SKEW_TOLERANCE_SECS,
 } from "../config.js";
 
 const base: BillingConfig = {
@@ -92,8 +93,17 @@ describe("isRotationWindowOpen (FR-022)", () => {
     expect(isRotationWindowOpen(base, rotatedAt, now)).toBe(false);
   });
 
-  it("is false for a future rotation timestamp (negative elapsed)", () => {
-    const rotatedAt = new Date(now.getTime() + 10_000);
+  it("still OPEN for a slightly future rotation timestamp within the clock-skew tolerance (DB clock leads app)", () => {
+    // just-rotated: secret_rotated_at (DB clock) reads a bit ahead of `now` (app clock) → negative elapsed,
+    // but within SECRET_ROTATION_SKEW_TOLERANCE_SECS it must still be treated as inside the window.
+    const rotatedAt = new Date(now.getTime() + (SECRET_ROTATION_SKEW_TOLERANCE_SECS - 1) * 1000);
+    expect(isRotationWindowOpen(base, rotatedAt, now)).toBe(true);
+    // exactly at the tolerance boundary (elapsed === -tolerance) is still open.
+    expect(isRotationWindowOpen(base, new Date(now.getTime() + SECRET_ROTATION_SKEW_TOLERANCE_SECS * 1000), now)).toBe(true);
+  });
+
+  it("is false for a future rotation timestamp BEYOND the clock-skew tolerance (bounded skew allowance)", () => {
+    const rotatedAt = new Date(now.getTime() + (SECRET_ROTATION_SKEW_TOLERANCE_SECS + 1) * 1000);
     expect(isRotationWindowOpen(base, rotatedAt, now)).toBe(false);
   });
 });

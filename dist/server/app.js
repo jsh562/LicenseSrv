@@ -24,6 +24,9 @@ export function createApp(deps) {
         disableRequestLogging: true,
         // Authoritative, server-generated request id — inbound headers are never trusted (AD-002).
         genReqId: () => genReqId(),
+        // Undefined here preserves Fastify's default (`'idle'`); the perf suite opts into `true` so a real
+        // loopback listener's open/keep-alive sockets are force-destroyed at `app.close()` (prompt teardown).
+        forceCloseConnections: deps.forceCloseConnections,
     });
     // Enter the per-request AsyncLocalStorage context first, so every later hook/handler (and the
     // response log line) can read `request_id` and the sanitized inbound correlation tag (OR-002).
