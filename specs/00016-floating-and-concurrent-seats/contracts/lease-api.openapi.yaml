@@ -1,0 +1,1298 @@
+openapi: 3.1.0
+info:
+  title: Floating & Concurrent Seats (Lease) API
+  version: 0.1.0
+  description: >
+    REST surface for epic E015 (Floating & Concurrent Seats). A licensed application ACQUIRES a
+    TTL-bounded concurrency seat — a LEASE — against an active license's concurrency cap
+    (`maxConcurrent`), RENEWS it by heartbeat while running, and RELEASES it on exit; a time-driven
+    server sweeper auto-reclaims a dead machine's lapsed lease so the seat returns to the pool. The
+    live-lease count is SERVER-AUTHORITATIVE and race-safe (it never exceeds the cap, even under
+    concurrent acquisition). Operators browse a per-license lease registry and force-release a specific
+    lease from the console. Covers FR-001..025 and SC-001..019. Concretizes ADR-0012 (online, server-
+    authoritative seat-lease concurrency model, independent of E009 node-lock activation).
+
+
+    ONLINE, SERVER-AUTHORITATIVE MODEL. Floating seats are an explicitly ONLINE capability: the live-
+    lease count lives on the server and is the sole authority for the seat count. A fully offline
+    machine cannot hold a floating seat (offline node-lock remains E009). This epic is the distinct
+    concurrency (`maxConcurrent`) dimension and does NOT change node-lock activation (`maxActivations`,
+    E009); a plan MAY carry both caps and they enforce independently (FR-005/025).
+
+
+    TWO AUTH PLANES (this contract deliberately spans both surfaces of the platform; each operation
+    declares exactly one).
+
+      * RUNTIME plane — mounted under `/v1/leases...`, called by the LICENSED APPLICATION (a machine/
+        integration). Authenticated by the tenant/machine API key in the `X-API-Key` header
+        (src/server/auth/apikey.ts + app.ts), resolved to a tenant + capability scopes. These
+        operations REQUIRE the `lease` capability scope and fail CLOSED: no resolvable tenant context →
+        `401 unauthorized`; a resolvable key that LACKS the `lease` scope → `403 forbidden` (FR-002).
+        There is NO CSRF on this plane — it is header-credential, not cookie, auth. All three runtime
+        routes (acquire / renew / release) are rate-limited per API key with a threshold SIZED to admit
+        legitimate (jittered) heartbeat cadence (FR-017); an over-limit request is refused `429
+        rate_limited` with a `Retry-After` header and the limit-exceeded event is audited (FR-018).
+
+      * ADMIN plane — mounted under `/admin/...`, called by a HUMAN operator/admin in the console.
+        Authenticated by the opaque `admin_session` cookie (E005) established by `POST /admin/auth/login`
+        (defined in the E005 contract), NOT by `X-API-Key`. RBAC is `owner > admin > viewer`: the READ
+        registry (GET) requires `viewer` or higher; the operator FORCE-RELEASE (POST) requires `admin`
+        or higher (FR-015/016). Every state-changing admin call additionally carries a double-submit
+        `X-CSRF-Token` header that MUST equal the non-HttpOnly CSRF cookie issued at login; a missing/
+        mismatched token is refused fail-closed with `403 forbidden` and recorded as a security event
+        (SC-013). GET operations do not require it. (Mirrors the E008/E009 console surfaces.)
+
+
+    TENANT SCOPING (FR-019, fail-closed). Every lease operation is implicitly scoped to the caller's
+    tenant (the API key's tenant on the runtime plane, the session's tenant on the admin plane). There is
+    NO tenant path/query parameter and it can never be widened by the caller. A cross-tenant `licenseId`
+    or `leaseId` resolves to `404` (never `403`), so an out-of-tenant id is indistinguishable from a
+    non-existent one (SC-012). SINGLE DELIBERATE EXCEPTION — `POST /v1/leases/{leaseId}/release` (see
+    below): release is best-effort and idempotent, so an unknown/already-ended `leaseId` (which, under
+    tenant scoping, is INDISTINGUISHABLE from a cross-tenant id) returns `200` as a no-op that frees
+    NOTHING outside the caller's tenant. This neither reads nor mutates any cross-tenant state and is not
+    an enumeration oracle (unknown and cross-tenant produce the identical `200` no-op), so tenant
+    isolation is preserved by construction (FR-008/019).
+
+
+    SECRECY & PII INVARIANTS (FR-001/020/022, SC-015; project-instructions non-negotiables I & III).
+
+      * The client-supplied RAW holder reference (`holderReference`) is WRITE-ONLY: the server SALTS and
+        HASHES it into a pseudonymous `holderKey` (or, under `machine` scope, derives the key from the
+        E009 device fingerprint) and NEVER stores, logs, or returns the raw value. Every response and the
+        registry expose only the pseudonymous `holderKey`.
+      * The server NEVER receives, stores, logs, or returns a RAW hardware identifier. Under `machine`
+        scope the client submits salted per-signal HASHES (the E009 fingerprint), never raw signals.
+      * The product SIGNING KEY (and any lease secret) is NEVER exposed in any body, header, example,
+        log, or audit entry. The signed `leaseHandle` is a PUBLIC, tamper-evident artifact; only the
+        handle plus an OPAQUE `keyId` are returned (FR-022).
+      * NO card/PAN/CVV/expiry or raw cardholder data appears anywhere in this contract (no request,
+        response, error, or example). Consumption-based billing/true-up is E016; overage is only METERED
+        to the append-only audit log here (FR-013).
+      * The `leaseHandle` is returned ONLY by the acquire (`POST /v1/leases`) and renew
+        (`POST /v1/leases/{leaseId}/renew`) operations. It is NEVER present in the admin registry or
+        anywhere else.
+
+
+    SIGNED LEASE HANDLE (FR-022, SC-018; ADR-0012/AD-004). By default acquire and renew return a signed,
+    SHORT-TTL `leaseHandle` — an E001 `LIC1`-style artifact minted by the EXISTING E004 signer with a
+    DOMAIN-SEPARATED payload (`LICSRV-LEASE-v1`, distinct from the E009 machine-bound credential and the
+    E013 renewal-token / CRL domains) — whose validity is bounded by the lease TTL. A local gate can
+    verify a held lease OFFLINE between heartbeats against the E004 public key, while the SERVER remains
+    the sole authority for the seat count. A tampered handle fails verification (SC-018). A deployment MAY
+    configure PLAIN server-side authorization (lease id + expiry, NO handle) where offline-verifiable
+    handles are not needed — then `leaseHandle` and `keyId` are `null`. No new crypto is introduced; the
+    signing private key is never returned, logged, or otherwise exposed.
+
+
+    RACE-SAFE CONCURRENCY ACCOUNTING (FR-003, SC-002). Live leases per license NEVER exceed
+    `maxConcurrent` (plus any soft-cap allowance), even under concurrent acquisition — for C free seats,
+    exactly C of any number of concurrent acquires succeed (a per-license advisory-lock count+insert
+    serializes only the hot license row). An acquire beyond capacity is refused `409
+    seat_capacity_exhausted` and records NO partial lease (FR-004).
+
+
+    IDEMPOTENCY & ANTI-REPLAY (FR-007/008/014, SC-011).
+
+      * ACQUIRE carries a single-use client-supplied `acquireToken`. A replayed/retried acquire with the
+        SAME token for the SAME holder returns the ORIGINAL lease at `200` and consumes NO second seat
+        (FR-014). Independently, a re-acquire from a holder that ALREADY holds a live lease is idempotent:
+        the existing lease is returned/renewed, not a second seat consumed (FR-023, "at most one live
+        lease per (license, holderKey)").
+      * RENEW (heartbeat) is idempotent — repeated heartbeats keep EXACTLY one seat and only advance the
+        server-computed expiry; they never consume an additional seat or corrupt lease state (FR-007).
+      * RELEASE is idempotent — releasing an already-released/reclaimed or unknown lease succeeds without
+        error (`200`) and NEVER drives the live-lease count below zero (FR-008).
+
+
+    LEASE LIFECYCLE, SERVER TIME & RECLAMATION (FR-009/010/011; US3). Lease TTL and reclamation timing are
+    computed from SERVER/MONOTONIC time — a client wall clock never determines whether a seat is still
+    held (SC clock-skew boundary). Per-plan timings are configurable with research-informed defaults:
+    heartbeat interval 10 min, lease TTL 30 min (invariant TTL ≥ 3× heartbeat, so a single missed
+    heartbeat never reclaims a live seat), grace window 5 min, sweep interval 1 min. A time-driven,
+    fail-open sweeper reclaims a lease once its expiry PLUS grace has elapsed with no renewal, returning
+    the seat to the pool with no operator action (FR-010); a sweeper fault never blocks the live surface
+    for any license or tenant. RECLAIM ↔ RENEW are mutually exclusive via a monotonic generation FENCE +
+    a `status='live' AND expires_at>now()` predicate: a late/stale renew arriving AFTER its lease was
+    reclaimed or expired matches zero rows and is refused `409 lease_not_renewable` — it never revives a
+    reclaimed seat or double-counts (FR-011). The response's `ttlSeconds` and `heartbeatIntervalSeconds`
+    are advisory GUIDANCE for the client's (jittered) heartbeat loop.
+
+
+    CONCURRENCY SCOPE (FR-023). A per-plan `scope` determines what a seat is counted against and how the
+    `holderKey` is derived: `session` (default; each running instance holds one lease, keyed on the
+    client-supplied `holderReference`), `machine` (keyed on the E009 device `fingerprint`, so instances
+    on one machine share a seat), or `user` (keyed on a named-user reference in `holderReference`). The
+    hard invariant "at most one live lease per (license, holderKey)" controls duplicate/over-concurrency
+    acquisition identically regardless of scope.
+
+
+    OVERAGE / SOFT CAP (FR-012/013; US4). Per plan the default is a HARD cap (refuse at capacity). An
+    optional SOFT cap admits acquisitions up to an ABSOLUTE-integer overage allowance ABOVE the base cap
+    (`effectiveCap = maxConcurrent + overageAllowance`, default allowance 0 = hard cap); each over-base
+    acquire succeeds, is flagged `overage: true`, and is METERED to the append-only audit log (the
+    concurrency level reached) for later true-up. Beyond the allowance even a soft cap refuses `409
+    seat_capacity_exhausted`. No card/PAN data is recorded (FR-013/018).
+
+
+    LICENSE-STATE → LIVE-LEASE POLICY (FR-024). Acquire refuses against a suspended/revoked/expired
+    license (`409 license_not_active`, no seat consumed, FR-006). Renew RE-CHECKS live license state, so a
+    renew against a now-revoked license is refused `409 lease_not_renewable`. Per a configurable per-reason
+    policy: REVOCATION (terminal) proactively reclaims the license's live leases so seats free within the
+    sweep interval (near-immediate); SUSPENSION/EXPIRY default to lapse-on-timer (live leases keep their
+    seat until TTL + grace, only NEW acquires are refused). Propagating revocation to offline clients/
+    tokens remains E013's job; E015 only reclaims its OWN server-side leases.
+
+
+    NODE-LOCK INDEPENDENCE (FR-025). By default a floating acquire does NOT require a node-lock activation;
+    an `activationReference` on a lease is INFORMATIONAL. A plan MAY optionally require a valid current
+    node-lock activation for the same machine ("activated-devices-only" floating, configurable, OFF by
+    default) — when enabled, an acquire without a resolvable current activation is refused `409
+    activation_required`.
+
+
+    AUDIT (FR-018). Every acquire, renew, release, reclaim, force-release, and denied/limit-exceeded
+    attempt is written to the append-only E002 audit log with actor, action, and target — never a raw
+    hardware identifier, the raw holder reference, a secret, or a credential.
+
+
+    IDENTIFIERS. Every `leaseId` and `licenseId` is a server-generated UUID unique within the tenant
+    (`format: uuid`). `holderKey` is a pseudonymous salted-hash / opaque string, NOT a UUID and NOT a raw
+    identifier.
+
+
+    LIST BOUNDING. The admin registry returns a license's leases bounded to a hard cap of 1000 items with
+    a `truncated` signal; there is no offset/cursor pagination (mirrors E008 AD-009 / E009 / E014).
+
+
+    ERROR MODEL. Project-standard structured JSON `{ code, message, details? }` with a stable, enumerated
+    snake_case `code` (matches E008/E009/E013/E014). Every refusal reason has a DISTINCT, testable code.
+    Field naming is camelCase throughout the bodies (the data-model's snake_case columns — e.g.
+    `max_concurrent`, `holder_key`, `expires_at` — map to camelCase wire fields).
+
+
+    STATUS PRECEDENCE. When more than one failure could apply, evaluation is strictly ordered:
+    (1) AUTHENTICATION first — an unresolvable credential is `401 unauthorized`; (2) AUTHORIZATION next —
+    a resolved caller lacking the `lease` scope / required RBAC role, or failing CSRF, is `403 forbidden`;
+    (3) RESOURCE RESOLUTION — a tenant-scoped lookup that misses (unknown or cross-tenant id) is `404`;
+    (4) BUSINESS RULES last — entitlement (`403 no_concurrency_entitlement`), license state (`409
+    license_not_active`), activation gating (`409 activation_required`), and capacity (`409
+    seat_capacity_exhausted`), evaluated in that order. So the AUTH `403` (missing scope) precedes `404`,
+    while the BUSINESS `403 no_concurrency_entitlement` is evaluated only AFTER the license resolves.
+
+
+    VERSIONING. The RUNTIME plane is API-versioned under the `/v1` prefix; the ADMIN/console plane is
+    deliberately UNVERSIONED (`/admin/...`) by the established platform convention (the same `/v1` +
+    `/admin` split as E004/E008/E009/E014). A BREAKING change to the runtime plane is introduced under a
+    new version prefix (`/v2`), with `/v1` retained until deprecation.
+
+
+    MEDIA TYPE. Every request body and every response body is `application/json` (UTF-8); there is no
+    content negotiation — a request that is not JSON is rejected `400 validation_error`.
+
+
+    TIMESTAMPS. Every timestamp field (`acquiredAt`, `lastRenewedAt`, `expiresAt`) is a server-computed
+    RFC 3339 / ISO 8601 date-time in UTC with a trailing `Z` offset (e.g. `2026-07-22T09:15:00Z`) — never
+    a local offset and never offset-naive. The wire form is therefore unambiguous and clock-skew-safe: the
+    seat's validity is decided by server time, never a client wall clock (FR-009).
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: lease
+    description: >
+      RUNTIME floating-seat lease lifecycle called by the licensed application: acquire / heartbeat
+      renew / release. API-key auth (`X-API-Key`) with the `lease` scope; no CSRF; rate-limited to a
+      heartbeat-sized threshold (FR-001/002/007/008/014/017).
+  - name: lease-registry
+    description: >
+      ADMIN console per-license lease registry + operator force-release. Human `admin_session` cookie +
+      RBAC (viewer reads, admin force-releases) with CSRF on mutation (FR-015/016).
+
+paths:
+  # --- RUNTIME plane (API key, `lease` scope, rate-limited) --------------------------------------
+  /v1/leases:
+    post:
+      tags: [lease]
+      operationId: acquireLease
+      summary: Acquire a floating concurrency seat (race-safe; returns a signed lease handle)
+      description: >
+        Acquire a TTL-bounded concurrency seat against an ACTIVE license and return the lease with a
+        server-set expiry and (by default) a signed, offline-verifiable `leaseHandle` (FR-001/022; US1).
+        The license is referenced by EITHER its signed `licenseKey` (the E001 `LIC1` issued token) OR its
+        `licenseId` (UUID) — exactly one. The client supplies a stable opaque `holderReference` (salted +
+        hashed server-side into the pseudonymous `holderKey`; the raw value is never stored or returned),
+        a single-use `acquireToken` for idempotency/anti-replay (FR-014), an OPTIONAL `fingerprint` (used
+        to derive the `holderKey` under `machine` scope, FR-023), and an OPTIONAL `activationReference`
+        (informational by default; required only under a plan's "activated-devices-only" gating, FR-025).
+
+
+        Success paths:
+
+          * `201 Created` — a NEW seat is consumed: one live lease is recorded (race-safe, never
+            exceeding `maxConcurrent` + allowance, FR-003) and the body carries the lease metadata, the
+            server-computed `expiresAt`, TTL/heartbeat GUIDANCE, the used-vs-cap summary, and the signed
+            `leaseHandle` (+ opaque `keyId`) unless the deployment runs in plain-authorization mode.
+          * `200 OK` — IDEMPOTENT re-use, returning the ORIGINAL lease with NO second seat consumed:
+            either the SAME `acquireToken` was replayed for the same holder (FR-014, SC-011) OR the holder
+            already holds a live lease (the "one live lease per (license, holderKey)" invariant re-uses/
+            renews it, FR-023). The `leaseHandle` is refreshed/returned again.
+
+
+        Refusals (no seat consumed, no partial lease recorded):
+
+          * `403 no_concurrency_entitlement` — the license has NO `maxConcurrent` set: floating is not
+            entitled and acquire is refused fail-closed (never treated as unlimited, never falling back to
+            `maxActivations`, FR-005, SC-019). This is a BUSINESS refusal distinct from the auth-scope
+            `403 forbidden`, evaluated only AFTER the license resolves.
+          * `409 license_not_active` — the license is suspended, revoked, or expired (FR-006, SC-004).
+          * `409 seat_capacity_exhausted` — the effective cap (`maxConcurrent` + overage allowance) is
+            reached; details carry `{ maxConcurrent, concurrencyUsed, overageAllowance }` (FR-004/012,
+            SC-003/009).
+          * `409 activation_required` — only when the plan enables "activated-devices-only" floating: no
+            valid current node-lock activation resolves for this machine (FR-025).
+          * `404 license_not_found` — no such license resolves within this tenant (a cross-tenant
+            reference also resolves here, FR-019).
+          * `400 validation_error` — malformed body, or a required input for the plan's configured scope
+            is missing (e.g. no `fingerprint` under `machine` scope).
+          * `429 rate_limited` — the per-API-key rate limit (sized for heartbeat cadence) was exceeded
+            (FR-017); carries `Retry-After`.
+          * `503 signer_unavailable` — the signed `leaseHandle` could not be minted (an E004 signer
+            fault) while signed-handle mode is ON; the transaction rolls back FAIL-CLOSED and NO seat is
+            consumed. Not returned in plain-authorization mode.
+
+
+        Requires the `lease` scope; a key lacking it is refused `403 forbidden` (FR-002). Every attempt
+        (grant or denial, including a metered overage acquire) is audited (FR-013/018).
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: lease }
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AcquireLeaseRequest' }
+            examples:
+              sessionScopeByLicenseId:
+                summary: Session-scope acquire by license id
+                value:
+                  licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                  holderReference: "instance-3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                  acquireToken: "b1946ac92492d2347c6235b4d2611184"
+              machineScopeByLicenseKey:
+                summary: Machine-scope acquire by license key (holderKey derived from the fingerprint)
+                value:
+                  licenseKey: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.aXNzdWVkLXRva2VuLWV4YW1wbGU"
+                  holderReference: "host-a1c2e3f4"
+                  acquireToken: "c2a57bd03583e3458d7346c5e3722295"
+                  fingerprint:
+                    signals:
+                      - "9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+                      - "2xTt5RbQ9wPmK7vY0nZa8Lc3Jd6HsU1eIoG4fRB2yNw"
+                      - "Lp3Qz7Yw1Rk9Vn0Ma8Bc4Hd2Js6Uu5Ei1oGz4fRB2yNw"
+                  activationReference: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+      responses:
+        '201':
+          description: >
+            A new seat was consumed — one live lease recorded. Body carries the lease metadata, the
+            server-set `expiresAt`, TTL/heartbeat guidance, the used-vs-cap summary, and the signed
+            `leaseHandle` (+ opaque `keyId`) unless plain-authorization mode is configured. The signing
+            key is never returned.
+          headers:
+            Location:
+              required: true
+              description: >
+                Canonical path of the CREATED lease (`/v1/leases/{leaseId}`). REQUIRED on the `201`
+                fresh-acquire response; deliberately ABSENT on the `200` idempotent re-use response, which
+                returns an already-existing lease rather than creating one.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LeaseGrant' }
+              examples:
+                acquired:
+                  value:
+                    id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+                    licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    holderKey: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+                    scope: session
+                    status: live
+                    acquiredAt: "2026-07-22T09:15:00Z"
+                    lastRenewedAt: "2026-07-22T09:15:00Z"
+                    expiresAt: "2026-07-22T09:45:00Z"
+                    ttlSeconds: 1800
+                    heartbeatIntervalSeconds: 600
+                    graceSeconds: 300
+                    concurrencyUsed: 3
+                    maxConcurrent: 5
+                    overageAllowance: 0
+                    overage: false
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    leaseHandle: "LIC1.eyJsZWFzZSI6IjliMmUxZDQwIiwiZG9tIjoiTElDU1JWLUxFQVNFLXYxIn0.bGVhc2UtaGFuZGxlLXNpZ25hdHVyZQ"
+        '200':
+          description: >
+            Idempotent re-use — the ORIGINAL lease is returned with NO new seat consumed: the same
+            `acquireToken` was replayed for this holder (FR-014), or the holder already held a live lease
+            (one-live-lease-per-(license, holderKey) invariant, FR-023). The `leaseHandle` is refreshed.
+            The returned identity (`id`, `holderKey`, `acquiredAt`) is the ALREADY-BOUND lease's; only the
+            handle/`expiresAt`/`lastRenewedAt` and the `concurrencyUsed` count reflect the current state.
+            No `Location` header is returned (the lease already exists; it is not newly created).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LeaseGrant' }
+              examples:
+                reused:
+                  value:
+                    id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+                    licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    holderKey: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+                    scope: session
+                    status: live
+                    acquiredAt: "2026-07-22T09:15:00Z"
+                    lastRenewedAt: "2026-07-22T09:20:00Z"
+                    expiresAt: "2026-07-22T09:50:00Z"
+                    ttlSeconds: 1800
+                    heartbeatIntervalSeconds: 600
+                    graceSeconds: 300
+                    concurrencyUsed: 3
+                    maxConcurrent: 5
+                    overageAllowance: 0
+                    overage: false
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    leaseHandle: "LIC1.eyJsZWFzZSI6IjliMmUxZDQwIiwiZG9tIjoiTElDU1JWLUxFQVNFLXYxIn0.cmVmcmVzaGVkLXNpZ25hdHVyZQ"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenAcquire' }
+        '404': { $ref: '#/components/responses/LicenseNotFound' }
+        '409': { $ref: '#/components/responses/AcquireConflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/SignerUnavailable' }
+
+  /v1/leases/{leaseId}/renew:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    post:
+      tags: [lease]
+      operationId: renewLease
+      summary: Renew (heartbeat) a live lease — extend its expiry, keep exactly one seat
+      description: >
+        Heartbeat-renew a live lease, extending its expiry to a SERVER-COMPUTED value while the session
+        runs (FR-007; US2). IDEMPOTENT: repeated heartbeats keep EXACTLY one seat and only advance
+        `expiresAt`/`lastRenewedAt`; the live-lease count is unchanged (SC-005). Renew re-checks live
+        license state and the lease's generation FENCE, then returns the refreshed `leaseHandle` and the
+        new expiry.
+
+
+        Refusals:
+
+          * `409 lease_not_renewable` — the lease can no longer be renewed and the client MUST re-acquire:
+            it was RECLAIMED (TTL + grace elapsed, swept) or EXPIRED, a STALE/late renew lost the
+            generation-fence race against a reclaim (FR-011, SC-008), or the license is now REVOKED
+            (renew re-checks license state, FR-024). Details carry `{ reason }`.
+          * `404 not_found` — no such lease resolves within this tenant (a cross-tenant `leaseId` also
+            resolves here, FR-019).
+          * `400 validation_error` — malformed `leaseId` or body.
+          * `429 rate_limited` — per-API-key rate limit exceeded (FR-017); carries `Retry-After`.
+          * `503 signer_unavailable` — the refreshed `leaseHandle` could not be signed (E004 fault) while
+            signed-handle mode is ON; the lease and its seat are UNAFFECTED (the renew is not applied) and
+            the client may retry. Not returned in plain-authorization mode.
+
+
+        Requires the `lease` scope (FR-002); audited (FR-018). No CSRF — API-key, not cookie, auth.
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: lease }
+      x-priority: P1
+      requestBody:
+        required: false
+        description: >
+          Optional. Renew is identified by `{leaseId}` + the API key alone; no body is required. An empty
+          object `{}` is accepted.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RenewLeaseRequest' }
+            examples:
+              empty:
+                value: {}
+      responses:
+        '200':
+          description: >
+            The lease is renewed — `expiresAt`/`lastRenewedAt` advanced (server-computed), one seat still
+            held, and the `leaseHandle` refreshed. The signing key is never returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LeaseGrant' }
+              examples:
+                renewed:
+                  value:
+                    id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+                    licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    holderKey: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+                    scope: session
+                    status: live
+                    acquiredAt: "2026-07-22T09:15:00Z"
+                    lastRenewedAt: "2026-07-22T09:35:00Z"
+                    expiresAt: "2026-07-22T10:05:00Z"
+                    ttlSeconds: 1800
+                    heartbeatIntervalSeconds: 600
+                    graceSeconds: 300
+                    concurrencyUsed: 3
+                    maxConcurrent: 5
+                    overageAllowance: 0
+                    overage: false
+                    keyId: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+                    leaseHandle: "LIC1.eyJsZWFzZSI6IjliMmUxZDQwIiwiZG9tIjoiTElDU1JWLUxFQVNFLXYxIn0.cmVuZXdlZC1zaWduYXR1cmU"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '404': { $ref: '#/components/responses/LeaseNotFound' }
+        '409': { $ref: '#/components/responses/LeaseNotRenewable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/SignerUnavailable' }
+
+  /v1/leases/{leaseId}/release:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    post:
+      tags: [lease]
+      operationId: releaseLease
+      summary: Release a lease (free the seat immediately) — idempotent
+      description: >
+        Release a lease on graceful exit, freeing the seat IMMEDIATELY for another session (FR-008; US2).
+        IDEMPOTENT and best-effort: returns `200` whether the lease was live, already released/reclaimed,
+        or UNKNOWN, and NEVER drives the live-lease count below zero (SC-006). Because release is a
+        fire-and-forget seat-return that must never error, an unknown/already-ended `leaseId` — which,
+        under tenant scoping, is INDISTINGUISHABLE from a cross-tenant id — is treated as a `200` no-op
+        that frees NOTHING outside the caller's tenant (see TENANT SCOPING in the info block): it neither
+        reads nor mutates any cross-tenant state and is not an enumeration oracle, so there is NO `404` on
+        this route. Requires the `lease` scope (FR-002); audited (FR-018). No CSRF — API-key, not cookie,
+        auth.
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: lease }
+      x-priority: P1
+      responses:
+        '200':
+          description: >
+            The seat is not held — the lease was released, was already released/reclaimed, or is unknown
+            (idempotent no-op). The body echoes the requested `id` and the terminal `released` status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReleaseResult' }
+              examples:
+                released:
+                  value: { id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293", status: released }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  # --- ADMIN plane (console session + RBAC + CSRF) ----------------------------------------------
+  /admin/licenses/{licenseId}/leases:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    get:
+      tags: [lease-registry]
+      operationId: listLicenseLeases
+      summary: Browse a license's lease registry (used-vs-cap; tenant-scoped)
+      description: >
+        List a license's LIVE and recently-ended leases for operators/admins (FR-015; US5): each entry
+        shows the PSEUDONYMOUS `holderKey`, the concurrency `scope`, `status` (`live`/`released`/
+        `reclaimed`), and `acquiredAt`/`lastRenewedAt`/`expiresAt` timestamps, plus a `concurrencyUsed`-
+        vs-`maxConcurrent` summary. The signed `leaseHandle` and any raw holder reference are NEVER
+        returned here (SC-015) — only acquire/renew return a handle. Results are ordered DETERMINISTICALLY
+        (by `acquiredAt` DESCENDING, ties broken by `id`). Bounded to a hard cap of 1000 items with a
+        `truncated` signal; not paginated. Optional `?status` narrows the set. Tenant-scoped: an unknown
+        or cross-tenant `licenseId` → `404 not_found` (FR-019, SC-012). READ: `viewer` or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: viewer }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/LeaseStatusFilter'
+      responses:
+        '200':
+          description: The license's leases (pseudonymous; no handle) plus the used-vs-cap summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LeaseRegistry' }
+              examples:
+                mixed:
+                  value:
+                    concurrencyUsed: 1
+                    maxConcurrent: 5
+                    overageAllowance: 0
+                    scope: session
+                    truncated: false
+                    leases:
+                      - id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+                        holderKey: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+                        scope: session
+                        status: live
+                        acquiredAt: "2026-07-22T09:15:00Z"
+                        lastRenewedAt: "2026-07-22T09:35:00Z"
+                        expiresAt: "2026-07-22T10:05:00Z"
+                      - id: "a1c2e3f4-2222-4b3c-9d4e-5f6071829304"
+                        holderKey: "Ql8Wo1PqK9rMuS6aXb3lGr5Ic0VtZ2dYnF4hQeA1wL"
+                        scope: session
+                        status: reclaimed
+                        acquiredAt: "2026-07-22T06:00:00Z"
+                        lastRenewedAt: "2026-07-22T06:10:00Z"
+                        expiresAt: "2026-07-22T06:40:00Z"
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/leases/{leaseId}/force-release:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    post:
+      tags: [lease-registry]
+      operationId: forceReleaseLease
+      summary: Operator/admin force-release a specific lease (reclaim the seat)
+      description: >
+        An operator/admin force-releases a specific lease from the console, reclaiming the seat for
+        immediate re-use (FR-016; US5). IDEMPOTENT: returns `200` whether the lease was live or already
+        ended, and never drives the seat count below zero. An unknown or cross-tenant `leaseId` → `404
+        not_found` (FR-019). RBAC: `admin` or higher (a viewer attempt is refused `403 forbidden` and
+        recorded as a security event, SC-010); the mutation carries the double-submit `X-CSRF-Token`
+        (missing/mismatched → `403 forbidden`, fail-closed, SC-013). Audited (FR-018).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: The seat is reclaimed — the lease is force-released (or was already ended). Idempotent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ForceReleaseResult' }
+              examples:
+                reclaimed:
+                  value: { id: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293", status: reclaimed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LeaseNotFound' }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        RUNTIME plane credential (NOT the human `admin_session` cookie). The tenant/machine API key
+        resolved by the server (src/server/auth/apikey.ts + app.ts) to a tenant + capability scopes. The
+        `/v1/leases` operations REQUIRE the `lease` scope and fail closed — no resolvable tenant context →
+        `401 unauthorized`; a key lacking `lease` → `403 forbidden` (FR-002). This is a NEW scope distinct
+        from E009's `activate` (which binds node-lock seats) and E013's `validate`. OpenAPI cannot express
+        the scope in the security requirement for an `apiKey` scheme, so the required scope is declared per
+        operation via `x-rbac.requiredScope` and enforced server-side.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        ADMIN plane credential (NOT the machine `X-API-Key`). The opaque `admin_session` cookie
+        established by the E005 `POST /admin/auth/login`, set `HttpOnly` + `Secure` + `SameSite=Strict`,
+        scoped to `Path=/admin`, with a bounded `Max-Age`. Server-side revocable; never a JWT and never
+        returned in any body. RBAC (`owner > admin > viewer`) is enforced via each admin operation's
+        `x-rbac.minRole`; every state-changing call additionally requires a matching `X-CSRF-Token`.
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: >
+        Double-submit CSRF token, REQUIRED on every state-changing `/admin` request (the operator
+        force-release here). MUST equal the value of the non-HttpOnly CSRF cookie issued alongside the
+        session; a missing or mismatched token is refused fail-closed with `403 forbidden` and the
+        mutation is not applied (SC-013). GET (read) operations do not require it. Not used on the `/v1`
+        runtime plane, which is header-credential (not cookie) auth.
+      schema: { type: string }
+    LicenseId:
+      name: licenseId
+      in: path
+      required: true
+      description: A license identifier (UUID) within the caller's tenant.
+      schema: { type: string, format: uuid }
+      example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+    LeaseId:
+      name: leaseId
+      in: path
+      required: true
+      description: A lease identifier (UUID) within the caller's tenant.
+      schema: { type: string, format: uuid }
+      example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+    LeaseStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: >
+        Optionally filter the registry by lease status. Omit to return all statuses (live + recently-ended).
+      schema:
+        type: string
+        enum: [live, released, reclaimed]
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }` (matches E008/E009/E013/
+        E014). `code` is a stable, enumerated snake_case machine-readable value; `message` is human-
+        readable; `details` is optional structured context whose shape depends on `code`. No field ever
+        carries a raw hardware identifier, the raw holder reference, signing-key material, a lease secret,
+        an acquire token, or card/PAN data; and no field discloses another tenant's existence — cross-
+        tenant access resolves to `404` (never `403`).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error code (snake_case). Enumerated; new codes require a contract
+            change. Each refusal reason is a DISTINCT, testable code.
+          enum:
+            - validation_error            # 400 — malformed body / bad path or query value / missing scope-required input, e.g. a fingerprint under machine scope (FR-023); non-JSON body (§MEDIA TYPE)
+            - unauthorized                # 401 — no resolvable auth (missing/invalid API key or session); fail-closed (FR-002, SC-020)
+            - forbidden                   # 403 — missing `lease` scope (runtime, FR-002, SC-020), RBAC deny (FR-015/016, SC-010), or CSRF failure (admin, FR-016, SC-013), fail-closed
+            - no_concurrency_entitlement  # 403 — the license has no maxConcurrent set; floating not entitled (FR-005, SC-019)
+            - license_not_found           # 404 — the referenced license does not resolve in this tenant (acquire); cross-tenant resolves here (FR-019, SC-012)
+            - not_found                   # 404 — unknown license/lease within the tenant (registry, renew, force-release); cross-tenant resolves here (FR-019, SC-012)
+            - license_not_active          # 409 — the license is suspended, revoked, or expired (FR-006, SC-004)
+            - seat_capacity_exhausted     # 409 — effective cap (maxConcurrent + overage allowance) reached; ONE code for hard-cap-at-capacity AND overage-allowance-exhausted, distinguished by details (FR-004/012, SC-003/009)
+            - activation_required         # 409 — activated-devices-only gating: no valid current node-lock activation (FR-025, SC-022)
+            - lease_not_renewable         # 409 — lease reclaimed/expired/fenced or license now revoked; re-acquire (FR-011/024, SC-008)
+            - rate_limited                # 429 — runtime lease surface rate limit exceeded (FR-017, SC-014); carries Retry-After
+            - signer_unavailable          # 503 — the signed lease handle could not be minted (E004 signer fault); no seat consumed on acquire (FR-022, SC-021)
+          example: seat_capacity_exhausted
+        message:
+          type: string
+          description: >
+            Human-readable summary. Never contains a raw identifier, the raw holder reference, key
+            material, a lease secret, an acquire token, or card/PAN data.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value? }`;
+            `forbidden` → `{ requiredScope }` (runtime scope deny) or `{ minRole, role }` (RBAC deny) or `{ reason: "csrf" }` (CSRF failure);
+            `no_concurrency_entitlement` → NO details (the license simply carries no floating entitlement);
+            `license_not_found` → `{ licenseId? }` (omitted when referenced by opaque key);
+            `not_found` → the missing id (`{ leaseId }` or `{ licenseId }`);
+            `license_not_active` → `{ status: "suspended" | "revoked" | "expired" }`;
+            `seat_capacity_exhausted` → `{ maxConcurrent, concurrencyUsed, overageAllowance }`;
+            `activation_required` → `{ reason: "no_current_activation" }`;
+            `lease_not_renewable` → `{ reason: "reclaimed" | "expired" | "fenced" | "license_revoked" }`;
+            `rate_limited` → `{ retryAfterSeconds }` (this value MUST EQUAL the `Retry-After` response
+            header — the SAME integer number of SECONDS; the header and this field never disagree);
+            `signer_unavailable` → `{ retryAfterSeconds? }` (when present it MUST EQUAL the `Retry-After`
+            header — the SAME integer seconds).
+            It never carries a raw identifier, the raw holder reference, key material, a lease secret, an
+            acquire token, or card/PAN data.
+
+    # --- Shared value types -----------------------------------------------------------------------
+    ConcurrencyScope:
+      type: string
+      description: >
+        The per-plan concurrency-counting scope (FR-023) that determines what a seat is counted against
+        and how the `holderKey` is derived: `session` (default; each running instance, keyed on the
+        client-supplied `holderReference`), `machine` (keyed on the E009 device `fingerprint`, so
+        instances on one machine share a seat), or `user` (keyed on a named-user reference in
+        `holderReference`). The "at most one live lease per (license, holderKey)" invariant holds in every
+        mode.
+      enum: [session, machine, user]
+      example: session
+
+    LeaseStatus:
+      type: string
+      description: >
+        Lease lifecycle status. `live` = the binding holds and consumes one seat; `released` = the holder
+        released it (seat freed); `reclaimed` = the sweeper (TTL + grace) or an operator/revocation
+        reclaimed it (seat freed). `released`/`reclaimed` are terminal — a stale renew never resurrects
+        them (FR-011).
+      enum: [live, released, reclaimed]
+
+    SignalHash:
+      type: string
+      description: >
+        One salted hash of a stable hardware signal, computed by the CLIENT (base64url of a 32-byte
+        digest). Used only under `machine` scope (FR-023) to derive the `holderKey` from the E009 device
+        fingerprint. Raw hardware identifiers are never transmitted, stored, or returned (FR-020).
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      example: "9f8Xk2QpL0rNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xKQ"
+
+    Fingerprint:
+      type: object
+      description: >
+        The machine fingerprint — N client-computed salted signal hashes (the E009 device fingerprint).
+        OPTIONAL on acquire; used ONLY under `machine` scope to derive the pseudonymous `holderKey`
+        (FR-023). The K-of-N tolerance is a server default, not a per-request client choice, so it is not
+        part of this payload.
+      additionalProperties: false
+      required: [signals]
+      properties:
+        signals:
+          type: array
+          description: The salted signal hashes (N of them). Raw hardware identifiers are never sent (FR-020).
+          minItems: 1
+          maxItems: 32
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/SignalHash' }
+
+    LicenseKeyToken:
+      type: string
+      description: >
+        The signed LICENSE KEY the customer holds — the E001 `LIC1` public token issued by E008. Supplied
+        on acquire to identify the license; it is NOT the signing key. Provide this OR `licenseId`, not
+        both. VALIDATION MAPPING: a `licenseKey` that is NOT a structurally well-formed LIC1 token (or a
+        malformed `licenseId` UUID) is rejected `400 validation_error` (a schema/shape failure); a
+        well-formed but UNKNOWN or cross-tenant license resolves `404 license_not_found` (a resolution
+        failure that never leaks another tenant's existence, FR-019).
+      example: "LIC1.eyJsaWQiOiJlNWY2MDcxOCJ9.aXNzdWVkLXRva2VuLWV4YW1wbGU"
+
+    HolderReference:
+      type: string
+      description: >
+        The client-supplied STABLE, OPAQUE holder reference — WRITE-ONLY. The server SALTS and HASHES it
+        into the pseudonymous `holderKey` (or, under `machine` scope, derives the key from the submitted
+        `fingerprint` instead); the RAW value is NEVER stored, logged, or returned (FR-001/020). Bound to
+        the single-use `acquireToken` so a re-acquire dedupes across restarts. The server never interprets
+        its structure. Under `session`/`user` scope this is the per-instance or named-user reference;
+        under `machine` scope it is supplemental and the `holderKey` comes from the fingerprint.
+      writeOnly: true
+      minLength: 8
+      maxLength: 512
+      example: "instance-3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+
+    AcquireToken:
+      type: string
+      description: >
+        Single-use client-supplied token for idempotency/anti-replay (FR-014). MUST be high-entropy
+        (>=128-bit, single-use) and is retained for a bounded replay-rejection window. A retry with the
+        SAME token for the same holder returns the ORIGINAL lease (`200`); it never consumes a second
+        seat. Never echoed in any response or error.
+      minLength: 16
+      maxLength: 200
+      pattern: '^[A-Za-z0-9_-]+$'
+      example: "b1946ac92492d2347c6235b4d2611184"
+
+    LeaseHandle:
+      type: string
+      description: >
+        The signed, SHORT-TTL, tamper-evident lease handle returned on acquire/renew (FR-022, SC-018) — an
+        E001 `LIC1`-style artifact minted by the EXISTING E004 signer with a DOMAIN-SEPARATED payload
+        (`LICSRV-LEASE-v1`), whose validity is bounded by the lease TTL. A local gate verifies it OFFLINE
+        against the E004 public key between heartbeats, while the SERVER remains the sole authority for the
+        seat count. It is a PUBLIC signed artifact (safe to embed on the machine); it is NOT the signing
+        key, which is never returned. `null` when the deployment runs in PLAIN server-side authorization
+        mode (lease id + expiry only, no handle).
+      example: "LIC1.eyJsZWFzZSI6IjliMmUxZDQwIiwiZG9tIjoiTElDU1JWLUxFQVNFLXYxIn0.bGVhc2UtaGFuZGxlLXNpZ25hdHVyZQ"
+
+    # --- Runtime: acquire / renew / release -------------------------------------------------------
+    AcquireLeaseRequest:
+      type: object
+      description: >
+        Acquire a floating concurrency seat. Reference the license by EITHER `licenseKey` OR `licenseId`
+        (exactly one). Carries the write-only `holderReference`, a single-use `acquireToken`, an OPTIONAL
+        `fingerprint` (used under `machine` scope, FR-023), and an OPTIONAL `activationReference`
+        (informational by default; required under "activated-devices-only" gating, FR-025).
+      additionalProperties: false
+      required: [holderReference, acquireToken]
+      properties:
+        licenseKey:
+          allOf: [{ $ref: '#/components/schemas/LicenseKeyToken' }]
+          description: The license's signed LIC1 token. Provide this OR `licenseId`, not both.
+        licenseId:
+          type: string
+          format: uuid
+          description: The license id (UUID) within the caller's tenant. Provide this OR `licenseKey`, not both.
+        holderReference: { $ref: '#/components/schemas/HolderReference' }
+        acquireToken: { $ref: '#/components/schemas/AcquireToken' }
+        fingerprint:
+          allOf: [{ $ref: '#/components/schemas/Fingerprint' }]
+          description: >
+            OPTIONAL machine fingerprint. Under `machine` scope the `holderKey` is derived from it; a
+            missing fingerprint under `machine` scope is refused `400 validation_error`. Ignored under
+            `session`/`user` scope. SCOPE DISCOVERABILITY (FR-023): the license/plan's concurrency `scope`
+            is provisioned to the integrator OUT-OF-BAND together with the API key (it is a per-plan
+            attribute the client is told at onboarding), so a `machine`-scope client knows to send a
+            `fingerprint` before its FIRST acquire. As a fail-safe, an acquire that omits a required
+            `fingerprint` under `machine` scope returns the DISTINCT `400 validation_error`
+            (`details.field: fingerprint`, message "A fingerprint is required under machine concurrency
+            scope."), so a client can also learn the requirement from the refusal and retry.
+        activationReference:
+          type: string
+          format: uuid
+          description: >
+            OPTIONAL reference to an E009 node-lock activation (FR-025). INFORMATIONAL by default (the
+            concurrency and node-lock dimensions are independent). Under a plan's "activated-devices-only"
+            gating it MUST reference a valid CURRENT activation for the machine, else acquire is refused
+            `409 activation_required`.
+          example: "a7f1c2d3-9a8b-4c7d-8e1f-0a1b2c3d4e5f"
+      oneOf:
+        - required: [licenseKey]
+        - required: [licenseId]
+
+    RenewLeaseRequest:
+      type: object
+      description: >
+        Optional heartbeat-renew body. Renew is identified by `{leaseId}` + the API key; no fields are
+        required. Present as an explicit schema so a future field (e.g. a client anchor) can be added
+        without a breaking change.
+      additionalProperties: false
+      properties: {}
+
+    LeaseGrant:
+      type: object
+      description: >
+        The lease returned by acquire (`POST /v1/leases`, 201 fresh or 200 idempotent re-use) and by renew
+        (`POST /v1/leases/{leaseId}/renew`, 200). Carries the lease metadata, the server-computed expiry,
+        TTL/heartbeat GUIDANCE, the used-vs-cap summary, and — unless plain-authorization mode is
+        configured — the signed `leaseHandle` (+ opaque `keyId`). This is the ONLY schema that includes
+        `leaseHandle`; the signing key and the raw holder reference are never included.
+      required:
+        - id
+        - licenseId
+        - holderKey
+        - scope
+        - status
+        - acquiredAt
+        - lastRenewedAt
+        - expiresAt
+        - ttlSeconds
+        - heartbeatIntervalSeconds
+        - graceSeconds
+        - concurrencyUsed
+        - maxConcurrent
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Server-generated lease UUID, unique within the tenant.
+          example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+        licenseId:
+          type: string
+          format: uuid
+          description: The license this lease belongs to.
+          example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+        holderKey:
+          type: string
+          description: >
+            Pseudonymous holder identity — a salted hash of the client-supplied `holderReference` (or, under
+            `machine` scope, of the fingerprint). Not the raw reference and not a UUID (FR-001/020, SC-015).
+          example: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+        scope: { $ref: '#/components/schemas/ConcurrencyScope' }
+        status: { $ref: '#/components/schemas/LeaseStatus' }
+        acquiredAt:
+          type: string
+          format: date-time
+          description: When the lease was first acquired (immutable across renewals).
+        lastRenewedAt:
+          type: string
+          format: date-time
+          description: When the lease was last renewed (equals `acquiredAt` on a fresh acquire).
+        expiresAt:
+          type: string
+          format: date-time
+          description: >
+            The SERVER-computed expiry of the seat (FR-009). Computed from server/monotonic time, never a
+            client wall clock. The seat is held only until this instant unless renewed.
+        ttlSeconds:
+          type: integer
+          minimum: 1
+          description: The plan's lease TTL (seconds) used to compute `expiresAt`. Default 1800 (30 min).
+          example: 1800
+        heartbeatIntervalSeconds:
+          type: integer
+          minimum: 1
+          description: >
+            GUIDANCE — the recommended heartbeat cadence (seconds); the client should renew (with jitter)
+            at about this interval. The invariant TTL ≥ 3× heartbeat guarantees a single missed heartbeat
+            never reclaims a live seat (FR-009). Default 600 (10 min).
+          example: 600
+        graceSeconds:
+          type: integer
+          minimum: 0
+          description: >
+            GUIDANCE — the grace window (seconds) after `expiresAt` before the sweeper reclaims the lease
+            (FR-010). Default 300 (5 min).
+          example: 300
+        concurrencyUsed:
+          type: integer
+          minimum: 0
+          description: >
+            Live leases for the license after this call (never exceeds `maxConcurrent` + `overageAllowance`,
+            FR-003). The used side of the used-vs-cap summary.
+          example: 3
+        maxConcurrent:
+          type: integer
+          minimum: 1
+          description: The license's snapshotted concurrency cap (`max_concurrent`), enforced by this epic (FR-005).
+          example: 5
+        overageAllowance:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >
+            The soft-cap overage allowance (absolute integer seats ABOVE the base cap; FR-012). `0` = hard
+            cap. The effective cap is `maxConcurrent + overageAllowance`.
+          example: 0
+        overage:
+          type: boolean
+          default: false
+          description: >
+            `true` when THIS acquire consumed an over-base (soft-cap) seat — metered to the append-only
+            audit log for later true-up (FR-013). Always `false` on renew and on a within-base acquire.
+        keyId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The id of the product signing key that signed the `leaseHandle` (E004) — an OPAQUE identifier
+            only, never key material (the "opaque signing-key id" FR-022 permits alongside the public
+            artifact). `null` in plain-authorization mode.
+          example: "a1b2c3d4-5566-4778-99aa-bbccddeeff00"
+        leaseHandle:
+          oneOf:
+            - { $ref: '#/components/schemas/LeaseHandle' }
+            - type: "null"
+          description: >
+            The signed, short-TTL lease handle (FR-022). `null` in plain-authorization mode. The signing
+            key is never returned.
+
+    ReleaseResult:
+      type: object
+      description: The idempotent result of a runtime release — the requested lease id and its terminal status.
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The requested lease id (echoed).
+          example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+        status:
+          type: string
+          enum: [released]
+          description: Always `released` — the seat is not held (released, already ended, or unknown; idempotent).
+
+    # --- Admin: registry + force-release ----------------------------------------------------------
+    LeaseSummary:
+      type: object
+      description: >
+        One lease as shown in the ADMIN registry (FR-015). Pseudonymous and read-only: NO `leaseHandle`,
+        NO raw holder reference (SC-015).
+      required: [id, holderKey, scope, status, acquiredAt, lastRenewedAt, expiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Server-generated lease UUID, unique within the tenant.
+          example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+        holderKey:
+          type: string
+          description: Pseudonymous holder identity (salted hash), never the raw reference (FR-020, SC-015).
+          example: "Zk9Xp2QrL0sNvT7bYc4mHs6Jd1WuA3eZoG5iRfB2xM"
+        scope: { $ref: '#/components/schemas/ConcurrencyScope' }
+        status: { $ref: '#/components/schemas/LeaseStatus' }
+        acquiredAt: { type: string, format: date-time, description: When the lease was first acquired. }
+        lastRenewedAt: { type: string, format: date-time, description: When the lease was last renewed. }
+        expiresAt:
+          type: string
+          format: date-time
+          description: The server-computed expiry (for a live lease) or the expiry at end (for an ended lease).
+
+    LeaseRegistry:
+      type: object
+      description: >
+        A license's lease registry (FR-015; US5) — the lease list plus a concurrency-used-vs-cap summary.
+        Deterministically ordered; bounded to a hard cap of 1000 items with a `truncated` signal; not
+        paginated.
+      required: [leases, concurrencyUsed, maxConcurrent]
+      properties:
+        concurrencyUsed:
+          type: integer
+          minimum: 0
+          description: >
+            Count of the license's LIVE leases (never exceeds `maxConcurrent` + `overageAllowance`,
+            FR-003). Computed independently of the (possibly truncated) list, so it never understates true
+            usage.
+          example: 1
+        maxConcurrent:
+          type: integer
+          minimum: 1
+          description: The license's snapshotted concurrency cap (`max_concurrent`), E008 snapshot.
+          example: 5
+        overageAllowance:
+          type: integer
+          minimum: 0
+          default: 0
+          description: The soft-cap overage allowance (absolute integer seats above the base cap; FR-012).
+          example: 0
+        scope:
+          allOf: [{ $ref: '#/components/schemas/ConcurrencyScope' }]
+          description: The license's configured concurrency scope (FR-023).
+        leases:
+          type: array
+          description: >
+            The license's live and recently-ended leases, ordered by `acquiredAt` DESCENDING (ties broken
+            by `id`) for a stable, deterministic result. Bounded to a hard cap of 1000 and NOT paginated:
+            if more than 1000 leases match, only the most recent 1000 by that order are returned and
+            `truncated` is `true` (the `concurrencyUsed` summary still reflects the TRUE live total).
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/LeaseSummary' }
+        truncated:
+          type: boolean
+          default: false
+          description: >
+            The truncation signal for this non-paginated list: `true` when more than 1000 leases match and
+            the result was capped to the most recent 1000 (older rows omitted); omitted or `false` when the
+            full set fits. Narrow with the `status` filter if set.
+
+    ForceReleaseResult:
+      type: object
+      description: The result of an operator/admin force-release — the lease id and its resulting terminal status.
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "9b2e1d40-1111-4a2b-8c3d-4e5f60718293"
+        status:
+          type: string
+          enum: [reclaimed]
+          description: Always `reclaimed` — the seat is freed (force-released, or the lease was already ended).
+
+  responses:
+    BadRequest:
+      description: Validation error — malformed body or a bad path/query value.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            oneOfLicense:
+              value:
+                code: validation_error
+                message: "Exactly one of licenseKey or licenseId is required."
+                details: { field: licenseId }
+            missingFingerprint:
+              summary: machine scope requires a fingerprint
+              value:
+                code: validation_error
+                message: "A fingerprint is required under machine concurrency scope."
+                details: { field: fingerprint }
+    Unauthorized:
+      description: >
+        No resolvable authentication — the runtime `X-API-Key` is missing/invalid, or the admin
+        `admin_session` cookie is missing, expired, or revoked.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noApiKey:
+              summary: Runtime plane — missing/invalid API key
+              value: { code: unauthorized, message: "Missing or invalid API key." }
+            noSession:
+              summary: Admin plane — no valid session
+              value: { code: unauthorized, message: "Authentication required." }
+    ForbiddenScope:
+      description: >
+        Runtime plane, fail-closed — the API key resolved to a tenant but lacks the required `lease` scope
+        (FR-002). The denied attempt is audited (FR-018).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingScope:
+              value:
+                code: forbidden
+                message: "The lease scope is required."
+                details: { requiredScope: lease }
+    ForbiddenAcquire:
+      description: >
+        Acquire is refused with a `403` for ONE of two DISTINCT reasons, disambiguated by `code`:
+        `forbidden` (the API key lacks the `lease` scope — an AUTH refusal, FR-002) OR
+        `no_concurrency_entitlement` (the resolved license has NO `maxConcurrent` set, so floating is not
+        entitled — a BUSINESS refusal evaluated fail-closed AFTER the license resolves; never treated as
+        unlimited and never falling back to `maxActivations`, FR-005, SC-019). No seat is consumed in
+        either case. The denied attempt is audited (FR-018).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingScope:
+              value:
+                code: forbidden
+                message: "The lease scope is required."
+                details: { requiredScope: lease }
+            noEntitlement:
+              value:
+                code: no_concurrency_entitlement
+                message: "This license does not include floating (concurrent) seats."
+    Forbidden:
+      description: >
+        Admin plane, fail-closed — either the session's role is below the operation's `x-rbac.minRole` (a
+        viewer attempting the force-release, SC-010), or the mutation's `X-CSRF-Token` is missing or
+        mismatched (SC-013). Both are recorded as an auditable security event.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the admin role."
+                details: { minRole: admin, role: viewer }
+            csrfFailure:
+              value:
+                code: forbidden
+                message: "Missing or invalid CSRF token."
+                details: { reason: csrf }
+    LicenseNotFound:
+      description: >
+        No license resolves within the caller's tenant for the supplied `licenseKey`/`licenseId` (a
+        cross-tenant reference also resolves here, FR-019). No seat is consumed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownLicense:
+              value:
+                code: license_not_found
+                message: "No such license in this tenant."
+                details: { licenseId: "00000000-0000-4000-8000-000000000000" }
+    LeaseNotFound:
+      description: >
+        The `leaseId` is unknown within the caller's tenant (a cross-tenant id resolves here too, FR-019).
+        Returned by renew and by the admin force-release. NOTE: the runtime RELEASE route does NOT return
+        `404` — an unknown lease there is an idempotent `200` no-op (FR-008).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownLease:
+              value:
+                code: not_found
+                message: "No such lease in this tenant."
+                details: { leaseId: "00000000-0000-4000-8000-000000000000" }
+    NotFound:
+      description: >
+        The referenced license or lease does not exist within the caller's tenant. A cross-tenant id
+        resolves here (never `403`), so it is indistinguishable from a non-existent one (FR-019).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownLicense:
+              value:
+                code: not_found
+                message: "No such license in this tenant."
+                details: { licenseId: "00000000-0000-4000-8000-000000000000" }
+            unknownLease:
+              value:
+                code: not_found
+                message: "No such lease in this tenant."
+                details: { leaseId: "00000000-0000-4000-8000-000000000000" }
+    AcquireConflict:
+      description: >
+        Acquire is refused with a `409` for ONE of three DISTINCT reasons, disambiguated by `code` (no seat
+        consumed, no partial lease recorded): `license_not_active` (the license is suspended/revoked/
+        expired, FR-006), `activation_required` (a plan's "activated-devices-only" gating found no valid
+        current node-lock activation, FR-025), or `seat_capacity_exhausted` (the effective cap
+        `maxConcurrent + overageAllowance` is reached — a hard cap at capacity, or a soft cap whose overage
+        allowance is exhausted, FR-004/012). Evaluated in that order.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            licenseNotActive:
+              value:
+                code: license_not_active
+                message: "The license is not active and cannot lease a seat."
+                details: { status: suspended }
+            activationRequired:
+              value:
+                code: activation_required
+                message: "This plan requires an activated device to lease a floating seat."
+                details: { reason: no_current_activation }
+            seatCapacityExhausted:
+              value:
+                code: seat_capacity_exhausted
+                message: "This license has reached its concurrency seat capacity."
+                details: { maxConcurrent: 5, concurrencyUsed: 5, overageAllowance: 0 }
+    LeaseNotRenewable:
+      description: >
+        The lease can no longer be renewed and the client MUST re-acquire (FR-011/024, SC-008): it was
+        RECLAIMED (TTL + grace elapsed) or EXPIRED, a STALE/late renew lost the generation-fence race
+        against a reclaim, or the license is now REVOKED (renew re-checks live license state). No seat is
+        double-counted and no reclaimed seat is revived.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            reclaimed:
+              value:
+                code: lease_not_renewable
+                message: "This lease was reclaimed; acquire a new lease."
+                details: { reason: reclaimed }
+            licenseRevoked:
+              value:
+                code: lease_not_renewable
+                message: "The license was revoked; this lease can no longer be renewed."
+                details: { reason: license_revoked }
+    RateLimited:
+      description: >
+        The runtime lease surface rate limit was exceeded for this API key — the request is refused
+        fail-fast, no seat is consumed, and the limit-exceeded event is audited (FR-017/018). The threshold
+        is sized to admit legitimate (jittered) heartbeat cadence. The `Retry-After` header gives the
+        seconds to wait before retrying and MUST equal `details.retryAfterSeconds` (the SAME integer
+        seconds — the header and the body field never disagree). Covers the acquire, renew, and release
+        runtime routes.
+      headers:
+        Retry-After:
+          description: >
+            Seconds the client should wait before retrying. MUST equal `details.retryAfterSeconds` when
+            that field is present (the same integer seconds).
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            rateLimited:
+              value:
+                code: rate_limited
+                message: "Too many lease requests; retry after the indicated delay."
+                details: { retryAfterSeconds: 30 }
+    SignerUnavailable:
+      description: >
+        The signed lease handle could not be minted because the E004 signer is unavailable (a signer
+        fault), while signed-handle mode is ON. On ACQUIRE the transaction rolls back FAIL-CLOSED — no seat
+        is consumed and no lease row is persisted; on RENEW the lease and its seat are UNAFFECTED (the
+        renew is not applied). The client MAY retry after a short delay. Not returned in plain-authorization
+        mode. The signing key is never exposed. When present, the `Retry-After` header and
+        `details.retryAfterSeconds` MUST agree (the same integer seconds).
+      headers:
+        Retry-After:
+          description: >
+            Seconds the client should wait before retrying. MUST equal `details.retryAfterSeconds` when
+            that field is present (the same integer seconds).
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            signerUnavailable:
+              value:
+                code: signer_unavailable
+                message: "The signing service is temporarily unavailable; no seat was consumed. Retry shortly."
+                details: { retryAfterSeconds: 5 }
