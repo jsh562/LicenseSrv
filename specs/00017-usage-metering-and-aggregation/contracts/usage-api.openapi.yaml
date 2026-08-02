@@ -1,0 +1,988 @@
+openapi: 3.1.0
+info:
+  title: Usage Metering & Aggregation API
+  version: 0.1.0
+  description: >
+    REST surface for epic E016 (Usage Metering & Aggregation). A licensed application INGESTS usage
+    events — single or (typically) a pre-aggregated batch — against a license's METERED entitlement via
+    a dedicated, high-write, fast-ack runtime endpoint; each event carries a client-supplied idempotency
+    key so a re-reported event accrues EXACTLY ONCE. The server appends the raw events, an incremental
+    watermark-driven worker rolls them up into a durable, reproducible per-(license, entitlement, hour)
+    aggregate, and operators (and the licensed app, for its own license) query that aggregate over a
+    caller-supplied window. Metering accrues and aggregates ONLY — it computes NO price, rate, or money;
+    downstream billing true-up (E014) consumes the aggregate read-only. Covers FR-001..021 and
+    SC-001..017. Concretizes ADR-0013 (idempotent usage ingestion + reproducible incremental rollup, a
+    metered entitlement kind additive to E007, and a permanent metering↔billing boundary).
+
+
+    TWO AUTH PLANES (this contract deliberately spans both surfaces; each operation declares exactly one
+    primary plane).
+
+      * RUNTIME (INGEST) plane — `POST /v1/usage`, called by the LICENSED APPLICATION (a machine/
+        integration). Authenticated by the tenant/machine API key in the `X-API-Key` header
+        (src/server/auth/apikey.ts + app.ts), resolved to a tenant + capability scopes. Ingestion
+        REQUIRES the NEW ingest-only `usage.ingest` scope and fails CLOSED: no resolvable tenant context →
+        `401 unauthorized`; a resolvable key that LACKS `usage.ingest` → `403 forbidden` (FR-001, SC-016).
+        `usage.ingest` is a DISTINCT scope from E009 `activate`, E013 `validate`, and E015 `lease` — a
+        validating/leasing client gains NO authority to write usage, and the scope is independently
+        revocable and tenant- AND license-bound (a key may only report for licenses in its own tenant;
+        every event's `licenseId`/`entitlementId` is re-resolved within that tenant, FR-006/017). There is
+        NO CSRF on this plane — it is header-credential, not cookie, auth. The plane is rate-limited PER
+        API KEY (FR-005): an over-threshold burst is refused `429 rate_limited` with a `Retry-After`
+        header, and the limit-exceeded event is audited (FR-018).
+
+      * OPERATOR (QUERY) plane — `GET /admin/licenses/{licenseId}/usage`, called by a HUMAN operator/admin
+        in the console. Authenticated by the opaque `admin_session` cookie (E005) established by
+        `POST /admin/auth/login`, NOT by `X-API-Key`. RBAC is `owner > admin > viewer`; the read-only
+        aggregate query requires `viewer` or higher (`x-rbac.minRole`, enforced server-side). It is a GET
+        (read), so it carries NO CSRF token. (Mirrors the E008/E009/E014/E015 console surfaces.)
+
+      * APP SELF-READ + E014 note (INTERNAL-ONLY read path — deliberately NOT a wire operation specified in
+        this contract, and NEVER on the `/admin` session plane). The licensed application MAY read the
+        aggregate for ITS OWN bound license, and downstream billing true-up (E014) reads the aggregate
+        read-only. This is an INTERNAL read path — inside the runtime process / a same-tenant service call
+        confined to the caller's OWN license — that resolves the TRUE SIGNED NET directly from
+        `usage_rollup` using the identical reproducible query semantics as the operator route below. It does
+        NOT ride the `/admin` `admin_session` cookie plane and does NOT use the console `raw=true` query
+        parameter (that parameter is a console-only affordance, see FLOOR-AT-ZERO below); the true-net for
+        the app/E014 path is obtained by the internal read itself, not by any client-supplied flag. The
+        `/admin/licenses/{licenseId}/usage` operation below is the ONLY externally-specified query surface
+        here — the operator-facing console projection of that same reproducible aggregate.
+
+
+    IDEMPOTENT, EXACTLY-ONCE INGEST (FR-002/003/007; SC-001/002/015). Each event carries a client-supplied
+    `source` identifier and an `eventId` idempotency key. Dedupe is by a UNIQUE `(tenant, source, eventId)`
+    constraint + a single batched `INSERT ... ON CONFLICT DO NOTHING` (mirroring the shipped E014
+    `billing_event` source+id pattern), so a re-report of the same key — a retry, an at-least-once
+    redelivery, or a parallel-producer race — accrues AT MOST ONCE and is reported per-event as
+    `duplicate` (a no-op that accrues nothing). Independent producers mint keys under distinct `source`
+    values so they never collide. Events are APPEND-ONLY: an accrued event is never mutated or deleted in
+    normal operation — corrections are explicit reversal events (see below), and removal is only via
+    retention pruning or GDPR erasure. Dedupe is GUARANTEED ONLY within the bounded retention window
+    (~35d default, FR-015): a re-report after the key is pruned is a FRESH accrual, a documented
+    consequence of bounded dedupe.
+
+
+    PER-EVENT BATCH SEMANTICS (FR-007; AD-008; SC-002). A batch is processed PER-EVENT-IDEMPOTENTLY: new
+    events accrue, duplicates are no-ops, and invalid events are reported INDIVIDUALLY — a SINGLE BAD EVENT
+    NEVER FAILS THE WHOLE BATCH. The response is a per-batch SUMMARY `{ accepted, duplicate, rejected[] }`
+    where each `rejected[]` entry carries the offending event's zero-based `index` plus a `{ code, message }`
+    refusal. Per-event rejection reasons (distinct, testable codes, applied AFTER the batch is accepted for
+    processing — they are NOT HTTP status codes): `not_found` (unknown/archived/cross-tenant license or
+    entitlement, FR-006/017), `not_metered` (the entitlement exists but is not a metered kind, FR-006),
+    `archived` (the license/entitlement is archived, FR-006), `license_inactive` (the license is not in an
+    active state — expired/suspended/revoked/inactive, FR-021), `stale_event` (the `eventTime` is older than
+    the retention window, FR-004), `future_event` (the `eventTime` is more than the configured skew into
+    the future, FR-004), and `validation_error` (a malformed event, a `dimensions` entry that violates the
+    server allow-list schema, or a malformed per-aggregation `quantity`). A rejected event is never silently
+    dropped or stored. A duplicate is NOT a rejection — it is counted in `duplicate` and accrues nothing.
+
+
+    BATCH-LEVEL REFUSALS (whole request, no accrual). Distinct from per-event rejections, a request that
+    fails validation up front is refused with an HTTP `4xx` and NO event is accrued: a batch that exceeds
+    the configured maximum size (default 1,000 events/request) → `400 batch_too_large` (rejected BEFORE any
+    accrual, FR-005); a structurally malformed request body / non-JSON → `400 validation_error`; a missing/
+    insufficient `usage.ingest` scope → `401 unauthorized` / `403 forbidden` (FR-001); an over-limit burst
+    → `429 rate_limited` + `Retry-After` (FR-005).
+
+
+    ACCRUAL BY EVENT TIME + SKEW BOUNDS (FR-004/010/012; SC-007). An event accrues by its CLIENT-SUPPLIED
+    `eventTime` (not receipt time) into a FIXED HOURLY time-bucket; "per period" queries roll up hourly
+    buckets over the caller's window (billing-period alignment is applied by E014 at read, kept out of
+    metering storage per the boundary). A late/out-of-order event within the retention window re-opens and
+    recomputes the affected bucket. Clock skew is bounded: an event older than the retention window is
+    rejected `stale_event`; an event more than the configured allowance into the future is rejected
+    `future_event`.
+
+
+    REVERSALS + FLOOR-AT-ZERO (FR-013/020; SC-008/017; STF-001). Corrections are REFERENCE-FREE
+    signed-NEGATIVE usage events — a standalone event with a negative `quantity` that does NOT need to
+    reference an original event id (fitting pre-aggregated batch clients) — that adjust the aggregate
+    APPEND-ONLY, never mutating or deleting a prior event. The stored `usage_rollup` retains the TRUE
+    SIGNED NET (reproducible, and what E014 true-up consumes). Operator/UI query responses FLOOR the
+    displayed value at zero (`max(0, net)`) so operators never see negative usage; the `raw=true`/internal
+    read returns the true signed net so a net-negative correction stays fully visible to billing true-up.
+    The two reads are the DELIBERATE difference between operator display and the billing-consumed value.
+    Access to the un-floored true signed net is BOUNDED (FR-020, SC-019): it is available only to the
+    E014/billing internal read path, the licensed app's self-read of its OWN bound license, and an ELEVATED
+    operator role (admin or higher). A plain `viewer` only ever receives the floored display; a `viewer`
+    requesting `raw=true` is refused `403 forbidden`, so a viewer never sees negative usage.
+
+
+    OPTIONAL QUOTA SIGNAL (FR-014; SC-009). A metered entitlement MAY carry an `allowance`/quota. When
+    accrued usage crosses it, the aggregate is FLAGGED `overQuota: true` and an audit entry is recorded —
+    a SIGNAL ONLY. Ingestion is NEVER blocked and the client is NEVER throttled by the quota; enforcement
+    is out of scope (E013's / the client's responsibility).
+
+
+    REPRODUCIBLE AGGREGATE (FR-010/011/020; SC-004/014). The aggregate is DURABLE and REPRODUCIBLE: an
+    identical query over an unchanged window returns IDENTICAL totals, recomputable from the retained raw
+    events, and it SURVIVES raw-event pruning. A downstream billing re-run therefore yields identical
+    totals. The rollup/prune workers are FAIL-OPEN (a worker fault never blocks ingest; an on-read fallback
+    covers the open bucket) and the eventually-consistent path never yields a non-reproducible total.
+
+
+    METERED ENTITLEMENT DEFINITION (FR-008/009 — INTEGRATION POINT, NOT DEFINED HERE). A metered
+    entitlement is a `type=metered` value ADDED to the EXISTING E007 `entitlement` type/kind enum, with
+    metered-only fields `{ aggregation: sum | count | unique_count, unit, allowance? }`, authored on the
+    EXISTING E007 catalog admin surface (its create/update endpoints) — one authoring flow, with the
+    freeze-on-usage rule (aggregation/unit immutable once any usage exists → `409 aggregation_frozen`)
+    colocated with the entitlement edit. This contract does NOT re-define the catalog surface; it references
+    the metered kind as an integration point and consumes it via the `entitlementId` on ingest and the
+    per-entitlement query aggregate. See the E007 catalog contract for the entitlement create/update shapes.
+
+
+    SECRECY & PII INVARIANTS (FR-016/019; SC-013; project-instructions non-negotiables I & III). NO field
+    of any request or response — nor any log or audit entry — ever carries a secret, API key, or signing
+    key (FR-019), and NO card/PAN/CVV/expiry or raw cardholder data appears anywhere (metering computes no
+    money, FR-020). Usage is MINIMIZED to license/entitlement references, quantities, event timestamps, and
+    SERVER-ALLOW-LIST-VALIDATED client `dimensions` (bounded keys, scalar values, size caps) — no PII beyond
+    those references; a dimension that violates the allow-list is a per-event `validation_error` so PII
+    cannot leak into free-form dimensions (SC-013). A tenant's usage is GDPR-erasable.
+
+
+    TENANT SCOPING (FR-006/017, fail-closed). Every operation is implicitly scoped to the caller's tenant
+    (the API key's tenant on ingest, the session's tenant on query). There is NO tenant path/query parameter
+    and it can never be widened by the caller. A cross-tenant `licenseId`/`entitlementId` resolves to NOT
+    FOUND — per-event `not_found` on ingest, and `404 not_found` on the query route (never `403`) — so an
+    out-of-tenant id is indistinguishable from a non-existent one (SC-012). Forced RLS on the usage tables
+    means an unset tenant GUC yields zero rows.
+
+
+    AUDIT (FR-018). Each ingestion batch (summary), metered-entitlement definition/edit, over-quota signal,
+    reversal, and retention prune appends an APPEND-ONLY E002 audit entry — attributing ingestion to the
+    reporting API key/license and worker actions (rollup, prune) to a synthetic SYSTEM actor — never a
+    secret, credential, or card datum.
+
+
+    ERROR MODEL. Project-standard structured JSON `{ code, message, details? }` with a stable, enumerated
+    snake_case `code` (matches E008/E009/E013/E014/E015). Every refusal reason — HTTP-level AND per-event —
+    is a DISTINCT, testable code. Field naming is camelCase throughout the bodies (the data-model's
+    snake_case columns — e.g. `event_time`, `event_id`, `usage_rollup` — map to camelCase wire fields).
+
+
+    VERSIONING. The RUNTIME (ingest) plane is API-versioned under `/v1`; the OPERATOR/console plane is
+    deliberately UNVERSIONED (`/admin/...`), the established platform convention (the same `/v1` + `/admin`
+    split as E004/E008/E009/E014/E015). A breaking runtime change is introduced under a new prefix (`/v2`).
+
+
+    MEDIA TYPE. Every request and response body is `application/json` (UTF-8); a non-JSON body is rejected
+    `400 validation_error`.
+
+
+    TIMESTAMPS. Every timestamp — the client-supplied event `eventTime` and the query `from`/`to` window —
+    is RFC 3339 / ISO 8601 in UTC with a trailing `Z` offset (e.g. `2026-08-02T09:00:00Z`), never a local
+    offset and never offset-naive. The client `eventTime` decides the accrual bucket subject to the skew
+    bounds; the window bounds decide which hourly buckets a query rolls up.
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: usage-ingest
+    description: >
+      RUNTIME usage-event ingestion called by the licensed application: a fast-ack, high-write batch
+      endpoint. API-key auth (`X-API-Key`) with the NEW ingest-only `usage.ingest` scope; no CSRF;
+      rate-limited per key (429 + Retry-After); idempotent by `(source, eventId)`; per-event batch summary
+      (FR-001/002/005/007).
+  - name: usage-query
+    description: >
+      OPERATOR console aggregated-usage query per license/entitlement over a caller window. Human
+      `admin_session` cookie + RBAC (viewer reads); floored-at-zero display; reproducible; deterministic
+      ordering + `truncated`. The licensed app / E014 read the TRUE signed net for their own license via
+      `raw=true`/internal read (FR-011/013/020).
+
+paths:
+  # --- RUNTIME plane: usage ingest (API key, `usage.ingest` scope, rate-limited, fast-ack) --------
+  /v1/usage:
+    post:
+      tags: [usage-ingest]
+      operationId: ingestUsage
+      summary: Ingest a batch of usage events (idempotent, fast-ack, per-event summary)
+      description: >
+        Report a batch of usage events against a license's metered entitlement(s) and receive a PER-BATCH
+        SUMMARY (FR-001/002/007; US1). The endpoint FAST-ACKS (accept-then-aggregate): the batch is appended
+        and deduped in one tenant-scoped transaction, the rollup is asynchronous, so a high-volume client is
+        never blocked. Requires the `usage.ingest` scope; a key lacking it is refused `403 forbidden`
+        (FR-001, SC-016), and effects are confined to the key's tenant and its bound license(s) (FR-017).
+
+
+        BODY. `events` is an array (1..maximum, default cap 1,000). Each event carries the target
+        `licenseId` + `entitlementId`, a `source` identifier, an `eventId` idempotency key (unique per
+        `(tenant, source)`), an `eventTime` (RFC3339 UTC), a signed `quantity` (NEGATIVE = a reference-free
+        reversal, FR-013), and OPTIONAL `dimensions` (server-allow-list-validated, no PII, FR-016).
+
+
+        WHOLE-BATCH refusals (NO event accrued):
+
+          * `400 batch_too_large` — `events` exceeds the configured maximum (default 1,000); rejected BEFORE
+            any accrual (FR-005). Details carry `{ max, size }`. Split and retry.
+          * `400 validation_error` — the request envelope is malformed / non-JSON / `events` empty or absent.
+          * `401 unauthorized` — no resolvable API key/tenant context (fail-closed).
+          * `403 forbidden` — the key resolved but lacks the `usage.ingest` scope (FR-001, SC-016).
+          * `429 rate_limited` — the per-API-key rate limit was exceeded (FR-005); carries `Retry-After`.
+
+
+        PER-EVENT outcome (a bad event NEVER fails the batch, FR-007/AD-008). Once accepted, each event is
+        one of:
+
+          * ACCEPTED — a new event accrued (counted in `accepted`).
+          * DUPLICATE — the same `(source, eventId)` was already accrued (a retry/redelivery/parallel-
+            producer race), a no-op that accrues nothing (counted in `duplicate`, FR-002/SC-001/015).
+          * REJECTED — reported in `rejected[]` with the event's zero-based `index` and a `{ code, message }`:
+            `not_found` (unknown/cross-tenant license or entitlement, FR-006/017), `not_metered` (the
+            entitlement is not a metered kind), `archived` (the license/entitlement is archived),
+            `license_inactive` (the license is not in an active state — expired/suspended/revoked/inactive,
+            FR-021), `stale_event` (`eventTime` older than the retention window, FR-004), `future_event`
+            (`eventTime` beyond the configured skew, FR-004), or `validation_error` (a malformed event, a
+            disallowed/oversized `dimensions` entry that violates the server allow-list schema, or a malformed
+            per-aggregation `quantity`, FR-016). The event accrues nothing (never silently dropped or stored).
+
+
+        A reversal is an ordinary event with a negative `quantity` (reference-free, FR-013); it accrues like
+        any other (subject to dedupe + skew) and adjusts the aggregate's true signed net. Each batch is
+        audited (summary only; no secret, credential, or card datum, FR-018/019). NO card/PAN data is ever
+        accepted, parsed, or stored (FR-020).
+
+
+        200 vs 202 is a DETERMINISTIC per-deployment mode (not per request): a synchronous deployment acks
+        `200` (accrual committed inline), a decoupled fast-ack deployment acks `202` (events durably appended
+        + accepted, rollup deferred, FR-005). Same summary body either way; the client treats both as success.
+      security:
+        - apiKey: []
+      x-rbac: { requiredScope: usage.ingest }
+      x-priority: P1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IngestUsageRequest' }
+            examples:
+              mixedBatch:
+                summary: New events, a duplicate, a reversal, and an invalid reference in one batch
+                value:
+                  events:
+                    - licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                      entitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                      source: "renderfarm-node-12"
+                      eventId: "b1946ac92492d2347c6235b4d2611184"
+                      eventTime: "2026-08-02T08:15:00Z"
+                      quantity: 1200
+                      dimensions: { region: "eu-west-1", jobType: "render" }
+                    - licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                      entitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                      source: "renderfarm-node-12"
+                      eventId: "c2a57bd03583e3458d7346c5e3722295"
+                      eventTime: "2026-08-02T08:20:00Z"
+                      quantity: -200
+                    - licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                      entitlementId: "00000000-0000-4000-8000-000000000000"
+                      source: "renderfarm-node-12"
+                      eventId: "d4f5a6b75555e6f0c0718293a4b5c6d7"
+                      eventTime: "2026-08-02T08:25:00Z"
+                      quantity: 50
+      responses:
+        '200':
+          description: >
+            SYNCHRONOUS ack — the batch was accepted and accrual committed inline. Body is the per-event
+            summary `{ accepted, duplicate, rejected[] }`. No secret, credential, or card datum is returned
+            (FR-019).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestSummary' }
+              examples:
+                summary:
+                  value:
+                    accepted: 2
+                    duplicate: 0
+                    rejected:
+                      - index: 2
+                        code: not_found
+                        message: "No such entitlement in this tenant."
+        '202':
+          description: >
+            DECOUPLED fast-ack — events were durably appended + accepted and the rollup is deferred (FR-005).
+            Returned INSTEAD of `200` by a deployment configured for fast-ack mode; the choice is a
+            deterministic per-deployment mode, not per request. Same per-event summary body; the client
+            treats both `200` and `202` as success.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IngestSummary' }
+              examples:
+                accepted:
+                  value:
+                    accepted: 2
+                    duplicate: 1
+                    rejected: []
+        '400': { $ref: '#/components/responses/IngestBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/ForbiddenScope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  # --- OPERATOR plane: aggregated usage query (session + RBAC viewer) ----------------------------
+  /admin/licenses/{licenseId}/usage:
+    parameters:
+      - $ref: '#/components/parameters/LicenseId'
+    get:
+      tags: [usage-query]
+      operationId: getLicenseUsage
+      summary: Query aggregated usage per entitlement over a window (floored display; reproducible)
+      description: >
+        Return the aggregated usage for a license over a CALLER-SUPPLIED window (`from`/`to`, RFC3339 UTC),
+        per metered entitlement (FR-011; US2). The result is REPRODUCIBLE — an identical query over an
+        unchanged window returns IDENTICAL totals — so it is trustworthy for support, capacity review, and
+        as the read contract billing true-up (E014) consumes. READ: `viewer` or higher; tenant-scoped.
+
+
+        RESPONSE. One `UsageEntitlementAggregate` per metered entitlement in scope, each carrying its
+        `aggregation` (`sum`/`count`/`unique_count`), `unit`, the aggregated `value`, the optional
+        `allowance` + an `overQuota` flag (FR-014), and the echoed `window`. When `bucket` is supplied
+        (`hour`/`day`/`period`) each aggregate also carries an ordered `buckets[]` breakdown; otherwise a
+        single window total. Entitlements are ordered DETERMINISTICALLY (by `entitlementId`) and buckets by
+        ascending `bucketStart`; the list is bounded to a hard cap of 1000 with a `truncated` signal (not
+        paginated) — narrow with `entitlementId` or a coarser `bucket` if set.
+
+
+        FLOOR-AT-ZERO vs TRUE SIGNED NET (FR-013/020; SC-017/019). By DEFAULT (`raw` omitted/false) `value`
+        and every bucket value are FLOORED at zero (`max(0, net)`) for operator display, so a net-negative
+        correction never shows negative usage. `raw=true` returns the TRUE SIGNED NET — the reproducible
+        stored value that E014 true-up consumes (a net-negative bucket stays visible) — but is BOUNDED to an
+        ELEVATED role: it requires `admin` or higher (FR-020, SC-019). A plain `viewer` requesting `raw=true`
+        is refused `403 forbidden` and only ever receives the floored display, so a viewer never sees
+        negative usage. The licensed application reads its OWN license's aggregate through the runtime plane /
+        an internal read with the same true-net semantics (E014 uses the `raw` net, NOT this floored display)
+        — this operator route is the console projection of that same reproducible aggregate.
+
+
+        Refusals: `404 not_found` — no such license in the caller's tenant (a cross-tenant `licenseId` also
+        resolves here, never `403`, FR-017/SC-012); `403 forbidden` — a `viewer` requested `raw=true` (the
+        un-floored true signed net requires `admin` or higher, FR-020/SC-019); `400 validation_error` — a
+        malformed/missing `from`/`to`, an inverted window (`to` before `from`), or a bad
+        `bucket`/`entitlementId`/`raw`; `400 window_too_large` — the `from`/`to` span exceeds the configured
+        maximum (a bucket-count bound so an unbounded expensive aggregate is impossible), refused BEFORE any
+        aggregation with `{ maxHours, hours }` (narrow the window or use a coarser `bucket`). No secret,
+        credential, or card datum ever appears in the response (FR-019/020).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: viewer }
+      x-priority: P1
+      parameters:
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/EntitlementIdQuery'
+        - $ref: '#/components/parameters/BucketQuery'
+        - $ref: '#/components/parameters/RawQuery'
+      responses:
+        '200':
+          description: The license's per-entitlement aggregated usage over the window (floored unless `raw=true`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UsageQueryResult' }
+              examples:
+                dayBuckets:
+                  summary: A SUM meter grouped by day, over quota
+                  value:
+                    licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    window:
+                      from: "2026-08-01T00:00:00Z"
+                      to: "2026-08-03T00:00:00Z"
+                      bucket: day
+                    raw: false
+                    truncated: false
+                    entitlements:
+                      - entitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                        aggregation: sum
+                        unit: "gb-processed"
+                        value: 11000
+                        allowance: 10000
+                        overQuota: true
+                        buckets:
+                          - bucketStart: "2026-08-01T00:00:00Z"
+                            value: 5000
+                          - bucketStart: "2026-08-02T00:00:00Z"
+                            value: 6000
+                windowTotal:
+                  summary: A COUNT meter, no bucket grouping, under quota
+                  value:
+                    licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                    window:
+                      from: "2026-08-01T00:00:00Z"
+                      to: "2026-08-02T00:00:00Z"
+                      bucket: null
+                    raw: false
+                    truncated: false
+                    entitlements:
+                      - entitlementId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                        aggregation: count
+                        unit: "api-call"
+                        value: 42815
+                        allowance: null
+                        overQuota: false
+        '400': { $ref: '#/components/responses/QueryBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/LicenseNotFound' }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        RUNTIME (ingest) plane credential (NOT the human `admin_session` cookie). The tenant/machine API key
+        resolved by the server (src/server/auth/apikey.ts + app.ts) to a tenant + capability scopes. `POST
+        /v1/usage` REQUIRES the NEW ingest-only `usage.ingest` scope and fails closed — no resolvable tenant
+        context → `401 unauthorized`; a key lacking `usage.ingest` → `403 forbidden` (FR-001, SC-016). The
+        scope is tenant- AND license-bound (a key reports only for licenses in its own tenant) and is DISTINCT
+        from E009 `activate`, E013 `validate`, and E015 `lease`, so a validating/leasing client gains no
+        usage-write authority and the scope is independently revocable. OpenAPI cannot express the scope in
+        the security requirement for an `apiKey` scheme, so it is declared per operation via
+        `x-rbac.requiredScope` and enforced server-side. No CSRF on this plane (header, not cookie, auth).
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        OPERATOR (query) plane credential (NOT the machine `X-API-Key`). The opaque `admin_session` cookie
+        established by the E005 `POST /admin/auth/login`, set `HttpOnly` + `Secure` + `SameSite=Strict`,
+        scoped to `Path=/admin`, with a bounded `Max-Age`. Server-side revocable; never a JWT and never
+        returned in any body. RBAC (`owner > admin > viewer`) is enforced via each admin operation's
+        `x-rbac.minRole`. The aggregate query is a GET (read) and carries no CSRF token.
+
+  parameters:
+    LicenseId:
+      name: licenseId
+      in: path
+      required: true
+      description: A license identifier (UUID) within the caller's tenant.
+      schema: { type: string, format: uuid }
+      example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+    FromQuery:
+      name: from
+      in: query
+      required: true
+      description: >
+        Inclusive start of the query window (RFC3339 / ISO 8601 UTC, trailing `Z`). Hourly buckets whose
+        start is >= `from` are rolled up. A malformed value → `400 validation_error`.
+      schema: { type: string, format: date-time }
+      example: "2026-08-01T00:00:00Z"
+    ToQuery:
+      name: to
+      in: query
+      required: true
+      description: >
+        Exclusive end of the query window (RFC3339 / ISO 8601 UTC, trailing `Z`). MUST be after `from`; an
+        inverted or malformed window → `400 validation_error`. The `to - from` span is BOUNDED by a
+        configured maximum (a bucket-count bound so an unbounded expensive aggregate is impossible): a
+        window exceeding it is refused `400 window_too_large` `{ maxHours, hours }` BEFORE any aggregation —
+        narrow the window (or use a coarser `bucket`) and retry.
+      schema: { type: string, format: date-time }
+      example: "2026-08-03T00:00:00Z"
+    EntitlementIdQuery:
+      name: entitlementId
+      in: query
+      required: false
+      description: >
+        Optionally narrow the result to a single metered entitlement (UUID) on this license. Omit to return
+        every metered entitlement in scope. A cross-tenant/unknown id yields an empty result (never leaks
+        existence).
+      schema: { type: string, format: uuid }
+      example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+    BucketQuery:
+      name: bucket
+      in: query
+      required: false
+      description: >
+        Optional grouping granularity for the breakdown. `hour` returns the raw hourly storage buckets;
+        `day` and `period` roll hourly buckets up over the window (billing-period alignment for `period` is
+        applied at read, not stored). Omit for a single window total per entitlement (no `buckets[]`).
+      schema:
+        type: string
+        enum: [hour, day, period]
+    RawQuery:
+      name: raw
+      in: query
+      required: false
+      description: >
+        When `false` (default) `value`/bucket values are FLOORED at zero (`max(0, net)`) for operator display
+        so negative usage is never shown. When `true` the response returns the TRUE SIGNED NET — the
+        reproducible stored value that billing true-up (E014) consumes, in which a net-negative correction
+        stays visible (FR-013/020, SC-017). `raw=true` is BOUNDED to an ELEVATED role: it requires `admin` or
+        higher (FR-020, SC-019); a plain `viewer` requesting `raw=true` is refused `403 forbidden` and only
+        ever receives the floored display (a viewer never sees negative usage). The E014/app internal read
+        path obtains the true net without this console parameter. Never changes the underlying stored aggregate.
+      schema: { type: boolean, default: false }
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }` (matches E008/E009/E013/E014/
+        E015). `code` is a stable, enumerated snake_case machine-readable value; `message` is human-readable;
+        `details` is optional structured context whose shape depends on `code`. No field ever carries a
+        secret, API key, signing key, or card/PAN data; and no field discloses another tenant's existence —
+        cross-tenant access resolves to `404`/`not_found` (never `403`). NOTE: the PER-EVENT rejection codes
+        inside an ingest summary (`RejectedEvent.code`) are a SEPARATE, non-HTTP vocabulary — see
+        `PerEventRejectionCode`.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable HTTP-level error code (snake_case). Enumerated; new codes require a
+            contract change. Each refusal reason is a DISTINCT, testable code.
+          enum:
+            - validation_error   # 400 — malformed body / bad query value / inverted window / non-JSON (both planes)
+            - batch_too_large    # 400 — ingest: events exceeds the configured max batch size (FR-005), rejected pre-accrual
+            - window_too_large   # 400 — query: from/to window exceeds the configured max span / bucket-count bound, refused BEFORE aggregation (FR-011)
+            - unauthorized       # 401 — ingest: no resolvable API key/tenant context (fail-closed, FR-001)
+            - unauthenticated    # 401 — query: missing/expired/revoked admin session
+            - forbidden          # 403 — ingest: key lacks the `usage.ingest` scope (FR-001); query: RBAC role deny
+            - not_found          # 404 — query: unknown license in the session's tenant; cross-tenant resolves here (FR-017)
+            - rate_limited       # 429 — ingest: per-API-key rate limit exceeded (FR-005); carries Retry-After
+          example: batch_too_large
+        message:
+          type: string
+          description: Human-readable summary. Never contains a secret, API key, signing key, or card/PAN data.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value? }`;
+            `batch_too_large` → `{ max, size }`;
+            `window_too_large` → `{ maxHours, hours }` (the configured maximum window span in hours vs the requested span);
+            `unauthorized` → NO details;
+            `unauthenticated` → NO details;
+            `forbidden` → `{ requiredScope }` (ingest scope deny) or `{ minRole, role }` (query RBAC deny);
+            `not_found` → `{ licenseId }`;
+            `rate_limited` → `{ retryAfterSeconds }` (also surfaced via the `Retry-After` header — the SAME
+            integer seconds; the header and this field never disagree).
+            It never carries a secret, API key, signing key, or card/PAN data.
+
+    # --- Shared value types -----------------------------------------------------------------------
+    Aggregation:
+      type: string
+      description: >
+        The metered entitlement's fixed COUNTER aggregation type (FR-008; defined on the E007 catalog
+        surface, echoed here for context): `sum` (of reported quantities), `count` (of events), or
+        `unique_count` (of distinct dimension values). Immutable once usage exists (FR-009). Gauge/peak
+        (MAX/LATEST) are a documented deferred extension and are NOT part of the MVP set.
+      enum: [sum, count, unique_count]
+      example: sum
+
+    Dimensions:
+      type: object
+      description: >
+        OPTIONAL client-supplied dimensions on a usage event — minimized, non-PII context (e.g. region,
+        job type, sku). Validated at ingest against a SERVER-SIDE ALLOW-LIST (bounded key set, scalar values
+        only, size caps); a disallowed key, a non-scalar value, or an over-cap map is a per-event
+        `validation_error` so PII cannot leak into free-form dimensions (FR-016, SC-013). NEVER carries a
+        raw identifier, a secret, or card/PAN data.
+      additionalProperties:
+        oneOf:
+          - { type: string, maxLength: 256 }
+          - { type: number }
+          - { type: boolean }
+      maxProperties: 16
+      example: { region: "eu-west-1", jobType: "render" }
+
+    PerEventRejectionCode:
+      type: string
+      description: >
+        The reason ONE event within a batch was rejected (FR-006/007; distinct, testable codes). This is a
+        PER-EVENT vocabulary reported inside the ingest summary — it is NOT an HTTP status code and is
+        distinct from the top-level `Error.code`. `not_found` = the referenced license/entitlement is
+        unknown or cross-tenant (FR-006/017); `not_metered` = the entitlement exists but is not a metered
+        kind; `archived` = the license/entitlement is archived; `license_inactive` = the license (or the
+        reporting key's license) is not in an active state — expired/suspended/revoked/inactive (FR-021);
+        `stale_event` = the `eventTime` is older than the retention window (FR-004); `future_event` = the
+        `eventTime` is beyond the configured skew into the future (FR-004); `validation_error` = a malformed
+        event, a `dimensions` entry that violates the server allow-list schema (disallowed key, non-scalar or
+        oversized value), or a malformed per-aggregation `quantity` (e.g. a non-integer COUNT or a negative
+        UNIQUE_COUNT) (FR-016). Such an event is REJECTED per-event, never silently dropped or stored. A
+        DUPLICATE is NOT a rejection — it is counted in the summary's `duplicate` and accrues nothing.
+      enum: [not_found, not_metered, archived, license_inactive, stale_event, future_event, validation_error]
+      example: not_found
+
+    # --- Ingest plane -----------------------------------------------------------------------------
+    UsageEvent:
+      type: object
+      description: >
+        One usage event reported against a license's metered entitlement (FR-002). Append-only and
+        idempotent by `(tenant, source, eventId)`. A signed `quantity` accrues per the entitlement's
+        aggregation type; a NEGATIVE `quantity` is a reference-free reversal/correction (FR-013). Carries
+        NO PII beyond the license/entitlement references + validated `dimensions`, and NO card/PAN data
+        (FR-016/020).
+      additionalProperties: false
+      required: [licenseId, entitlementId, source, eventId, eventTime, quantity]
+      properties:
+        licenseId:
+          type: string
+          format: uuid
+          description: The target license (UUID) within the caller's tenant. Unknown/cross-tenant → per-event `not_found` (FR-006/017).
+          example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+        entitlementId:
+          type: string
+          format: uuid
+          description: >
+            The target METERED entitlement (UUID) on the license. Unknown/cross-tenant → `not_found`; a
+            non-metered kind → `not_metered`; an archived one → `archived` (FR-006).
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        source:
+          type: string
+          description: >
+            Client-supplied producer identifier (FR-002). Scopes the idempotency key so independent producers
+            mint `eventId`s without cross-source collision — dedupe is on `(tenant, source, eventId)`.
+          minLength: 1
+          maxLength: 200
+          example: "renderfarm-node-12"
+        eventId:
+          type: string
+          description: >
+            Client-supplied idempotency key, STABLE across retries (FR-002). Unique per `(tenant, source)`;
+            a re-report is a `duplicate` no-op that accrues nothing (SC-001/015). Dedupe is guaranteed only
+            within the retention window (~35d); a re-report after the key is pruned is a fresh accrual
+            (FR-015).
+          minLength: 1
+          maxLength: 200
+          example: "b1946ac92492d2347c6235b4d2611184"
+        eventTime:
+          type: string
+          format: date-time
+          description: >
+            The CLIENT event timestamp (RFC3339 UTC, trailing `Z`) — the event accrues to the hourly bucket
+            of THIS time, not receipt time (FR-004/010). Older than the retention window → `stale_event`;
+            more than the configured skew into the future → `future_event`.
+          example: "2026-08-02T08:15:00Z"
+        quantity:
+          type: number
+          description: >
+            The reported SIGNED quantity accrued per the entitlement's aggregation type. A NEGATIVE value is
+            a reference-free REVERSAL/correction that adjusts the aggregate's true signed net append-only
+            (FR-013); it does not reference an original event. (For `count`/`unique_count` meters the server
+            interprets the quantity per the aggregation type.)
+          example: 1200
+        dimensions:
+          allOf: [{ $ref: '#/components/schemas/Dimensions' }]
+          description: >
+            OPTIONAL server-allow-list-validated, non-PII dimensions (FR-016). A disallowed/oversized entry
+            is a per-event `validation_error`.
+
+    IngestUsageRequest:
+      type: object
+      description: >
+        A batch of usage events (FR-001/007). `events` holds 1..maximum items (default cap 1,000); a larger
+        batch is refused `400 batch_too_large` BEFORE any accrual (FR-005). The batch is processed
+        per-event-idempotently — a single bad event never fails the whole batch (AD-008).
+      additionalProperties: false
+      required: [events]
+      properties:
+        events:
+          type: array
+          description: >
+            The usage events to ingest. Bounded to the configured maximum batch size (default 1,000); over
+            the cap → `400 batch_too_large`. Order is preserved so a `rejected[].index` refers back to the
+            event's position here.
+          minItems: 1
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/UsageEvent' }
+
+    RejectedEvent:
+      type: object
+      description: >
+        One rejected event in the per-batch summary (FR-007). Identifies the offending event by its
+        zero-based `index` in the request `events` array and carries a per-event `{ code, message }`. A
+        rejection accrues nothing; the rest of the batch is unaffected.
+      additionalProperties: false
+      required: [index, code, message]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          description: Zero-based position of the rejected event in the request `events` array.
+          example: 2
+        code: { $ref: '#/components/schemas/PerEventRejectionCode' }
+        message:
+          type: string
+          description: Human-readable reason. Never contains a secret, credential, raw identifier, or card/PAN data.
+          example: "No such entitlement in this tenant."
+
+    IngestSummary:
+      type: object
+      description: >
+        The per-batch ingest summary (FR-007; SC-002). `accepted` + `duplicate` + `rejected.length` equals
+        the number of events in the request. `accepted` = new events accrued; `duplicate` = same-key no-ops
+        that accrued nothing; `rejected[]` = per-event refusals. A single bad event never fails the batch.
+      additionalProperties: false
+      required: [accepted, duplicate, rejected]
+      properties:
+        accepted:
+          type: integer
+          minimum: 0
+          description: Count of NEW events accrued in this batch (append-only).
+          example: 2
+        duplicate:
+          type: integer
+          minimum: 0
+          description: >
+            Count of events recognized as duplicates of an already-accrued `(source, eventId)` — no-ops that
+            accrued nothing (FR-002, SC-001/015).
+          example: 1
+        rejected:
+          type: array
+          description: >
+            Per-event rejections (FR-006/007), each with the event's zero-based `index` and a
+            `{ code, message }`. Empty when every event accrued or deduped.
+          items: { $ref: '#/components/schemas/RejectedEvent' }
+
+    # --- Query plane ------------------------------------------------------------------------------
+    UsageWindow:
+      type: object
+      description: The echoed query window and grouping granularity (FR-011) — makes the result self-describing and reproducible.
+      required: [from, to, bucket]
+      properties:
+        from:
+          type: string
+          format: date-time
+          description: Inclusive window start (RFC3339 UTC), echoed from the request.
+          example: "2026-08-01T00:00:00Z"
+        to:
+          type: string
+          format: date-time
+          description: Exclusive window end (RFC3339 UTC), echoed from the request.
+          example: "2026-08-03T00:00:00Z"
+        bucket:
+          oneOf:
+            - type: string
+              enum: [hour, day, period]
+            - type: "null"
+          description: The grouping granularity requested (`hour`/`day`/`period`), or `null` for a single window total.
+
+    UsageBucket:
+      type: object
+      description: >
+        One time-bucket of an entitlement's usage when `bucket` grouping is requested (FR-011). Buckets are
+        ordered by ascending `bucketStart`. The `value` is floored at zero for display unless `raw=true`
+        (FR-013).
+      additionalProperties: false
+      required: [bucketStart, value]
+      properties:
+        bucketStart:
+          type: string
+          format: date-time
+          description: Inclusive start of this bucket (RFC3339 UTC) at the requested granularity.
+          example: "2026-08-01T00:00:00Z"
+        value:
+          type: number
+          description: The aggregated value for this bucket per the entitlement's aggregation type (floored at zero unless `raw=true`).
+          example: 5000
+
+    UsageEntitlementAggregate:
+      type: object
+      description: >
+        The aggregated usage for one metered entitlement over the window (FR-011/013/014). `value` (and any
+        bucket value) is FLOORED at zero for operator display unless `raw=true`, in which case it is the
+        TRUE SIGNED NET consumed by E014 true-up (SC-017). Reproducible: identical on re-query over an
+        unchanged window (SC-004).
+      additionalProperties: false
+      required: [entitlementId, aggregation, unit, value, allowance, overQuota]
+      properties:
+        entitlementId:
+          type: string
+          format: uuid
+          description: The metered entitlement (UUID) these totals are for.
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        aggregation: { $ref: '#/components/schemas/Aggregation' }
+        unit:
+          type: string
+          description: The entitlement's unit of measure (FR-008), e.g. `gb-processed`, `api-call`, `seat-hour`.
+          example: "gb-processed"
+        value:
+          type: number
+          description: >
+            The aggregated total over the whole window per the aggregation type. FLOORED at zero
+            (`max(0, net)`) for operator display; the TRUE SIGNED NET when `raw=true` (FR-013/020, SC-017).
+          example: 11000
+        allowance:
+          type: [number, "null"]
+          description: The entitlement's optional per-period allowance/quota (FR-014); `null` when none is set. Signal only — never enforced here.
+          example: 10000
+        overQuota:
+          type: boolean
+          description: >
+            `true` when accrued usage has crossed the `allowance` (a SIGNAL — flags the aggregate and writes
+            an audit entry, never blocks ingestion, FR-014). Always `false` when `allowance` is `null`.
+          example: true
+        buckets:
+          type: array
+          description: >
+            The ordered per-bucket breakdown, present ONLY when a `bucket` grouping was requested; ordered by
+            ascending `bucketStart`. Absent for a single window total.
+          items: { $ref: '#/components/schemas/UsageBucket' }
+
+    UsageQueryResult:
+      type: object
+      description: >
+        A license's aggregated usage over a window (FR-011; US2). Reproducible and self-describing (it echoes
+        the `window` and the `raw` mode). Per-entitlement aggregates are ordered DETERMINISTICALLY by
+        `entitlementId`; bounded to a hard cap of 1000 with a `truncated` signal (not paginated). No secret,
+        credential, or card/PAN datum appears (FR-019/020).
+      additionalProperties: false
+      required: [licenseId, window, raw, entitlements, truncated]
+      properties:
+        licenseId:
+          type: string
+          format: uuid
+          description: The license these aggregates belong to (echoed).
+          example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+        window: { $ref: '#/components/schemas/UsageWindow' }
+        raw:
+          type: boolean
+          description: >
+            `false` = values are FLOORED at zero for operator display; `true` = values are the TRUE SIGNED
+            NET consumed by billing true-up (E014) (FR-013/020, SC-017). Echoes the `raw` query parameter.
+          example: false
+        entitlements:
+          type: array
+          description: >
+            The per-entitlement aggregates, ordered by `entitlementId` for a stable, deterministic result.
+            Bounded to a hard cap of 1000 and NOT paginated: if more than 1000 metered entitlements match,
+            only the first 1000 by that order are returned and `truncated` is `true`.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/UsageEntitlementAggregate' }
+        truncated:
+          type: boolean
+          default: false
+          description: >
+            The truncation signal for this non-paginated result: `true` when more than 1000 metered
+            entitlements match and the result was capped (remaining omitted); omitted or `false` when the
+            full set fits. Narrow with `entitlementId` if set.
+
+  responses:
+    # --- Ingest plane ---
+    IngestBadRequest:
+      description: >
+        The ingest request was refused up front with NO event accrued: the batch exceeds the configured
+        maximum (`batch_too_large`, FR-005) or the envelope is malformed / non-JSON / `events` empty
+        (`validation_error`). Distinct from a PER-EVENT rejection (which is reported inside a `200`/`202`
+        summary and never fails the batch).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            batchTooLarge:
+              value:
+                code: batch_too_large
+                message: "The batch exceeds the maximum of 1000 events; split and retry."
+                details: { max: 1000, size: 1500 }
+            malformed:
+              value:
+                code: validation_error
+                message: "events must be a non-empty array."
+                details: { field: events }
+    Unauthorized:
+      description: >
+        No resolvable authentication — the runtime `X-API-Key` is missing/invalid (ingest, `unauthorized`),
+        or the `admin_session` cookie is missing/expired/revoked (query, `unauthenticated`). Fail-closed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noApiKey:
+              summary: Ingest plane — missing/invalid API key
+              value: { code: unauthorized, message: "Missing or invalid API key." }
+            noSession:
+              summary: Query plane — no valid session
+              value: { code: unauthenticated, message: "Authentication required." }
+    ForbiddenScope:
+      description: >
+        Ingest plane, fail-closed — the API key resolved to a tenant but lacks the required `usage.ingest`
+        scope (FR-001, SC-016). Nothing is accrued; the denied attempt is audited (FR-018).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missingScope:
+              value:
+                code: forbidden
+                message: "The usage.ingest scope is required."
+                details: { requiredScope: usage.ingest }
+    RateLimited:
+      description: >
+        The per-API-key ingest rate limit was exceeded (FR-005) — the request is refused fast, NO event is
+        accrued, and the limit-exceeded event is audited (FR-018). The `Retry-After` header gives the seconds
+        to wait and MUST equal `details.retryAfterSeconds` (the SAME integer seconds — header and body never
+        disagree). Split/backoff and retry.
+      headers:
+        Retry-After:
+          description: >
+            Seconds the client should wait before retrying. MUST equal `details.retryAfterSeconds` when that
+            field is present (the same integer seconds).
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            rateLimited:
+              value:
+                code: rate_limited
+                message: "Too many usage ingest requests; retry after the indicated delay."
+                details: { retryAfterSeconds: 30 }
+
+    # --- Query plane ---
+    QueryBadRequest:
+      description: >
+        The aggregate query was refused up front (NO aggregation performed): `validation_error` — a
+        missing/malformed `from`/`to`, an inverted window (`to` before `from`), or a bad
+        `bucket`/`entitlementId`/`raw` value; or `window_too_large` — the `from`/`to` span exceeds the
+        configured maximum span / bucket-count bound (FR-011), so an unbounded expensive aggregate is
+        impossible. Both are HTTP `400` (distinct, testable `code`s).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invertedWindow:
+              value:
+                code: validation_error
+                message: "to must be after from."
+                details: { field: to }
+            badBucket:
+              value:
+                code: validation_error
+                message: "bucket must be one of hour, day, period."
+                details: { field: bucket, value: "week" }
+            windowTooLarge:
+              value:
+                code: window_too_large
+                message: "The query window exceeds the maximum of 2160 hours; narrow the window or use a coarser bucket."
+                details: { maxHours: 2160, hours: 4320 }
+    Forbidden:
+      description: >
+        Query plane, fail-closed — the session's role is below the operation's `x-rbac.minRole` (a
+        sub-viewer attempting the read). Recorded as an auditable security event.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the viewer role."
+                details: { minRole: viewer, role: none }
+    LicenseNotFound:
+      description: >
+        No license resolves within the caller's tenant for the path `licenseId` (a cross-tenant reference
+        also resolves here, never `403`, FR-017, SC-012). Indistinguishable from a non-existent one.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownLicense:
+              value:
+                code: not_found
+                message: "No such license in this tenant."
+                details: { licenseId: "00000000-0000-4000-8000-000000000000" }
