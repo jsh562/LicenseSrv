@@ -18,7 +18,7 @@ import {
 import { archivePlan, createPlan, getPlan, listPlans, updatePlan } from "./plans.js";
 import { archiveProduct, createProduct, getProduct, listProducts, updateProduct } from "./products.js";
 import { listPlanEntitlements, removePlanEntitlementValue, setPlanEntitlementValue } from "./values.js";
-import { catalogKeySchema, CatalogError, entitlementTypeSchema, statusFilterSchema } from "./validation.js";
+import { catalogKeySchema, CatalogError, meteredAggregationSchema, statusFilterSchema } from "./validation.js";
 
 interface ApiError {
   code: string;
@@ -58,21 +58,42 @@ const updatePlanSchema = z
   .refine((v) => v.name !== undefined || v.description !== undefined || v.maxActivations !== undefined, {
     message: "no changes supplied",
   });
+// The `type`/kind the HTTP layer admits: the E007 boolean/integer_limit PLUS the additive E016 `metered` kind
+// (FR-008). A metered create/edit carries the metered-only fields; `entitlements.ts:assertMeteredShape` is the
+// authoritative validator (counter-only aggregation, non-empty unit, non-negative allowance) — the route schema
+// only shape-guards so a malformed metered body is a 400 before it reaches the repository.
+const entitlementKindSchema = z.enum(["boolean", "integer_limit", "metered"]);
 const createEntitlementSchema = z.object({
   key: catalogKeySchema,
   name: z.string().min(1),
-  type: entitlementTypeSchema,
+  type: entitlementKindSchema,
   description: z.string().optional(),
+  // Metered-only (FR-008): present for `type: "metered"`; ignored for boolean/integer_limit. A gauge/peak
+  // aggregation is refused here (enum), a missing unit is refused downstream by assertMeteredShape (400).
+  aggregation: meteredAggregationSchema.optional(),
+  unit: z.string().min(1).optional(),
+  allowance: z.number().nonnegative().optional(),
 });
 const updateEntitlementSchema = z
   .object({
     name: z.string().min(1).optional(),
     description: z.string().nullable().optional(),
-    type: entitlementTypeSchema.optional(),
+    type: entitlementKindSchema.optional(),
+    // Metered-only edits (FR-009 freeze-on-usage is enforced in entitlements.ts once usage exists).
+    aggregation: meteredAggregationSchema.optional(),
+    unit: z.string().min(1).optional(),
+    allowance: z.number().nonnegative().nullable().optional(),
   })
-  .refine((v) => v.name !== undefined || v.description !== undefined || v.type !== undefined, {
-    message: "no changes supplied",
-  });
+  .refine(
+    (v) =>
+      v.name !== undefined ||
+      v.description !== undefined ||
+      v.type !== undefined ||
+      v.aggregation !== undefined ||
+      v.unit !== undefined ||
+      v.allowance !== undefined,
+    { message: "no changes supplied" },
+  );
 const setValueSchema = z.object({ value: z.union([z.boolean(), z.number()]) });
 const listQuerySchema = z.object({ status: statusFilterSchema });
 

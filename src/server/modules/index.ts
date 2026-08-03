@@ -9,6 +9,7 @@ import { registerEnforcement } from "./enforcement/index.js";
 import { registerIssuance } from "./issuance/index.js";
 import { registerLease } from "./lease/index.js";
 import { registerSigning } from "./signing/index.js";
+import { registerUsage } from "./usage/index.js";
 
 /**
  * A feature module plugs into the modular monolith here (ADR-0005, TR-010). The reserved
@@ -27,6 +28,7 @@ const MODULES: ServerModule[] = [
   registerEnforcement, // E013 — online enforcement & revocation (short-TTL LIC1 renewal + signed CRL fallback)
   registerBilling, // E014 — billing-driven entitlement automation (webhook -> E008 lifecycle; grace overlay)
   registerLease, // E015 — floating & concurrent seats (race-safe lease acquire/renew/release + reclaim sweeper)
+  registerUsage, // E016 — usage metering & aggregation (idempotent batch ingest + watermark hourly rollup)
 ];
 
 export function registerModules(app: FastifyInstance, deps: AppDeps): void {

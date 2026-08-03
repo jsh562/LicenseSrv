@@ -6,6 +6,7 @@ import { registerEnforcement } from "./enforcement/index.js";
 import { registerIssuance } from "./issuance/index.js";
 import { registerLease } from "./lease/index.js";
 import { registerSigning } from "./signing/index.js";
+import { registerUsage } from "./usage/index.js";
 const MODULES = [
     registerSigning, // E004 — signing service & key custody (publishes app.signer for E008/E010)
     registerAdmin, // E005 — tenant administration & audit (human session console)
@@ -15,6 +16,7 @@ const MODULES = [
     registerEnforcement, // E013 — online enforcement & revocation (short-TTL LIC1 renewal + signed CRL fallback)
     registerBilling, // E014 — billing-driven entitlement automation (webhook -> E008 lifecycle; grace overlay)
     registerLease, // E015 — floating & concurrent seats (race-safe lease acquire/renew/release + reclaim sweeper)
+    registerUsage, // E016 — usage metering & aggregation (idempotent batch ingest + watermark hourly rollup)
 ];
 export function registerModules(app, deps) {
     for (const register of MODULES)

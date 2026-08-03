@@ -67,6 +67,20 @@ export interface AppConfig {
   leaseRateWindow: string; // LEASE_RATE_WINDOW — runtime rate-limit window, e.g. "1 minute" (FR-017)
   leaseSignedHandle: boolean; // LEASE_SIGNED_HANDLE — default: mint an E004-signed short-TTL lease handle (FR-022)
   leaseHolderKeySalt: string; // LEASE_HOLDER_KEY_SALT — server-held holder-key salt; NEVER distributed to a client (secret; FR-026)
+  // Usage metering & aggregation (E016, FR-004/005/015; per ADR-0013). Deployment-wide DEFAULTS for the
+  // bounded retention/dedupe window (raw events + idempotency keys pruned after it; also the single stale-
+  // event acceptance bound), the future-skew allowance (an event beyond it → future_event), the FIXED
+  // hourly rollup grain, the rollup-sweep cadence, the per-API-key ingest rate ceiling + window, the max
+  // batch cap (contract hard limit 1,000), and the query-window bucket-count bound. The usage module
+  // (`modules/usage/config.ts`) reads the same SCREAMING_SNAKE keys LIVE. All defaulted + non-secret.
+  usageRetentionSecs: number; // USAGE_RETENTION_SECS — retention/dedupe window (~35d); also the stale-event acceptance bound (FR-004/015)
+  usageFutureSkewSecs: number; // USAGE_FUTURE_SKEW_SECS — allowed future skew of event_time before future_event (~5m) (FR-004)
+  usageBucketSeconds: number; // USAGE_BUCKET_SECONDS — FIXED hourly rollup grain (3600) (FR-010)
+  usageRollupIntervalMs: number; // USAGE_ROLLUP_INTERVAL_MS — fail-open watermark rollup sweep cadence (~1m) (FR-010)
+  usageIngestRateMax: number; // USAGE_INGEST_RATE_MAX — per-API-key ingest rate ceiling per window (FR-005)
+  usageIngestRateWindow: string; // USAGE_INGEST_RATE_WINDOW — ingest rate-limit window, e.g. "1 minute" (FR-005)
+  usageMaxBatch: number; // USAGE_MAX_BATCH — max events per ingest batch; clamped to the contract ceiling 1000 (FR-005)
+  usageQueryMaxHours: number; // USAGE_QUERY_MAX_HOURS — query-window span bound (bucket-count cap) → window_too_large (~90d) (FR-011)
 }
 
 /** Thrown when required configuration is missing/invalid. Message lists each offending setting. */
@@ -137,6 +151,18 @@ const schema = z.object({
     .transform((v) => v === "true" || v === "1")
     .default("true"),
   leaseHolderKeySalt: z.string().default("licensesrv-lease-salt"),
+  // E016 usage-metering defaults — retention/dedupe window ~35d (also the stale-event bound), future-skew
+  // allowance ~5m, FIXED hourly grain (3600s), rollup sweep ~1m, per-key ingest rate ceiling sized for a
+  // high-write path, max batch 1000 (the contract ceiling), and a ~90d query-window bucket-count bound. The
+  // usage module clamps the batch cap to ≤ 1000 at load. Operators retune without a migration.
+  usageRetentionSecs: z.coerce.number().int().positive().default(3_024_000), // 35 days
+  usageFutureSkewSecs: z.coerce.number().int().positive().default(300), // 5 minutes
+  usageBucketSeconds: z.coerce.number().int().positive().default(3_600), // 1 hour (fixed grain)
+  usageRollupIntervalMs: z.coerce.number().int().positive().default(60_000), // 1 minute
+  usageIngestRateMax: z.coerce.number().int().positive().default(600),
+  usageIngestRateWindow: z.string().min(1).default("1 minute"),
+  usageMaxBatch: z.coerce.number().int().positive().default(1_000),
+  usageQueryMaxHours: z.coerce.number().int().positive().default(2_160), // 90 days
 });
 
 /**
@@ -193,6 +219,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     leaseRateMax: env.LEASE_RATE_MAX,
     leaseRateWindow: env.LEASE_RATE_WINDOW,
     leaseSignedHandle: env.LEASE_SIGNED_HANDLE,
+    usageRetentionSecs: env.USAGE_RETENTION_SECS,
+    usageFutureSkewSecs: env.USAGE_FUTURE_SKEW_SECS,
+    usageBucketSeconds: env.USAGE_BUCKET_SECONDS,
+    usageRollupIntervalMs: env.USAGE_ROLLUP_INTERVAL_MS,
+    usageIngestRateMax: env.USAGE_INGEST_RATE_MAX,
+    usageIngestRateWindow: env.USAGE_INGEST_RATE_WINDOW,
+    usageMaxBatch: env.USAGE_MAX_BATCH,
+    usageQueryMaxHours: env.USAGE_QUERY_MAX_HOURS,
     // Secrets follow the <VAR>_FILE convention (file wins; unset → the documented default salt).
     leaseHolderKeySalt: readSecret(env, "LEASE_HOLDER_KEY_SALT") ?? "licensesrv-lease-salt",
     fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
@@ -267,6 +301,15 @@ export function configSummary(c: AppConfig): Record<string, unknown> {
     leaseRateMax: c.leaseRateMax,
     leaseRateWindow: c.leaseRateWindow,
     leaseSignedHandle: c.leaseSignedHandle,
+    // E016 usage-metering windows (non-secret; deployment-wide defaults read live by the usage module).
+    usageRetentionSecs: c.usageRetentionSecs,
+    usageFutureSkewSecs: c.usageFutureSkewSecs,
+    usageBucketSeconds: c.usageBucketSeconds,
+    usageRollupIntervalMs: c.usageRollupIntervalMs,
+    usageIngestRateMax: c.usageIngestRateMax,
+    usageIngestRateWindow: c.usageIngestRateWindow,
+    usageMaxBatch: c.usageMaxBatch,
+    usageQueryMaxHours: c.usageQueryMaxHours,
     // Secrets are never summarised: presence-only, never the value.
     leaseHolderKeySalt: c.leaseHolderKeySalt ? "***" : "(unset)",
     fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",

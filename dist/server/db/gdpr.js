@@ -1,4 +1,5 @@
 import { writeAudit } from "../audit/index.js";
+import { eraseTenantUsage } from "../modules/usage/retention-worker.js";
 import { privileged, withTenant } from "./client.js";
 /** Export a tenant's data on request (TR-012, GDPR). Tenant-scoped via RLS. */
 export async function exportTenant(pool, tenantId) {
@@ -22,6 +23,11 @@ export async function eraseTenantPersonalData(pool, tenantId) {
         await q("DELETE FROM app_user", []);
         await writeAudit(q, { actor: "platform-admin", action: "tenant.personal_data_erased" });
     });
+    // E016 usage metering (FR-016/SC-013): erase the tenant's usage across all three usage tables (usage_event +
+    // usage_rollup + usage_unique_value) on the OWNER role (the app role has NO DELETE grant), tenant-scoped by an
+    // explicit tenant_id predicate. Delegates to the usage module's owner-role eraser so the platform GDPR path
+    // and the module share ONE erase definition; idempotent (a re-run erases zero rows).
+    await eraseTenantUsage(pool, tenantId);
     // Audit rows are append-only for the app role, so payload redaction + the tenant tombstone are explicit,
     // privileged (owner) operations: the audit *event* records (actor/action/ts) are preserved, while any
     // PII-bearing before/after/target payloads are redacted. The E014 billing metadata (FR-021) is erased in the

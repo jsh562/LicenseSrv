@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { writeAudit } from "../../audit/index.js";
 import { withTenant } from "../../db/client.js";
-import { asDuplicateKey, CatalogError } from "./validation.js";
+import { asDuplicateKey, assertMeteredShape, CatalogError, } from "./validation.js";
 function toEntitlement(r) {
     return {
         id: r.id,
@@ -14,26 +14,61 @@ function toEntitlement(r) {
         type: r.type,
         description: r.description,
         status: r.status,
+        aggregation: r.aggregation,
+        unit: r.unit,
+        allowance: r.allowance === null ? null : Number(r.allowance),
         createdAt: r.created_at.toISOString(),
         updatedAt: r.updated_at.toISOString(),
     };
 }
-const SELECT = "id, key, name, type, description, status, created_at, updated_at";
+const SELECT = "id, key, name, type, description, status, aggregation, unit, allowance, created_at, updated_at";
 /** True if any plan_entitlement references this entitlement (→ key/type are locked). */
 export async function isReferenced(q, entitlementId) {
     const r = await q("SELECT 1 FROM plan_entitlement WHERE entitlement_id = $1 LIMIT 1", [entitlementId]);
     return (r.rowCount ?? 0) > 0;
 }
-/** Create an entitlement of the given type. Duplicate key within the tenant → 409. */
+/**
+ * True if ANY usage_event has been accrued for this metered entitlement (E016 FR-009). Once true, the
+ * entitlement's aggregation type + unit are FROZEN to preserve the meaning of historical aggregates — a
+ * subsequent aggregation/unit/type edit is refused `aggregation_frozen`. A DB CHECK cannot join `usage_event`,
+ * so the freeze is enforced here (mirrors the `entitlement_type_locked` service-layer guard, data-model INV-8).
+ */
+export async function hasUsage(q, entitlementId) {
+    const r = await q("SELECT 1 FROM usage_event WHERE entitlement_id = $1 LIMIT 1", [entitlementId]);
+    return (r.rowCount ?? 0) > 0;
+}
+/**
+ * Create an entitlement of the given kind. Duplicate key within the tenant → 409. For a `metered` kind, the
+ * aggregation/unit/allowance are validated (counter-only; unit required; allowance optional) via
+ * `assertMeteredShape` and persisted into the metered-only columns; a boolean/integer_limit kind leaves those
+ * columns NULL (the DB `entitlement_metered_shape` CHECK enforces the IFF-metered invariant, FR-008).
+ */
 export async function createEntitlement(pool, tenantId, actor, input) {
     const id = randomUUID();
+    const metered = input.type === "metered" ? assertMeteredShape(input) : null;
     return withTenant(pool, tenantId, async (q) => {
         try {
-            const r = await q(`INSERT INTO entitlement (id, tenant_id, key, name, type, description)
-         VALUES ($1, current_setting('app.current_tenant')::uuid, $2, $3, $4, $5)
-         RETURNING ${SELECT}`, [id, input.key, input.name, input.type, input.description ?? null]);
+            const r = await q(`INSERT INTO entitlement (id, tenant_id, key, name, type, description, aggregation, unit, allowance)
+         VALUES ($1, current_setting('app.current_tenant')::uuid, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING ${SELECT}`, [
+                id,
+                input.key,
+                input.name,
+                input.type,
+                input.description ?? null,
+                metered?.aggregation ?? null,
+                metered?.unit ?? null,
+                metered?.allowance ?? null,
+            ]);
             const row = r.rows[0];
-            await writeAudit(q, { actor, action: "catalog.entitlement.created", target: id, after: { key: input.key, type: input.type } });
+            await writeAudit(q, {
+                actor,
+                action: "catalog.entitlement.created",
+                target: id,
+                after: metered
+                    ? { key: input.key, type: input.type, aggregation: metered.aggregation, unit: metered.unit }
+                    : { key: input.key, type: input.type },
+            });
             return toEntitlement(row);
         }
         catch (e) {
@@ -60,14 +95,30 @@ async function getEntitlementTx(q, id) {
     return r.rowCount ? toEntitlement(r.rows[0]) : null;
 }
 /**
- * Edit an entitlement's name/description, and optionally its type. Key is immutable (FR-018). A type
- * change is only allowed while the entitlement is unreferenced (FR-006) — otherwise 409. 404 if unknown.
+ * Edit an entitlement's name/description, its type, and (for a metered kind) its aggregation/unit/allowance.
+ * Key is immutable (FR-018). A type change is only allowed while the entitlement is unreferenced (FR-006) —
+ * otherwise 409 `entitlement_type_locked`. FREEZE-ON-USAGE (FR-009/SC-006): once ANY usage_event exists for a
+ * metered entitlement, its aggregation, unit, and (metered→other) type are FROZEN — such an edit is refused
+ * 409 `aggregation_frozen` to preserve the meaning of historical aggregates; the allowance (a signal-only
+ * quota, FR-014) stays editable. Metered columns are re-validated via `assertMeteredShape` so an edit can
+ * never leave a metered row structurally invalid. 404 if unknown.
  */
 export async function updateEntitlement(pool, tenantId, actor, id, input) {
     return withTenant(pool, tenantId, async (q) => {
         const existing = await getEntitlementTx(q, id);
         if (!existing)
             throw new CatalogError("not_found", 404, "unknown entitlement");
+        const finalType = input.type ?? existing.type;
+        // FREEZE-ON-USAGE (FR-009): a metered entitlement with any accrued usage cannot change its aggregation,
+        // unit, or kind — refuse `aggregation_frozen` (the allowance stays mutable, signal-only FR-014).
+        if (existing.type === "metered") {
+            const aggChanged = input.aggregation !== undefined && input.aggregation !== existing.aggregation;
+            const unitChanged = input.unit !== undefined && input.unit !== existing.unit;
+            const typeChanged = input.type !== undefined && input.type !== existing.type;
+            if ((aggChanged || unitChanged || typeChanged) && (await hasUsage(q, id))) {
+                throw new CatalogError("aggregation_frozen", 409, "a metered entitlement's aggregation and unit are frozen once usage exists");
+            }
+        }
         if (input.type !== undefined && input.type !== existing.type) {
             // Lock the referencing set to serialize against a concurrent value attach (FR-006).
             const ref = await q("SELECT 1 FROM plan_entitlement WHERE entitlement_id = $1 LIMIT 1 FOR UPDATE", [id]);
@@ -75,13 +126,35 @@ export async function updateEntitlement(pool, tenantId, actor, id, input) {
                 throw new CatalogError("entitlement_type_locked", 409, "cannot change the type of a referenced entitlement");
             }
         }
+        // Re-derive the metered-only columns for the FINAL kind (merging the edit over the existing values); a
+        // non-metered final kind clears them all (the DB shape CHECK requires metered cols set IFF type='metered').
+        let metered = null;
+        if (finalType === "metered") {
+            metered = assertMeteredShape({
+                aggregation: input.aggregation !== undefined ? input.aggregation : existing.aggregation,
+                unit: input.unit !== undefined ? input.unit : existing.unit,
+                allowance: input.allowance !== undefined ? input.allowance : existing.allowance,
+            });
+        }
         const r = await q(`UPDATE entitlement
           SET name = COALESCE($2, name),
               description = CASE WHEN $3::boolean THEN $4 ELSE description END,
-              type = COALESCE($5, type),
+              type = $5,
+              aggregation = $6,
+              unit = $7,
+              allowance = $8,
               updated_at = now()
         WHERE id = $1
-        RETURNING ${SELECT}`, [id, input.name ?? null, input.description !== undefined, input.description ?? null, input.type ?? null]);
+        RETURNING ${SELECT}`, [
+            id,
+            input.name ?? null,
+            input.description !== undefined,
+            input.description ?? null,
+            finalType,
+            metered?.aggregation ?? null,
+            metered?.unit ?? null,
+            metered?.allowance ?? null,
+        ]);
         await writeAudit(q, { actor, action: "catalog.entitlement.updated", target: id, before: existing, after: input });
         return toEntitlement(r.rows[0]);
     });

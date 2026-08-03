@@ -73,6 +73,18 @@ const schema = z.object({
         .transform((v) => v === "true" || v === "1")
         .default("true"),
     leaseHolderKeySalt: z.string().default("licensesrv-lease-salt"),
+    // E016 usage-metering defaults — retention/dedupe window ~35d (also the stale-event bound), future-skew
+    // allowance ~5m, FIXED hourly grain (3600s), rollup sweep ~1m, per-key ingest rate ceiling sized for a
+    // high-write path, max batch 1000 (the contract ceiling), and a ~90d query-window bucket-count bound. The
+    // usage module clamps the batch cap to ≤ 1000 at load. Operators retune without a migration.
+    usageRetentionSecs: z.coerce.number().int().positive().default(3_024_000), // 35 days
+    usageFutureSkewSecs: z.coerce.number().int().positive().default(300), // 5 minutes
+    usageBucketSeconds: z.coerce.number().int().positive().default(3_600), // 1 hour (fixed grain)
+    usageRollupIntervalMs: z.coerce.number().int().positive().default(60_000), // 1 minute
+    usageIngestRateMax: z.coerce.number().int().positive().default(600),
+    usageIngestRateWindow: z.string().min(1).default("1 minute"),
+    usageMaxBatch: z.coerce.number().int().positive().default(1_000),
+    usageQueryMaxHours: z.coerce.number().int().positive().default(2_160), // 90 days
 });
 /**
  * Resolve + validate `DATABASE_URL` (with `<VAR>_FILE` support) on its own. The migration job needs the
@@ -128,6 +140,14 @@ export function loadConfig(env = process.env) {
         leaseRateMax: env.LEASE_RATE_MAX,
         leaseRateWindow: env.LEASE_RATE_WINDOW,
         leaseSignedHandle: env.LEASE_SIGNED_HANDLE,
+        usageRetentionSecs: env.USAGE_RETENTION_SECS,
+        usageFutureSkewSecs: env.USAGE_FUTURE_SKEW_SECS,
+        usageBucketSeconds: env.USAGE_BUCKET_SECONDS,
+        usageRollupIntervalMs: env.USAGE_ROLLUP_INTERVAL_MS,
+        usageIngestRateMax: env.USAGE_INGEST_RATE_MAX,
+        usageIngestRateWindow: env.USAGE_INGEST_RATE_WINDOW,
+        usageMaxBatch: env.USAGE_MAX_BATCH,
+        usageQueryMaxHours: env.USAGE_QUERY_MAX_HOURS,
         // Secrets follow the <VAR>_FILE convention (file wins; unset → the documented default salt).
         leaseHolderKeySalt: readSecret(env, "LEASE_HOLDER_KEY_SALT") ?? "licensesrv-lease-salt",
         fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
@@ -202,6 +222,15 @@ export function configSummary(c) {
         leaseRateMax: c.leaseRateMax,
         leaseRateWindow: c.leaseRateWindow,
         leaseSignedHandle: c.leaseSignedHandle,
+        // E016 usage-metering windows (non-secret; deployment-wide defaults read live by the usage module).
+        usageRetentionSecs: c.usageRetentionSecs,
+        usageFutureSkewSecs: c.usageFutureSkewSecs,
+        usageBucketSeconds: c.usageBucketSeconds,
+        usageRollupIntervalMs: c.usageRollupIntervalMs,
+        usageIngestRateMax: c.usageIngestRateMax,
+        usageIngestRateWindow: c.usageIngestRateWindow,
+        usageMaxBatch: c.usageMaxBatch,
+        usageQueryMaxHours: c.usageQueryMaxHours,
         // Secrets are never summarised: presence-only, never the value.
         leaseHolderKeySalt: c.leaseHolderKeySalt ? "***" : "(unset)",
         fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",

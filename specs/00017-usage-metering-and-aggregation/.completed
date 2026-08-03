@@ -1,0 +1,3 @@
+Completed: 2026-07-24
+E016 Usage Metering & Aggregation — all 45 tasks (T001-T045) implemented and validated.
+Full repo 795 pass/9 skipped/0 fail; global coverage 93.72% line / 83.76% branch; usage module 97.62%/88.92%. ingest p95 ~27ms.

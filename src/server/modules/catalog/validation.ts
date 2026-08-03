@@ -25,8 +25,61 @@ export const catalogKeySchema = z
 export const entitlementTypeSchema = z.enum(["boolean", "integer_limit"]);
 export type EntitlementType = z.infer<typeof entitlementTypeSchema>;
 
+/**
+ * The COUNTER-ONLY MVP aggregation set for a metered entitlement (E016 FR-008): SUM of quantities, COUNT of
+ * events, UNIQUE_COUNT of distinct dimension values. Gauge/peak (MAX concurrent, LATEST snapshot) are a
+ * documented extension — deliberately NOT admitted here (they need point-in-time semantics that break additive
+ * reversal), so a gauge/peak `aggregation` is a `validation_error` at authoring time.
+ */
+export const meteredAggregationSchema = z.enum(["sum", "count", "unique_count"]);
+export type MeteredAggregation = z.infer<typeof meteredAggregationSchema>;
+
+/** The catalog `entitlement.type` kind, extended with the additive E016 `metered` third kind (FR-008). */
+export type EntitlementKind = EntitlementType | "metered";
+
+/** A validated metered definition (the DB `entitlement_metered_shape` CHECK requires aggregation + unit set). */
+export interface MeteredDefinition {
+  aggregation: MeteredAggregation;
+  unit: string;
+  allowance: number | null;
+}
+
 /** A list `?status=` filter. `all` returns both; default (undefined) means active-only. */
 export const statusFilterSchema = z.enum(["active", "archived", "all"]).optional();
+
+/**
+ * Validate a metered entitlement's authoring shape (E016 FR-008, AD-005) and return its typed columns.
+ * COUNTER-ONLY: the `aggregation` MUST be one of sum|count|unique_count — a gauge/peak (or any other) value is a
+ * 400 `validation_error` (gauge/peak is a documented extension, not the MVP). A `unit` is REQUIRED (a non-empty
+ * label). An `allowance` is OPTIONAL (signal-only quota, FR-014): absent/null means no quota, otherwise it MUST
+ * be a finite, non-negative number. These mirror the DB CHECKs (`entitlement_aggregation_valid`,
+ * `entitlement_allowance_nonneg`, `entitlement_metered_shape`) so a malformed definition is refused at the edge.
+ */
+export function assertMeteredShape(input: {
+  aggregation?: unknown;
+  unit?: unknown;
+  allowance?: unknown;
+}): MeteredDefinition {
+  const agg = meteredAggregationSchema.safeParse(input.aggregation);
+  if (!agg.success) {
+    throw new CatalogError(
+      "validation_error",
+      400,
+      "a metered entitlement requires a counter aggregation of sum, count, or unique_count",
+    );
+  }
+  if (typeof input.unit !== "string" || input.unit.trim().length === 0) {
+    throw new CatalogError("validation_error", 400, "a metered entitlement requires a non-empty unit");
+  }
+  let allowance: number | null = null;
+  if (input.allowance !== undefined && input.allowance !== null) {
+    if (typeof input.allowance !== "number" || !Number.isFinite(input.allowance) || input.allowance < 0) {
+      throw new CatalogError("validation_error", 400, "allowance must be a non-negative number when supplied");
+    }
+    allowance = input.allowance;
+  }
+  return { aggregation: agg.data, unit: input.unit.trim(), allowance };
+}
 
 /**
  * Validate a per-plan value against its entitlement's declared type and return the typed columns.

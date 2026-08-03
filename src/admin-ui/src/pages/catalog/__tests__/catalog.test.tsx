@@ -94,6 +94,29 @@ describe("Entitlements (US3)", () => {
       expect(api.createEntitlement).toHaveBeenCalledWith({ key: "seats", name: "Seats", type: "integer_limit" }),
     );
   });
+
+  it("creates a metered entitlement with aggregation, unit and allowance (E016 FR-008)", async () => {
+    const meteredEnt: Entitlement = {
+      id: "e3", key: "api-calls", name: "API Calls", type: "metered",
+      aggregation: "sum", unit: "calls", allowance: 1000, description: null, status: "active", createdAt: "", updatedAt: "",
+    };
+    api.createEntitlement.mockResolvedValue(meteredEnt);
+    render(<Entitlements sessionRole="admin" />);
+    await screen.findByText("export-pdf");
+    await userEvent.type(screen.getByLabelText("Entitlement key"), "api-calls");
+    await userEvent.type(screen.getByLabelText("Entitlement name"), "API Calls");
+    await userEvent.selectOptions(screen.getByLabelText("Entitlement type"), "metered");
+    // The metered-only fields appear once the kind is `metered`.
+    await userEvent.selectOptions(screen.getByLabelText("Aggregation"), "sum");
+    await userEvent.type(screen.getByLabelText("Unit"), "calls");
+    await userEvent.type(screen.getByLabelText("Allowance"), "1000");
+    await userEvent.click(screen.getByRole("button", { name: /add entitlement/i }));
+    await waitFor(() =>
+      expect(api.createEntitlement).toHaveBeenCalledWith({
+        key: "api-calls", name: "API Calls", type: "metered", aggregation: "sum", unit: "calls", allowance: 1000,
+      }),
+    );
+  });
 });
 
 describe("PlanValues (US4)", () => {

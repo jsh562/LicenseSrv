@@ -41,11 +41,11 @@ description: "Task list for feature implementation: Usage Metering & Aggregation
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Extend coverage globs for src/server/modules/usage/** (≥80% line+branch) in vitest.config.ts
-- [ ] T002 {FR-004,FR-005,FR-015} Usage config keys (retention/dedupe window ~35d, skew future allowance, hourly bucket, rollup interval, ingest rate-limit, max batch cap 1000) in src/server/config/index.ts
-- [ ] T003 {FR-001} Add the `usage.ingest` runtime scope to the Scope union (activate|validate|lease|admin + usage.ingest) in src/server/auth/rbac.ts
-- [ ] T004 Module scaffold: registerUsage seam (pool + config + repo + catalog read) + UsageError + app.usage in src/server/modules/usage/index.ts → exports: registerUsage, UsageError
-- [ ] T005 Register registerUsage after registerLease (end of MODULES) in src/server/modules/index.ts ← T004:registerUsage
+- [X] T001 Extend coverage globs for src/server/modules/usage/** (≥80% line+branch) in vitest.config.ts
+- [X] T002 {FR-004,FR-005,FR-015} Usage config keys (retention/dedupe window ~35d, skew future allowance, hourly bucket, rollup interval, ingest rate-limit, max batch cap 1000) in src/server/config/index.ts
+- [X] T003 {FR-001} Add the `usage.ingest` runtime scope to the Scope union (activate|validate|lease|admin + usage.ingest) in src/server/auth/rbac.ts
+- [X] T004 Module scaffold: registerUsage seam (pool + config + repo + catalog read) + UsageError + app.usage in src/server/modules/usage/index.ts → exports: registerUsage, UsageError
+- [X] T005 Register registerUsage after registerLease (end of MODULES) in src/server/modules/index.ts ← T004:registerUsage
 
 ---
 
@@ -53,14 +53,14 @@ description: "Task list for feature implementation: Usage Metering & Aggregation
 
 **The migration `0012` (finalized across T006→T007, same file), the module scaffold + seam (Phase 1), and the shared building blocks — `config.ts` (retention/skew/bucket/interval/rate-limit/cap resolvers), `dimension-schema.ts` (allow-list + per-aggregation quantity guard), and `usage-repo.ts` (batch append ON CONFLICT DO NOTHING + per-event outcome, rollup/watermark upsert, unique-value upsert, reads) — block every delivery story (ingest AND rollup/query/prune compose them). Complete before any US phase. Unit tests (T008–T009) and the migration IT (T013) are TDD-first and precede/verify their implementations.**
 
-- [ ] T006 {FR-008} Migration 0012: entitlement expand-only metered extension (type CHECK +metered; aggregation/unit/allowance columns; valid/nonneg/metered-shape CHECKs) in migrations/0012_usage_metering.sql
-- [ ] T007 {FR-002,FR-003,FR-016,FR-017} Migration 0012: usage_event + usage_rollup + usage_unique_value + composite FKs + UNIQUE dedupe + hourly CHECK + forced RLS/policies + append-only grants + indexes in migrations/0012_usage_metering.sql after:T006
-- [ ] T008 [P] Unit (TDD): config resolvers — retention/dedupe window + skew allowance + hourly bucket + rollup interval + rate-limit + batch cap in src/server/modules/usage/__tests__/config.unit.test.ts
-- [ ] T009 [P] Unit (TDD): dimension allow-list (bounded keys, scalar-only, size caps → validation_error) + per-aggregation quantity guard (SUM any signed; COUNT non-zero int; UNIQUE_COUNT positive int) in src/server/modules/usage/__tests__/dimension-schema.unit.test.ts
-- [ ] T010 [P] {FR-004,FR-005,FR-015} Retention/dedupe window + skew + hourly bucket + rollup interval + rate-limit + batch-cap resolvers in src/server/modules/usage/config.ts → exports: UsageConfig
-- [ ] T011 [P] {FR-016} Dimension-schema allow-list validator + per-aggregation quantity guard (malformed → per-event validation_error) in src/server/modules/usage/dimension-schema.ts → exports: validateDimensions
-- [ ] T012 {FR-002,FR-003,FR-017} [COMPLETES FR-003] Batch append (ON CONFLICT DO NOTHING + RETURNING per-event outcome) + rollup/watermark upsert + unique-value upsert + tenant-scoped reads in src/server/modules/usage/usage-repo.ts ← T010:UsageConfig → exports: UsageRepo
-- [ ] T013 [P] {FR-017} Migration IT (TDD): unset-GUC→0 rows on all three tables + composite FK NO ACTION + dedupe UNIQUE + hourly bucket CHECK in src/server/modules/usage/__tests__/migration.integration.test.ts after:T007
+- [X] T006 {FR-008} Migration 0012: entitlement expand-only metered extension (type CHECK +metered; aggregation/unit/allowance columns; valid/nonneg/metered-shape CHECKs) in migrations/0012_usage_metering.sql
+- [X] T007 {FR-002,FR-003,FR-016,FR-017} Migration 0012: usage_event + usage_rollup + usage_unique_value + composite FKs + UNIQUE dedupe + hourly CHECK + forced RLS/policies + append-only grants + indexes in migrations/0012_usage_metering.sql after:T006
+- [X] T008 [P] Unit (TDD): config resolvers — retention/dedupe window + skew allowance + hourly bucket + rollup interval + rate-limit + batch cap in src/server/modules/usage/__tests__/config.unit.test.ts
+- [X] T009 [P] Unit (TDD): dimension allow-list (bounded keys, scalar-only, size caps → validation_error) + per-aggregation quantity guard (SUM any signed; COUNT non-zero int; UNIQUE_COUNT positive int) in src/server/modules/usage/__tests__/dimension-schema.unit.test.ts
+- [X] T010 [P] {FR-004,FR-005,FR-015} Retention/dedupe window + skew + hourly bucket + rollup interval + rate-limit + batch-cap resolvers in src/server/modules/usage/config.ts → exports: UsageConfig
+- [X] T011 [P] {FR-016} Dimension-schema allow-list validator + per-aggregation quantity guard (malformed → per-event validation_error) in src/server/modules/usage/dimension-schema.ts → exports: validateDimensions
+- [X] T012 {FR-002,FR-003,FR-017} [COMPLETES FR-003] Batch append (ON CONFLICT DO NOTHING + RETURNING per-event outcome) + rollup/watermark upsert + unique-value upsert + tenant-scoped reads in src/server/modules/usage/usage-repo.ts ← T010:UsageConfig → exports: UsageRepo
+- [X] T013 [P] {FR-017} Migration IT (TDD): unset-GUC→0 rows on all three tables + composite FK NO ACTION + dedupe UNIQUE + hourly bucket CHECK in src/server/modules/usage/__tests__/migration.integration.test.ts after:T007
 
 ---
 
@@ -68,12 +68,12 @@ description: "Task list for feature implementation: Usage Metering & Aggregation
 
 **Independent test**: define a SUM meter; report a batch of distinct events with idempotency keys → each accrues once and the endpoint fast-acks with a per-batch summary; re-report the identical batch → every event is a `duplicate` no-op (nothing further accrues, SC-001/002); a mixed batch (new + duplicate + a not_found/not_metered/archived/`license_inactive`/`stale_event`/`validation_error` event) accrues the new, no-ops the duplicate, and reports each bad event per-event without failing the batch (SC-003/018); the same `(source, eventId)` submitted concurrently by parallel producers accrues exactly once (SC-015); an over-cap batch → `400 batch_too_large` before any accrual; a key lacking `usage.ingest` → `403 forbidden`, nothing accrued (SC-011/016).
 
-- [ ] T014 [P] [US1] {FR-001,FR-007} IT (TDD): batch 200/202 summary; mixed new/duplicate/invalid per-event outcomes; missing scope→403; over-cap→400 pre-accrual (SC-002/011/016) in src/server/modules/usage/__tests__/ingest.integration.test.ts
-- [ ] T015 [P] [US1] {FR-002} IT (TDD): concurrent-dedupe race — same (source,eventId) parallel producers accrue exactly once, no double-count (SC-001/015) in src/server/modules/usage/__tests__/concurrent-dedupe.integration.test.ts
-- [ ] T016 [P] [US1] {FR-006,FR-021} IT (TDD): per-event not_found/not_metered/archived/cross-tenant (SC-003) + license_inactive on expired/suspended/revoked (SC-018) in src/server/modules/usage/__tests__/ingest-rejections.integration.test.ts
-- [ ] T017 [US1] {FR-004,FR-006,FR-016,FR-021} [COMPLETES FR-006,FR-021] Per-event validate: dimension-schema + event-time skew + entitlement (unknown/archived/non-metered) + license-active fail-closed in src/server/modules/usage/ingest.ts ← T011:validateDimensions, T012:UsageRepo
-- [ ] T018 [US1] {FR-002,FR-007,FR-013} [COMPLETES FR-002,FR-007] Accrue append (ON CONFLICT DO NOTHING) + reference-free signed reversal ingest + per-batch summary assembly in src/server/modules/usage/ingest.ts after:T017
-- [ ] T019 [US1] {FR-001,FR-005,FR-018} [COMPLETES FR-001] POST /v1/usage route (usage.ingest scope fail-closed, batch cap, fast-ack 200/202, batch-summary audit) in src/server/modules/usage/routes.ts after:T018
+- [X] T014 [P] [US1] {FR-001,FR-007} IT (TDD): batch 200/202 summary; mixed new/duplicate/invalid per-event outcomes; missing scope→403; over-cap→400 pre-accrual (SC-002/011/016) in src/server/modules/usage/__tests__/ingest.integration.test.ts
+- [X] T015 [P] [US1] {FR-002} IT (TDD): concurrent-dedupe race — same (source,eventId) parallel producers accrue exactly once, no double-count (SC-001/015) in src/server/modules/usage/__tests__/concurrent-dedupe.integration.test.ts
+- [X] T016 [P] [US1] {FR-006,FR-021} IT (TDD): per-event not_found/not_metered/archived/cross-tenant (SC-003) + license_inactive on expired/suspended/revoked (SC-018) in src/server/modules/usage/__tests__/ingest-rejections.integration.test.ts
+- [X] T017 [US1] {FR-004,FR-006,FR-016,FR-021} [COMPLETES FR-006,FR-021] Per-event validate: dimension-schema + event-time skew + entitlement (unknown/archived/non-metered) + license-active fail-closed in src/server/modules/usage/ingest.ts ← T011:validateDimensions, T012:UsageRepo
+- [X] T018 [US1] {FR-002,FR-007,FR-013} [COMPLETES FR-002,FR-007] Accrue append (ON CONFLICT DO NOTHING) + reference-free signed reversal ingest + per-batch summary assembly in src/server/modules/usage/ingest.ts after:T017
+- [X] T019 [US1] {FR-001,FR-005,FR-018} [COMPLETES FR-001] POST /v1/usage route (usage.ingest scope fail-closed, batch cap, fast-ack 200/202, batch-summary audit) in src/server/modules/usage/routes.ts after:T018
 
 ---
 
@@ -81,15 +81,15 @@ description: "Task list for feature implementation: Usage Metering & Aggregation
 
 **Independent test**: report events across two hours/periods; run the incremental watermark rollup and query the per-license aggregate per entitlement/period → correct totals per the aggregation type (SUM sums, COUNT counts, UNIQUE_COUNT counts distinct values); re-query the same unchanged window → identical totals (reproducible, SC-004); after a reversal, a `viewer` sees the floor-at-zero display while `admin`/E014 `raw=true` sees the true signed net (SC-017/019); a cross-tenant `licenseId` → `404 not_found`; an over-window span → `400 window_too_large` before aggregation.
 
-- [ ] T020 [P] [US2] Unit (TDD): rollup math per aggregation SUM/COUNT/UNIQUE_COUNT + signed reversal net + floor-at-zero display in src/server/modules/usage/__tests__/rollup.unit.test.ts
-- [ ] T021 [P] [US2] {FR-010} IT (TDD): watermark incremental rollup correctness + idempotent re-run (recompute-not-increment, no double-count) in src/server/modules/usage/__tests__/rollup.integration.test.ts
-- [ ] T022 [P] [US2] {FR-011,FR-020} IT (TDD): reproducible query per license/entitlement/period; viewer floored vs admin raw true-net (SC-004/017/019) in src/server/modules/usage/__tests__/query.integration.test.ts
-- [ ] T023 [US2] {FR-010,FR-012,FR-013,FR-014} Incremental hourly rollup (sum/count/unique via usage_unique_value) + late-event bucket re-open + reversal net + over-quota eval in src/server/modules/usage/rollup.ts ← T012:UsageRepo → exports: rollupBucket
-- [ ] T024 [US2] {FR-010,FR-018} Fail-open tenant-scoped watermark rollup sweeper (on-read open-bucket, synthetic-actor audit) in src/server/modules/usage/rollup-worker.ts after:T023 → exports: rollupSweep
-- [ ] T025 [US2] {FR-010} [COMPLETES FR-010] Start rollup worker fail-open, unref'd, on app.close() in src/server/main.ts after:T024 ← T024:rollupSweep
-- [ ] T026 [US2] {FR-011,FR-013,FR-019,FR-020} [COMPLETES FR-013,FR-020] Aggregate query per license/entitlement/period (reproducible; floor-at-zero display; raw true-net bounded to admin/E014) in src/server/modules/usage/query.ts ← T012:UsageRepo → exports: queryUsage
-- [ ] T027 [US2] {FR-011} GET /admin/licenses/:licenseId/usage route (session + viewer RBAC; raw requires admin; window bound; cross-tenant→404) in src/server/modules/usage/routes.ts after:T019 ← T026:queryUsage
-- [ ] T028 [US2] {FR-011} [COMPLETES FR-011] usageApi + Usage view (per-license/entitlement aggregate, over-quota) + Shell nav in src/admin-ui/src/pages/usage/Usage.tsx after:T027
+- [X] T020 [P] [US2] Unit (TDD): rollup math per aggregation SUM/COUNT/UNIQUE_COUNT + signed reversal net + floor-at-zero display in src/server/modules/usage/__tests__/rollup.unit.test.ts
+- [X] T021 [P] [US2] {FR-010} IT (TDD): watermark incremental rollup correctness + idempotent re-run (recompute-not-increment, no double-count) in src/server/modules/usage/__tests__/rollup.integration.test.ts
+- [X] T022 [P] [US2] {FR-011,FR-020} IT (TDD): reproducible query per license/entitlement/period; viewer floored vs admin raw true-net (SC-004/017/019) in src/server/modules/usage/__tests__/query.integration.test.ts
+- [X] T023 [US2] {FR-010,FR-012,FR-013,FR-014} Incremental hourly rollup (sum/count/unique via usage_unique_value) + late-event bucket re-open + reversal net + over-quota eval in src/server/modules/usage/rollup.ts ← T012:UsageRepo → exports: rollupBucket
+- [X] T024 [US2] {FR-010,FR-018} Fail-open tenant-scoped watermark rollup sweeper (on-read open-bucket, synthetic-actor audit) in src/server/modules/usage/rollup-worker.ts after:T023 → exports: rollupSweep
+- [X] T025 [US2] {FR-010} [COMPLETES FR-010] Start rollup worker fail-open, unref'd, on app.close() in src/server/main.ts after:T024 ← T024:rollupSweep
+- [X] T026 [US2] {FR-011,FR-013,FR-019,FR-020} [COMPLETES FR-013,FR-020] Aggregate query per license/entitlement/period (reproducible; floor-at-zero display; raw true-net bounded to admin/E014) in src/server/modules/usage/query.ts ← T012:UsageRepo → exports: queryUsage
+- [X] T027 [US2] {FR-011} GET /admin/licenses/:licenseId/usage route (session + viewer RBAC; raw requires admin; window bound; cross-tenant→404) in src/server/modules/usage/routes.ts after:T019 ← T026:queryUsage
+- [X] T028 [US2] {FR-011} [COMPLETES FR-011] usageApi + Usage view (per-license/entitlement aggregate, over-quota) + Shell nav in src/admin-ui/src/pages/usage/Usage.tsx after:T027
 
 ---
 
@@ -97,9 +97,9 @@ description: "Task list for feature implementation: Usage Metering & Aggregation
 
 **Independent test**: define a SUM meter and a COUNT meter on a plan; report the same event stream to each and confirm SUM sums the quantities while COUNT counts the events (and a UNIQUE_COUNT meter counts distinct dimension values) — a metered kind distinct from boolean/limit (SC-005); edit a metered entitlement's aggregation/unit while it has no usage → succeeds; attempt the same edit once any `usage_event` exists → refused `409 aggregation_frozen` (SC-006).
 
-- [ ] T029 [P] [US3] {FR-008,FR-009} IT (TDD): define metered (SUM/COUNT/UNIQUE_COUNT distinct totals SC-005); edit allowed while empty, refused once usage exists (SC-006) in src/server/modules/catalog/__tests__/metered-entitlement.integration.test.ts
-- [ ] T030 [US3] {FR-008} Metered kind validation (type=metered; aggregation∈sum/count/unique_count; unit; optional allowance; counter-only) in src/server/modules/catalog/validation.ts
-- [ ] T031 [US3] {FR-008,FR-009} [COMPLETES FR-008,FR-009] Metered create/edit + freeze-on-usage guard (EXISTS usage_event → aggregation_frozen) in src/server/modules/catalog/entitlements.ts after:T030
+- [X] T029 [P] [US3] {FR-008,FR-009} IT (TDD): define metered (SUM/COUNT/UNIQUE_COUNT distinct totals SC-005); edit allowed while empty, refused once usage exists (SC-006) in src/server/modules/catalog/__tests__/metered-entitlement.integration.test.ts
+- [X] T030 [US3] {FR-008} Metered kind validation (type=metered; aggregation∈sum/count/unique_count; unit; optional allowance; counter-only) in src/server/modules/catalog/validation.ts
+- [X] T031 [US3] {FR-008,FR-009} [COMPLETES FR-008,FR-009] Metered create/edit + freeze-on-usage guard (EXISTS usage_event → aggregation_frozen) in src/server/modules/catalog/entitlements.ts after:T030
 
 ---
 
@@ -107,8 +107,8 @@ description: "Task list for feature implementation: Usage Metering & Aggregation
 
 **Independent test**: report an event whose client `eventTime` falls in an earlier still-retained hour → that bucket re-opens and its aggregate updates (SC-007); report a too-old event → per-event `stale_event` (rejected even if its target bucket is not yet rolled — the retention window is the single acceptance bound) and a future-dated event beyond skew → `future_event`; report a reference-free signed-negative reversal → the stored true net decreases while no prior event is mutated or deleted (SC-008).
 
-- [ ] T032 [P] [US4] {FR-004,FR-012} [COMPLETES FR-004] IT (TDD): late event within window re-opens the correct bucket (SC-007); too-old→stale_event, future→future_event; reversal adjusts net without mutation (SC-008) in src/server/modules/usage/__tests__/late-reversal.integration.test.ts
-- [ ] T033 [US4] {FR-012} [COMPLETES FR-012] Retention-window single-acceptance-bound + late/out-of-order bucket re-open wiring (unrolled bucket does not extend acceptance) in src/server/modules/usage/rollup.ts after:T023
+- [X] T032 [P] [US4] {FR-004,FR-012} [COMPLETES FR-004] IT (TDD): late event within window re-opens the correct bucket (SC-007); too-old→stale_event, future→future_event; reversal adjusts net without mutation (SC-008) in src/server/modules/usage/__tests__/late-reversal.integration.test.ts
+- [X] T033 [US4] {FR-012} [COMPLETES FR-012] Retention-window single-acceptance-bound + late/out-of-order bucket re-open wiring (unrolled bucket does not extend acceptance) in src/server/modules/usage/rollup.ts after:T023
 
 ---
 
@@ -116,8 +116,8 @@ description: "Task list for feature implementation: Usage Metering & Aggregation
 
 **Independent test**: set an allowance on a metered entitlement; accrue usage past it → the aggregate is flagged `overQuota` (evaluated against the stored true net) and an append-only audit entry is written; further events still ingest and accrue (no block, SC-009); a later reversal dropping the net below the allowance clears the derived flag while the historical crossing audit entry is retained.
 
-- [ ] T034 [P] [US5] {FR-014} IT (TDD): crossing allowance flags overQuota + writes audit; further events still ingest; reversal below allowance clears derived flag, crossing audit retained (SC-009) in src/server/modules/usage/__tests__/over-quota.integration.test.ts
-- [ ] T035 [US5] {FR-014,FR-018} [COMPLETES FR-014] Over-quota crossing eval against true net + derived over_quota flag + append-only audit (signal only, never blocks ingest) in src/server/modules/usage/rollup.ts after:T023
+- [X] T034 [P] [US5] {FR-014} IT (TDD): crossing allowance flags overQuota + writes audit; further events still ingest; reversal below allowance clears derived flag, crossing audit retained (SC-009) in src/server/modules/usage/__tests__/over-quota.integration.test.ts
+- [X] T035 [US5] {FR-014,FR-018} [COMPLETES FR-014] Over-quota crossing eval against true net + derived over_quota flag + append-only audit (signal only, never blocks ingest) in src/server/modules/usage/rollup.ts after:T023
 
 ---
 
@@ -125,21 +125,21 @@ description: "Task list for feature implementation: Usage Metering & Aggregation
 
 **Independent test**: age raw events + idempotency keys past the retention window and run the fail-open prune → the raw events and keys are gone while the durable rollup aggregate is unchanged, and a re-report of a pruned key is a FRESH accrual (SC-010); a UNIQUE_COUNT meter's aggregate stays exact and reproducible post-prune via the durable `usage_unique_value` side table (SC-020); a tenant GDPR-erasure removes that tenant's `usage_event` + `usage_rollup` + `usage_unique_value` (owner role, tenant-scoped, SC-013).
 
-- [ ] T036 [P] [US6] {FR-015,FR-016} IT (TDD): prune ages raw+keys, rollup survives, re-report fresh accrual (SC-010); UNIQUE_COUNT exact post-prune (SC-020); GDPR erase all three tables (SC-013) in src/server/modules/usage/__tests__/retention-gdpr.integration.test.ts
-- [ ] T037 [US6] {FR-015,FR-016,FR-018} [COMPLETES FR-016] Fail-open owner-role prune (raw+keys, rollup survives) + GDPR tenant erase across all three tables (tenant-scoped, synthetic-actor audit) in src/server/modules/usage/retention-worker.ts after:T023 → exports: retentionSweep, eraseTenantUsage
-- [ ] T038 [US6] {FR-015} [COMPLETES FR-015] Start retention worker fail-open, unref'd, on app.close() in src/server/main.ts after:T037 ← T037:retentionSweep
+- [X] T036 [P] [US6] {FR-015,FR-016} IT (TDD): prune ages raw+keys, rollup survives, re-report fresh accrual (SC-010); UNIQUE_COUNT exact post-prune (SC-020); GDPR erase all three tables (SC-013) in src/server/modules/usage/__tests__/retention-gdpr.integration.test.ts
+- [X] T037 [US6] {FR-015,FR-016,FR-018} [COMPLETES FR-016] Fail-open owner-role prune (raw+keys, rollup survives) + GDPR tenant erase across all three tables (tenant-scoped, synthetic-actor audit) in src/server/modules/usage/retention-worker.ts after:T023 → exports: retentionSweep, eraseTenantUsage
+- [X] T038 [US6] {FR-015} [COMPLETES FR-015] Start retention worker fail-open, unref'd, on app.close() in src/server/main.ts after:T037 ← T037:retentionSweep
 
 ---
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T039 {FR-005,FR-018} [COMPLETES FR-005] Rate-limit ingest per API key (429 rate_limited + Retry-After == details.retryAfterSeconds) + audit limit-exceeded in src/server/modules/usage/routes.ts after:T027
-- [ ] T040 [P] {FR-018} [COMPLETES FR-018] Audit IT: ingest batch/definition-edit/over-quota/reversal/prune audited; rollup+prune→synthetic actor + ids in src/server/modules/usage/__tests__/audit.integration.test.ts
-- [ ] T041 [P] {FR-017} [COMPLETES FR-017] Isolation IT: cross-tenant→404/not_found all routes; unset-GUC→0 rows on all three tables (SC-012) in src/server/modules/usage/__tests__/isolation.integration.test.ts
-- [ ] T042 [P] {FR-019} [COMPLETES FR-019] Security/PII IT: no secret/key/card-PAN in any response/log/audit; dimension allow-list enforced; only refs/dimensions exposed (SC-013) in src/server/modules/usage/__tests__/secret-leakage.test.ts
-- [ ] T043 [P] Perf IT: ingest fast-ack latency p95 < ~200ms under a high-write burst in src/server/modules/usage/__tests__/perf.integration.test.ts
-- [ ] T044 Enforce ≥80% line+branch coverage of src/server/modules/usage/** in vitest.config.ts after:T043
-- [ ] T045 [P] Add usage CI (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep; SHA-pinned actions) in .github/workflows/usage.yml mirroring lease.yml
+- [X] T039 {FR-005,FR-018} [COMPLETES FR-005] Rate-limit ingest per API key (429 rate_limited + Retry-After == details.retryAfterSeconds) + audit limit-exceeded in src/server/modules/usage/routes.ts after:T027
+- [X] T040 [P] {FR-018} [COMPLETES FR-018] Audit IT: ingest batch/definition-edit/over-quota/reversal/prune audited; rollup+prune→synthetic actor + ids in src/server/modules/usage/__tests__/audit.integration.test.ts
+- [X] T041 [P] {FR-017} [COMPLETES FR-017] Isolation IT: cross-tenant→404/not_found all routes; unset-GUC→0 rows on all three tables (SC-012) in src/server/modules/usage/__tests__/isolation.integration.test.ts
+- [X] T042 [P] {FR-019} [COMPLETES FR-019] Security/PII IT: no secret/key/card-PAN in any response/log/audit; dimension allow-list enforced; only refs/dimensions exposed (SC-013) in src/server/modules/usage/__tests__/secret-leakage.test.ts
+- [X] T043 [P] Perf IT: ingest fast-ack latency p95 < ~200ms under a high-write burst in src/server/modules/usage/__tests__/perf.integration.test.ts
+- [X] T044 Enforce ≥80% line+branch coverage of src/server/modules/usage/** in vitest.config.ts after:T043
+- [X] T045 [P] Add usage CI (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep; SHA-pinned actions) in .github/workflows/usage.yml mirroring lease.yml
 
 ---
 

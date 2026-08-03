@@ -28,6 +28,9 @@ import { type CrlWorkerHandle, startCrlWorker } from "./modules/enforcement/crl-
 import { loadLeaseConfig } from "./modules/lease/config.js";
 import { type ReclaimWorkerHandle, startReclaimWorker } from "./modules/lease/reclaim-worker.js";
 import type { Signer } from "./modules/signing/signer.js";
+import { loadUsageConfig } from "./modules/usage/config.js";
+import { type UsageRetentionWorkerHandle, startUsageRetentionWorker } from "./modules/usage/retention-worker.js";
+import { type RollupWorkerHandle, startRollupWorker } from "./modules/usage/rollup-worker.js";
 import { type CanaryHandle, makeCrossTenantProbe, startCanary } from "./observability/canary.js";
 import { createLogger } from "./observability/logger.js";
 import { type MetricsListener, setPoolStatsSource, startMetricsListener } from "./observability/metrics.js";
@@ -51,6 +54,10 @@ export interface Server {
   retentionWorker?: RetentionWorkerHandle;
   /** The floating-seat lease reclaim sweeper (E015/US3, FR-010/024), started fail-open and tied to app.close(). */
   reclaimWorker?: ReclaimWorkerHandle;
+  /** The usage-metering watermark rollup sweeper (E016/US2, FR-010), started fail-open and tied to app.close(). */
+  rollupWorker?: RollupWorkerHandle;
+  /** The usage-metering retention/prune worker (E016/US6, FR-015), started fail-open and tied to app.close(). */
+  usageRetentionWorker?: UsageRetentionWorkerHandle;
 }
 
 type WithSigner = FastifyInstance & { signerReady?: () => boolean };
@@ -255,6 +262,57 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     );
   }
 
+  // Usage-metering watermark rollup sweeper (E016/US2, FR-010/018): a periodic TIME-driven job that folds the
+  // append-only raw usage_event stream into the durable hourly usage_rollup aggregate keyed by an advancing
+  // watermark (a RECOMPUTE-from-raw, not a hot per-event counter, AD-002) — so the high-write ingest path is
+  // never contended and a restart / overlapping sweep re-folds idempotently (no double-count, SC-004). A late
+  // event re-opens its already-rolled bucket (FR-012); each pass is attributed to a synthetic worker actor
+  // (FR-018). FAIL-OPEN and cancelable exactly like the workers above: the cadence timer is unref'd, a
+  // per-tenant/sweep fault is caught + logged and NEVER crashes boot (or blocks ingest; the on-read fallback
+  // keeps the open bucket eventually consistent). Tied to app.close() for clean shutdown. [COMPLETES FR-010]
+  let rollupWorker: RollupWorkerHandle | undefined;
+  try {
+    const usageConfig = loadUsageConfig(env);
+    rollupWorker = startRollupWorker(pool, {
+      intervalMs: usageConfig.rollupIntervalMs,
+      bucketSeconds: usageConfig.bucketSeconds,
+      logger: app.log,
+    });
+    app.log.info({}, "usage rollup worker started");
+    app.addHook("onClose", async () => rollupWorker?.stop());
+  } catch (err: unknown) {
+    app.log.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      "usage rollup worker failed to start (fail-open)",
+    );
+  }
+
+  // Usage-metering retention/prune worker (E016/US6, FR-015/016/018): a periodic OWNER-ROLE maintenance job that
+  // prunes closed-bucket raw usage_event rows + their idempotency keys + the closed buckets' usage_unique_value
+  // working rows once older than the event-timestamp acceptance window, while the durable usage_rollup +
+  // usage_unique_value aggregates for still-open buckets SURVIVE (INV-6/SC-010). The app role has NO DELETE grant
+  // on the usage tables, so the prune runs RLS-bypassing on the schema-owner (privileged) connection, per-tenant
+  // scoped by an explicit tenant_id predicate (HINT-004) and attributed to a synthetic worker actor (FR-018).
+  // FAIL-OPEN and cancelable exactly like the workers above: the cadence timer is unref'd, a prune fault is
+  // caught + logged and NEVER crashes boot (or blocks ingest; it re-fires next sweep). Tied to app.close().
+  // [COMPLETES FR-015]
+  let usageRetentionWorker: UsageRetentionWorkerHandle | undefined;
+  try {
+    const usageConfig = loadUsageConfig(env);
+    usageRetentionWorker = startUsageRetentionWorker(pool, {
+      retentionSecs: usageConfig.retentionSecs,
+      bucketSeconds: usageConfig.bucketSeconds,
+      logger: app.log,
+    });
+    app.log.info({}, "usage retention worker started");
+    app.addHook("onClose", async () => usageRetentionWorker?.stop());
+  } catch (err: unknown) {
+    app.log.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      "usage retention worker failed to start (fail-open)",
+    );
+  }
+
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, "shutting down");
     try {
@@ -269,7 +327,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
-  return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker };
+  return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker, rollupWorker, usageRetentionWorker };
 }
 
 // CLI entry: `node dist/server/main.js` (the image's serve command).

@@ -58,6 +58,7 @@ The catalog (E007) expresses entitlements only as on/off flags or static integer
 - Concurrent ingestion of the same idempotency key from parallel producers → accrued exactly once (unique constraint), never double-counted.
 - Attempt to change a metered entitlement's aggregation type / unit after any event exists → refused.
 - High-write burst → the ingest endpoint fast-acks and is rate-limited per API key (429 + Retry-After); the rollup worker failing → fail-open, with an on-read fallback for the open bucket (aggregate eventually consistent).
+- UNIQUE_COUNT over a multi-hour window → the window total is the SUM of the distinct counts of each hourly bucket in the window (bucket-grain distinct), NOT a single distinct-over-the-whole-window set; a value seen in two different hours contributes to each — a deliberate, reproducible semantic (a true window-distinct set cannot survive raw-event pruning, whereas the per-bucket distinct count is finalized durably, SC-020).
 
 ## User Scenarios & Testing *(mandatory for product specs only)*
 
@@ -209,7 +210,7 @@ Raw usage events and their idempotency keys cannot grow forever on a high-write 
 - **SC-002** [US1]: A batch of N distinct events accrues N; re-reporting the identical batch accrues nothing further.
 - **SC-003** [US1]: An event for an unknown, archived, non-metered, or cross-tenant license/entitlement is rejected with a distinct reason and accrues nothing.
 - **SC-004** [US2]: Aggregated usage is queryable per license (and per entitlement/period), and an identical query over an unchanged window returns identical totals (reproducible).
-- **SC-005** [US3]: An operator defines a metered entitlement with an aggregation type and unit, and usage accrues per that type (SUM sums quantities, COUNT counts events, UNIQUE_COUNT counts distinct values).
+- **SC-005** [US3]: An operator defines a metered entitlement with an aggregation type and unit, and usage accrues per that type (SUM sums quantities, COUNT counts events/occurrences, UNIQUE_COUNT counts distinct values **per hourly bucket** — a "per period"/window UNIQUE_COUNT total is the SUM of its hourly buckets' distinct counts, so a value recurring across different hours is counted once per hour; this bucket-grain definition is chosen because it stays exact and reproducible after raw-event pruning, when only the per-bucket distinct count survives, per SC-020).
 - **SC-006** [US3]: Editing a metered entitlement's aggregation type/unit succeeds while no usage exists and is refused with a distinct reason once usage exists.
 - **SC-007** [US4]: An event accrues to the period of its client event timestamp; a late event within the retention window updates the correct period; a too-old or future-dated event is rejected.
 - **SC-008** [US4]: A reversal/negative correction event on a SUM or COUNT meter adjusts the aggregate without mutating or deleting any prior event (a UNIQUE_COUNT meter's distinct set is monotonic — a negative UNIQUE_COUNT quantity is rejected per FR-013).

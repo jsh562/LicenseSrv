@@ -138,6 +138,10 @@ export type AdminApi = typeof adminApi;
 
 export type CatalogStatus = "active" | "archived";
 export type EntitlementType = "boolean" | "integer_limit";
+/** The entitlement kind, extended with the additive E016 `metered` kind (FR-008). */
+export type EntitlementKind = EntitlementType | "metered";
+/** The counter-only metered aggregation set (E016 FR-008). */
+export type MeteredAggregation = "sum" | "count" | "unique_count";
 export type StatusFilter = "active" | "archived" | "all";
 
 export interface Product {
@@ -164,9 +168,15 @@ export interface Entitlement {
   id: string;
   key: string;
   name: string;
-  type: EntitlementType;
+  type: EntitlementKind;
   description: string | null;
   status: CatalogStatus;
+  /** Metered-only (FR-008): the aggregation type; null for boolean/integer_limit. */
+  aggregation?: MeteredAggregation | null;
+  /** Metered-only: the unit label; null for non-metered. */
+  unit?: string | null;
+  /** Metered-only: the optional allowance/quota (signal-only); null = no quota / non-metered. */
+  allowance?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -203,8 +213,15 @@ export const catalogApi = {
 
   listEntitlements: (status?: StatusFilter) =>
     request<{ entitlements: Entitlement[] }>("GET", `/admin/catalog/entitlements${statusQs(status)}`).then((r) => r.entitlements),
-  createEntitlement: (input: { key: string; name: string; type: EntitlementType; description?: string }) =>
-    request<Entitlement>("POST", "/admin/catalog/entitlements", input),
+  createEntitlement: (input: {
+    key: string;
+    name: string;
+    type: EntitlementKind;
+    description?: string;
+    aggregation?: MeteredAggregation;
+    unit?: string;
+    allowance?: number;
+  }) => request<Entitlement>("POST", "/admin/catalog/entitlements", input),
   archiveEntitlement: (id: string) => request<Entitlement>("POST", `/admin/catalog/entitlements/${id}/archive`),
 
   listPlanEntitlements: (planId: string) =>
@@ -440,3 +457,68 @@ export const leaseApi = {
 };
 
 export type LeaseApi = typeof leaseApi;
+
+// --- Usage metering (E016) ------------------------------------------------------------------------
+
+export type UsageAggregation = "sum" | "count" | "unique_count";
+export type UsageBucketGrouping = "hour" | "day" | "period";
+
+/** One time-bucket of an entitlement's usage (present only when a bucket grouping is requested). */
+export interface UsageBucket {
+  bucketStart: string;
+  value: number;
+}
+
+/**
+ * The aggregated usage for one metered entitlement over the window. `value` is FLOORED at zero for display
+ * unless `raw=true` (admin+), in which case it is the TRUE signed net consumed by billing true-up (E014).
+ */
+export interface UsageEntitlementAggregate {
+  entitlementId: string;
+  aggregation: UsageAggregation;
+  unit: string;
+  value: number;
+  allowance: number | null;
+  overQuota: boolean;
+  buckets?: UsageBucket[];
+}
+
+/** A license's aggregated usage over a window (reproducible + self-describing). */
+export interface UsageQueryResult {
+  licenseId: string;
+  window: { from: string; to: string; bucket: UsageBucketGrouping | null };
+  raw: boolean;
+  entitlements: UsageEntitlementAggregate[];
+  truncated: boolean;
+}
+
+export interface UsageQuery {
+  from: string;
+  to: string;
+  entitlementId?: string;
+  bucket?: UsageBucketGrouping;
+  /** Request the TRUE signed net (admin+ only; a viewer requesting it is refused 403). */
+  raw?: boolean;
+}
+
+function usageQs(q: UsageQuery): string {
+  const p = new URLSearchParams();
+  p.set("from", q.from);
+  p.set("to", q.to);
+  if (q.entitlementId) p.set("entitlementId", q.entitlementId);
+  if (q.bucket) p.set("bucket", q.bucket);
+  if (q.raw) p.set("raw", "true");
+  return `?${p.toString()}`;
+}
+
+/**
+ * The usage-metering query API surface (mirrors the /admin plane of src/server/modules/usage/routes.ts). The
+ * runtime /v1/usage ingest is called by the licensed app (API key), NOT the console — so it is not here. The
+ * query is a GET (read); `raw=true` returns the true signed net and requires the admin role server-side.
+ */
+export const usageApi = {
+  getUsage: (licenseId: string, query: UsageQuery) =>
+    request<UsageQueryResult>("GET", `/admin/licenses/${licenseId}/usage${usageQs(query)}`),
+};
+
+export type UsageApi = typeof usageApi;

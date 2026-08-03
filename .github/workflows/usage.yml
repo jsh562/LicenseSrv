@@ -1,0 +1,61 @@
+name: usage
+
+# CI for the usage metering & aggregation module (E016): the high-write fast-ack runtime ingest plane
+# (idempotent `INSERT ... ON CONFLICT DO NOTHING` batch append + per-event summary), the fail-open watermark
+# rollup sweeper + the retention/prune + GDPR-erase worker wired into main.ts, the reproducible admin
+# aggregate-query plane, and the E007 metered-entitlement extension. Gates: typecheck + lint, the real-Postgres
+# integration suite (Testcontainers) with the >=80% line+branch coverage gate on src/server/modules/usage/**, a
+# production-scope dependency audit, and a semgrep scan over the usage sources.
+
+on:
+  push:
+    paths:
+      - "src/server/modules/usage/**"
+      - "src/server/modules/catalog/**"
+      - "migrations/0012_usage_metering.sql"
+      - "src/server/app.ts"
+      - "src/server/main.ts"
+      - ".github/workflows/usage.yml"
+  pull_request:
+    paths:
+      - "src/server/modules/usage/**"
+      - "src/server/modules/catalog/**"
+      - "migrations/0012_usage_metering.sql"
+      - "src/server/app.ts"
+      - "src/server/main.ts"
+      - ".github/workflows/usage.yml"
+
+jobs:
+  server:
+    name: server (usage module + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker → Testcontainers spins up Postgres 16 for the usage integration suite
+      # (idempotent ingest + concurrent-dedupe race; mixed per-event batch outcomes + rejections; watermark
+      # rollup correctness incl. late/out-of-order re-open + reversal net; reproducible query; retention prune +
+      # UNIQUE_COUNT prune-safety + GDPR erase; RLS isolation; audit attribution; secret/PII leakage; per-API-key
+      # rate-limit; fast-ack perf) with the >=80% line+branch coverage gate.
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  semgrep:
+    name: semgrep (usage)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/usage
