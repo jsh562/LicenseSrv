@@ -1,0 +1,1492 @@
+openapi: 3.1.0
+info:
+  title: Low-Code Policy Rules (Admin) API
+  version: 0.1.0
+  description: >
+    REST surface for epic E017 (Low-Code Policy Rules). A Licensing Admin authors sandboxed, guarded
+    `when → then` policy rules — a STRUCTURED-JSON condition (JSONLogic-style, NOT free text) plus a
+    bounded, allow-listed typed EFFECT — that dynamically adjust an entitlement decision within a
+    vendor-authored per-entitlement MAXIMUM. Rules are immutably versioned, carry an explicit priority,
+    move through a preview → active → disabled lifecycle, and can be DRY-RUN against a supplied or real
+    decision context before they enforce. Covers FR-001..018 and SC-001..015. Concretizes ADR-0014
+    (sandboxed policy-rule engine + issuance-time bounded-effect model).
+
+
+    ADMIN-ONLY SURFACE — ONE AUTH PLANE (there is NO runtime / API-key plane in this contract). Every
+    operation is called by a HUMAN operator/admin in the console and is authenticated by the opaque
+    `admin_session` cookie (E005) established by `POST /admin/auth/login`, NEVER by an `X-API-Key`. RBAC
+    is `owner > admin > viewer`: READ operations (list / get) require `viewer` or higher; every MUTATING
+    or evaluating operation (create / edit / status transition / dry-run) requires `admin` or higher and
+    additionally carries a double-submit `X-CSRF-Token` header that MUST equal the non-HttpOnly CSRF
+    cookie issued at login — a missing/mismatched token is refused fail-closed `403 forbidden` and
+    recorded as a security event (FR-016, SC-011). GET operations do not require it. (Mirrors the
+    E008/E009/E014/E015/E016 console surfaces.)
+
+
+    NO RUNTIME WIRE OPERATION — RULE EVALUATION IS AN INTERNAL ISSUANCE-PATH SEAM (FR-008, deliberately
+    NOT specified here as an HTTP endpoint). Rules are evaluated ONLY on the server control plane AT
+    ISSUANCE: the policy `evaluate` seam post-processes the effective entitlement definition (E007
+    `getEffectivePlanDefinition`) BEFORE the E008 issuance snapshot is signed by the existing E004 signer
+    (initial issue + re-issuance/renewal). This is an in-process, same-tenant module seam consumed by
+    E008 issuance — it has NO wire representation, no request/response body, and no public URL. It NEVER
+    runs in the offline verifier core and NEVER changes the signed LIC1 token format; an already-issued
+    offline token verifies byte-identical (FR-018, SC-014). A separate per-request online (E013
+    validate-time) evaluation surface is DEFERRED beyond this epic. The `POST .../dry-run` operation below
+    is the ONLY way to exercise evaluation over the wire, and it is a NON-ENFORCING simulation on the
+    admin plane — it neither persists a rule as active nor changes any live decision (FR-013).
+
+
+    STRUCTURED-JSON CONDITION, NOT FREE TEXT (FR-001, clarify Q4). A rule's condition is a STRUCTURED
+    JSON tree (JSONLogic-style) assembled via a structured surface — it is NEVER a free-text expression
+    string and NEVER arbitrary code. The evaluator is a sandboxed, non-Turing-complete, allow-listed
+    JSONLogic-subset: the operator allow-list IS the security boundary (comparison, boolean logic,
+    allow-listed field access, bounded arithmetic, and a `has()` guard — NO time/random/network/custom
+    operators, no `eval`/`Function`/`vm`/host/globals/I-O). See `PolicyCondition`.
+
+
+    CLOSED TYPED EFFECT UNION (FR-003, AD-002). A rule's effect is a CLOSED, allow-listed, typed
+    descriptor `{ kind, target, value }` — the rule returns a DESCRIPTOR that a trusted server-side
+    applier validates and applies; a rule NEVER free-mutates state. Exactly three kinds:
+    `adjust_limit` (a numeric limit, bounded by the authored per-entitlement maximum), `toggle_boolean`
+    (a boolean, only where the plan marks the entitlement rule-eligible), and `select_tier` (an overage
+    tier chosen from the plan-defined tiers). The `value` type is discriminated by `kind`
+    (number / boolean / string). See `PolicyEffect`.
+
+
+    AUTHOR-TIME VALIDATION — REJECT BEFORE PERSIST (FR-002; US1). Every create/edit is parsed,
+    shape-validated, type-checked against the allow-listed context schema, safety-linted, and
+    effect-bounds-checked BEFORE it is persisted — an invalid/unsafe/out-of-bounds rule is NEVER stored
+    or evaluated. The validation refusals are DISTINCT, testable `400` codes: `invalid_condition` (the
+    structured JSON is malformed, ill-typed against the context schema, or references an unknown
+    field/entitlement), `unsafe_operator` (the condition uses an operator/construct outside the safety
+    allow-list — the safety-lint boundary), `effect_out_of_bounds` (the effect would exceed the authored
+    per-entitlement maximum, toggle a non-rule-eligible boolean, or select an undefined tier), and
+    `condition_too_large` (the JSON exceeds the configured size / AST-depth / complexity cap). A generic
+    `validation_error` covers a structurally malformed request envelope. These are distinct from
+    evaluation-time fail-closed behaviour (which is internal, never an HTTP error — see FR-010).
+
+
+    AUTHORED MAXIMUM / CEILING (FR-007, clarify Q2). Every `adjust_limit` effect is clamped to a
+    separately-authored, per-entitlement MAXIMUM (≥ the base plan value) sourced from the E007 catalog. A
+    rule MAY raise the effective limit ABOVE the base plan value (a contract override) but NEVER above the
+    authored maximum; an over-bound effect is refused at author time (`effect_out_of_bounds`) and clamped
+    at evaluation. A rule can never grant an entitlement the plan does not define, toggle a boolean the
+    plan does not mark rule-eligible, or select an undefined tier.
+
+
+    IMMUTABLE VERSIONING + LIFECYCLE (FR-011/012; US5). A logical `ruleKey` groups IMMUTABLE version
+    rows: an edit (PATCH) INSERTs a NEW version and NEVER mutates a prior version (the prior version is
+    retained for audit/explainability). A rule has a `status` — `active` (enforced at issuance),
+    `preview` (report-only: evaluates and logs its would-be decision WITHOUT changing the enforced
+    outcome), or `disabled` (never evaluates). Only enabled ACTIVE-version rules enforce.
+
+
+    DETERMINISTIC, HIGHEST-PRIORITY-WINS EVALUATION (FR-005/006). Matching rules evaluate in a
+    deterministic order — an explicit integer `priority` with a stable rule-id/version tiebreak — and
+    EXACTLY ONE matching rule's effect applies per entitlement (no effect chaining); other matching rules
+    are recorded as CONSIDERED-BUT-NOT-APPLIED. The same context always yields the same decision; time
+    comes only from the injected decision timestamp, never wall-clock/random.
+
+
+    TENANT SCOPING (FR-015, fail-closed). Every operation is implicitly scoped to the session's tenant;
+    there is NO tenant path/query parameter and it can never be widened by the caller. A cross-tenant
+    `ruleKey` (or `licenseId`/`entitlementId` in a dry-run) resolves to `404 not_found` (never `403`), so
+    an out-of-tenant id is indistinguishable from a non-existent one (SC-012). Forced RLS on the policy
+    tables means an unset tenant GUC yields zero rows.
+
+
+    SECRECY & PII INVARIANTS (FR-017; SC-013; project-instructions non-negotiables I & III). NO field of
+    any request or response — nor any log or audit entry — ever carries a SECRET, API key, SIGNING KEY,
+    or PII beyond a PSEUDONYMOUS reference. The decision context is MINIMIZED to the allow-listed
+    entitlement/plan/license/usage fields needed for a decision; a customer is referenced only by a
+    pseudonymous `customerReference`, never by name/email/card data. A rule condition CANNOT read or emit
+    a secret, and no audit entry or dry-run result exposes one. NO card/PAN/CVV/expiry data appears
+    anywhere. This contract introduces NO new cryptography and NO signing surface (FR-018).
+
+
+    AUDIT (FR-014/016). Every rule author/edit/enable/disable/version change and every denied attempt
+    (RBAC / CSRF) is written to the append-only audit trail; every evaluation (enforced / preview /
+    dry-run, distinctly MODE-marked) is recorded on one unified, tenant-scoped, RLS-protected, append-only
+    `policy_evaluation` trail with the fired rule id + version, the SAME CONSIDERED-but-not-applied rule
+    ids + versions the dry-run `consideredNotApplied[]` exposes (persisted in the `considered_rules` audit
+    column, FR-006/SC-009), an input snapshot/hash, and the resolved decision — never a secret or PII. A
+    supplied-context dry-run carries a nullable/synthetic license reference.
+
+
+    ERROR MODEL. Project-standard structured JSON `{ code, message, details? }` with a stable, enumerated
+    snake_case `code` (matches E008/E009/E013/E014/E015/E016). Every refusal reason is a DISTINCT,
+    testable code. Field naming is camelCase throughout the bodies (the data-model's snake_case columns —
+    e.g. `rule_key`, `target_entitlement_id`, `policy_evaluation` — map to camelCase wire fields).
+
+
+    VERSIONING. The admin/console plane is deliberately UNVERSIONED (`/admin/...`), the established
+    platform convention (the same `/admin` split as E008/E009/E014/E015/E016). There is no `/v1` runtime
+    plane in this contract because there is no runtime wire operation.
+
+
+    MEDIA TYPE. Every request and response body is `application/json` (UTF-8); a non-JSON body is rejected
+    `400 validation_error`.
+
+
+    TIMESTAMPS. Every timestamp — the server-set `createdAt`/`updatedAt` and the dry-run
+    `decisionTimestamp` — is RFC 3339 / ISO 8601 in UTC with a trailing `Z` offset (e.g.
+    `2026-08-11T09:00:00Z`), never a local offset and never offset-naive. The injected `decisionTimestamp`
+    is the ONLY source of time an evaluation sees (determinism, FR-005).
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: policy-rules
+    description: >
+      ADMIN console policy-rule authoring, listing, versioning, and lifecycle. Human `admin_session`
+      cookie + RBAC (`admin` authors/edits/status/dry-run; `viewer` reads) with a double-submit
+      `X-CSRF-Token` on every mutation. Structured-JSON condition, closed typed effect, author-time
+      validation (reject-before-persist), immutable versioning, deterministic highest-priority-wins
+      evaluation (FR-001/002/003/006/011/016).
+  - name: policy-dry-run
+    description: >
+      ADMIN non-enforcing simulation of a rule against a supplied or real decision context — returns the
+      would-be decision, which rule fired (id + version), and considered-but-not-applied rules, WITHOUT
+      persisting a rule as active or enforcing any live decision. `admin` + CSRF; mode-marked `dry_run`
+      in the response and the audit trail (FR-013/014).
+
+paths:
+  # --- ADMIN plane: rule authoring + listing ----------------------------------------------------
+  /admin/policy/rules:
+    post:
+      tags: [policy-rules]
+      operationId: createPolicyRule
+      summary: Author a policy rule (structured-JSON condition + typed effect; validated before persist)
+      description: >
+        Author a new policy rule — a guarded STRUCTURED-JSON condition, a closed typed EFFECT descriptor,
+        an integer priority, and a target entitlement — and receive the created rule's FIRST immutable
+        version (FR-001; US1). The rule is validated BEFORE it is persisted (FR-002): the condition is
+        shape-checked and type-checked against the allow-listed context schema, safety-linted against the
+        operator allow-list, and the effect is bounds-checked against the target entitlement's authored
+        maximum / rule-eligibility / plan-defined tiers. An invalid, unsafe, or out-of-bounds rule is
+        REJECTED with a DISTINCT `400` code and NEVER persisted or evaluated.
+
+
+        A newly authored rule defaults to `status: preview` (report-only) unless an explicit `status` is
+        supplied, so it can be dry-run/observed before it enforces. RBAC: `admin` or higher; the mutation
+        carries the double-submit `X-CSRF-Token` (missing/mismatched → `403 forbidden`, fail-closed). The
+        author action is audited (FR-016). No secret, signing key, or PII appears in the request or
+        response (FR-017).
+
+
+        Refusals (nothing persisted): `400 invalid_condition` — the structured JSON is malformed,
+        ill-typed against the context schema, or references an unknown field/entitlement;
+        `400 unsafe_operator` — the condition uses an operator/construct outside the safety allow-list;
+        `400 effect_out_of_bounds` — the effect would exceed the authored per-entitlement maximum, toggle
+        a non-rule-eligible boolean, or select an undefined tier; `400 condition_too_large` — the JSON
+        exceeds the configured size / AST-depth / complexity cap; `400 rule_set_limit_exceeded` — persisting
+        this rule would push the tenant's LIVE (active|preview) rule set beyond the configured maximum size
+        for the target entitlement / tenant (per-issuance cost bound, FR-019); `400 validation_error` — a
+        malformed request envelope / non-JSON / a bad `priority`/`status`; `404 not_found` — the
+        `targetEntitlementId` does not resolve within the caller's tenant (a cross-tenant reference also
+        resolves here, FR-015).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P1
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePolicyRuleRequest' }
+            examples:
+              overageTierUnlock:
+                summary: Raise an api_calls limit for enterprise plans over a usage threshold
+                value:
+                  targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                  description: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+                  priority: 100
+                  status: preview
+                  condition:
+                    and:
+                      - { "==": [ { var: "plan.tier" }, "enterprise" ] }
+                      - { ">": [ { var: "usage.api_calls.value" }, 10000 ] }
+                  effect:
+                    kind: adjust_limit
+                    target: "api_calls"
+                    value: 50000
+      responses:
+        '201':
+          description: >
+            The rule was validated and persisted as its FIRST immutable version. Body is the created
+            `PolicyRuleVersion`. No secret, signing key, or PII is returned (FR-017).
+          headers:
+            Location:
+              required: true
+              description: Canonical path of the created rule (`/admin/policy/rules/{ruleKey}`).
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyRuleVersion' }
+              examples:
+                created:
+                  value:
+                    ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                    version: 1
+                    targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    description: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+                    priority: 100
+                    status: preview
+                    condition:
+                      and:
+                        - { "==": [ { var: "plan.tier" }, "enterprise" ] }
+                        - { ">": [ { var: "usage.api_calls.value" }, 10000 ] }
+                    effect:
+                      kind: adjust_limit
+                      target: "api_calls"
+                      value: 50000
+                    author: "u_9b2e1d40"
+                    createdAt: "2026-08-11T09:00:00Z"
+        '400': { $ref: '#/components/responses/RuleValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/EntitlementNotFound' }
+
+    get:
+      tags: [policy-rules]
+      operationId: listPolicyRules
+      summary: List policy rules (deterministic order; bounded with a truncated signal)
+      description: >
+        List the caller's tenant policy rules — one entry per logical rule (its latest version summary) —
+        optionally narrowed by target entitlement or status (FR-011; US5). READ: `viewer` or higher;
+        tenant-scoped. Results are ordered DETERMINISTICALLY (by `priority` DESCENDING, ties broken by
+        `ruleKey`) and bounded to a hard cap of 1000 items with a `truncated` signal; NOT paginated —
+        narrow with `entitlementId`/`status` if truncated. The condition/effect of each rule is included
+        as authored; no secret, signing key, or PII appears (FR-017).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: viewer }
+      x-priority: P1
+      parameters:
+        - $ref: '#/components/parameters/EntitlementIdQuery'
+        - $ref: '#/components/parameters/StatusFilter'
+      responses:
+        '200':
+          description: The tenant's policy rules (latest-version summaries), deterministically ordered and bounded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyRuleList' }
+              examples:
+                rules:
+                  value:
+                    truncated: false
+                    rules:
+                      - ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                        latestVersion: 2
+                        targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                        description: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+                        priority: 100
+                        status: active
+                        effectKind: adjust_limit
+                        updatedAt: "2026-08-11T10:30:00Z"
+                      - ruleKey: "b2d3f4a5-2222-4c4d-ae5f-60718293a4b5"
+                        latestVersion: 1
+                        targetEntitlementId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                        description: "Toggle beta_export for pro tier"
+                        priority: 50
+                        status: preview
+                        effectKind: toggle_boolean
+                        updatedAt: "2026-08-11T09:15:00Z"
+        '400': { $ref: '#/components/responses/ListBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # --- ADMIN plane: single rule (get + edit) ----------------------------------------------------
+  /admin/policy/rules/{ruleKey}:
+    parameters:
+      - $ref: '#/components/parameters/RuleKey'
+    get:
+      tags: [policy-rules]
+      operationId: getPolicyRule
+      summary: Get a rule and its full immutable version history
+      description: >
+        Return one policy rule by its logical `ruleKey`, including its FULL immutable version history —
+        every version ever authored (edits create new versions; prior versions are retained), ordered by
+        `version` DESCENDING (FR-011; US5). READ: `viewer` or higher; tenant-scoped. An unknown or
+        cross-tenant `ruleKey` resolves to `404 not_found` (never `403`, FR-015, SC-012). No secret,
+        signing key, or PII appears (FR-017).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: viewer }
+      x-priority: P2
+      responses:
+        '200':
+          description: The rule's current head plus its full version history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyRuleDetail' }
+              examples:
+                withHistory:
+                  value:
+                    ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                    latestVersion: 2
+                    status: active
+                    versions:
+                      - ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                        version: 2
+                        targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                        description: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+                        priority: 100
+                        status: active
+                        condition:
+                          and:
+                            - { "==": [ { var: "plan.tier" }, "enterprise" ] }
+                            - { ">": [ { var: "usage.api_calls.value" }, 10000 ] }
+                        effect: { kind: adjust_limit, target: "api_calls", value: 50000 }
+                        author: "u_9b2e1d40"
+                        createdAt: "2026-08-11T10:30:00Z"
+                      - ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                        version: 1
+                        targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                        description: "Initial: lift api_calls to 40k over 10k usage"
+                        priority: 100
+                        status: preview
+                        condition:
+                          and:
+                            - { "==": [ { var: "plan.tier" }, "enterprise" ] }
+                            - { ">": [ { var: "usage.api_calls.value" }, 10000 ] }
+                        effect: { kind: adjust_limit, target: "api_calls", value: 40000 }
+                        author: "u_9b2e1d40"
+                        createdAt: "2026-08-11T09:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/RuleNotFound' }
+
+    patch:
+      tags: [policy-rules]
+      operationId: editPolicyRule
+      summary: Edit a rule — create a new immutable version (prior version retained)
+      description: >
+        Edit a rule's authorable content (condition, effect, priority, description). An edit does NOT
+        mutate any existing version — it VALIDATES the new content (identically to create, FR-002) and,
+        on success, INSERTs a NEW immutable version, returning it (FR-011; US5). The prior version is
+        retained for audit/explainability and remains referenceable in any evaluation that ran against it.
+        RBAC: `admin` or higher; carries the double-submit `X-CSRF-Token` (missing/mismatched →
+        `403 forbidden`). Audited (FR-016). Only the CONTENT is edited here; a status transition
+        (enable/disable/preview) is a separate operation (`POST .../status`).
+
+
+        Refusals: the same distinct `400` validation codes as create (`invalid_condition` /
+        `unsafe_operator` / `effect_out_of_bounds` / `condition_too_large` / `rule_set_limit_exceeded` /
+        `validation_error`) — nothing is persisted and no new version is created on a validation failure;
+        `404 not_found` — an unknown or cross-tenant `ruleKey` (FR-015).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EditPolicyRuleRequest' }
+            examples:
+              raiseLimit:
+                summary: Raise the adjusted limit — a new version
+                value:
+                  description: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+                  priority: 100
+                  condition:
+                    and:
+                      - { "==": [ { var: "plan.tier" }, "enterprise" ] }
+                      - { ">": [ { var: "usage.api_calls.value" }, 10000 ] }
+                  effect: { kind: adjust_limit, target: "api_calls", value: 50000 }
+      responses:
+        '200':
+          description: >
+            The edit was validated and a NEW immutable version was created and returned; the prior version
+            is retained. Body is the new `PolicyRuleVersion`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyRuleVersion' }
+              examples:
+                newVersion:
+                  value:
+                    ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                    version: 2
+                    targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    description: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+                    priority: 100
+                    status: active
+                    condition:
+                      and:
+                        - { "==": [ { var: "plan.tier" }, "enterprise" ] }
+                        - { ">": [ { var: "usage.api_calls.value" }, 10000 ] }
+                    effect: { kind: adjust_limit, target: "api_calls", value: 50000 }
+                    author: "u_9b2e1d40"
+                    createdAt: "2026-08-11T10:30:00Z"
+        '400': { $ref: '#/components/responses/RuleValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/RuleNotFound' }
+
+  # --- ADMIN plane: lifecycle status transition -------------------------------------------------
+  /admin/policy/rules/{ruleKey}/status:
+    parameters:
+      - $ref: '#/components/parameters/RuleKey'
+    post:
+      tags: [policy-rules]
+      operationId: transitionPolicyRuleStatus
+      summary: Enable / disable / preview a rule (lifecycle transition)
+      description: >
+        Transition a rule's lifecycle status — `active` (enforced at issuance), `preview` (report-only:
+        evaluates and logs its would-be decision WITHOUT changing the enforced outcome), or `disabled`
+        (never evaluates) (FR-011/012; US5). The transition applies to the rule's CURRENT head version and
+        does NOT create a new content version (content edits use PATCH). RBAC: `admin` or higher; carries
+        the double-submit `X-CSRF-Token` (missing/mismatched → `403 forbidden`). The transition is audited
+        (FR-016).
+
+
+        Refusals: `400 validation_error` — a missing/unknown/malformed `status` VALUE (outside the closed
+        `active`/`preview`/`disabled` set); `409 invalid_state_transition` — a syntactically valid `status`
+        that the lifecycle does NOT permit from the rule's CURRENT state (e.g. transitioning a `disabled`
+        superseded version back to `active` when a newer live version already occupies the single-live slot,
+        or a no-op transition to the same status) — the transition is refused and no state changes
+        (FR-011/012); `404 not_found` — an unknown or cross-tenant `ruleKey` (FR-015).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusTransitionRequest' }
+            examples:
+              activate:
+                value: { status: active }
+      responses:
+        '200':
+          description: The transition applied — body is the rule's current-version summary with the new status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyRuleSummary' }
+              examples:
+                activated:
+                  value:
+                    ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                    latestVersion: 2
+                    targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                    description: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+                    priority: 100
+                    status: active
+                    effectKind: adjust_limit
+                    updatedAt: "2026-08-11T10:45:00Z"
+        '400': { $ref: '#/components/responses/StatusBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/RuleNotFound' }
+        '409': { $ref: '#/components/responses/InvalidStateTransition' }
+
+  # --- ADMIN plane: dry-run / simulate ----------------------------------------------------------
+  /admin/policy/rules/{ruleKey}/dry-run:
+    parameters:
+      - $ref: '#/components/parameters/RuleKey'
+    post:
+      tags: [policy-dry-run]
+      operationId: dryRunPolicyRule
+      summary: Dry-run / simulate a rule against a supplied or real context (non-enforcing)
+      description: >
+        Simulate a rule (and, when relevant, the tenant's matching rule set for the target entitlement)
+        against a SUPPLIED sample context OR a REAL license/plan context, and return the WOULD-BE decision
+        — which rule fired (id + version), the resolved (possibly clamped) value, and the
+        considered-but-not-applied rules — WITHOUT persisting the rule as active or enforcing the outcome
+        on any live license (FR-013; US4). The response is MODE-marked `dry_run`; no live entitlement
+        decision, license, or rule-enforcement state changes, and no token is issued or signed.
+
+
+        CONTEXT SOURCE — exactly one of: `context` (a SUPPLIED, allow-listed decision context — the
+        dry-run carries a nullable/synthetic license reference in the audit, FR-014) OR `licenseId` (a
+        REAL license in the caller's tenant, whose bounded decision context the server assembles from
+        E007/E008/E016 + an injected `decisionTimestamp`). Optionally, a `candidate` override supplies an
+        UNSAVED edit to the rule's condition/effect/priority so an admin can test a change before saving
+        it; the candidate is validated (FR-002) but never persisted. Evaluation is deterministic (the same
+        context yields the same decision) and sandboxed; a rule that errors/times out/exceeds a bound
+        FAILS CLOSED to the base decision in the result (never an HTTP error, FR-010).
+
+
+        RBAC: `admin` or higher; carries the double-submit `X-CSRF-Token` (dry-run is a mutation-plane
+        operation because it evaluates and writes a mode-marked audit row; missing/mismatched →
+        `403 forbidden`). The dry-run is audited distinctly (mode `dry_run`, FR-014). No secret, signing
+        key, or PII appears in the request, the supplied context, or the response (FR-017).
+
+
+        Refusals: `400 validation_error` — neither/both of `context`/`licenseId` supplied, or a malformed
+        context/candidate; `400 invalid_condition` / `unsafe_operator` / `effect_out_of_bounds` /
+        `condition_too_large` — a supplied `candidate` failed author-time validation; `404 not_found` — an
+        unknown or cross-tenant `ruleKey` or `licenseId` (FR-015).
+      security:
+        - sessionCookie: []
+      x-rbac: { minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DryRunRequest' }
+            examples:
+              suppliedContext:
+                summary: Simulate against a supplied sample context
+                value:
+                  context:
+                    decisionTimestamp: "2026-08-11T09:00:00Z"
+                    plan: { planId: "pro-2026", tier: "enterprise" }
+                    entitlement:
+                      entitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                      key: "api_calls"
+                      kind: integer_limit
+                      baseValue: 20000
+                      authoredMaximum: 50000
+                      ruleEligible: true
+                    usage:
+                      api_calls: { value: 12500, unit: "api-call" }
+              realLicense:
+                summary: Simulate against a real license's assembled context
+                value:
+                  licenseId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+      responses:
+        '200':
+          description: >
+            The non-enforcing simulation result (mode `dry_run`): the would-be decision, the fired rule
+            (id + version) if any, and the considered-but-not-applied rules. Nothing was persisted as
+            active and no live decision changed (FR-013).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DryRunResult' }
+              examples:
+                fired:
+                  value:
+                    mode: dry_run
+                    decisionTimestamp: "2026-08-11T09:00:00Z"
+                    decision:
+                      targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                      target: "api_calls"
+                      effectKind: adjust_limit
+                      baseValue: 20000
+                      resolvedValue: 50000
+                      authoredMaximum: 50000
+                      clamped: false
+                      source: rule
+                    firedRule:
+                      ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                      version: 2
+                    consideredNotApplied:
+                      - ruleKey: "c3e4f5a6-3333-4d5e-bf60-718293a4b5c6"
+                        version: 1
+                        reason: lower_priority
+                failedClosed:
+                  summary: A rule that errors/times out fails closed — the base decision stands
+                  value:
+                    mode: dry_run
+                    decisionTimestamp: "2026-08-11T09:00:00Z"
+                    decision:
+                      targetEntitlementId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                      target: "api_calls"
+                      effectKind: null
+                      baseValue: 20000
+                      resolvedValue: 20000
+                      authoredMaximum: 50000
+                      clamped: false
+                      source: base
+                    firedRule: null
+                    consideredNotApplied:
+                      - ruleKey: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                        version: 2
+                        reason: failed_closed
+        '400': { $ref: '#/components/responses/DryRunBadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/RuleOrLicenseNotFound' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        ADMIN plane credential (this contract has NO machine `X-API-Key` plane). The opaque `admin_session`
+        cookie established by the E005 `POST /admin/auth/login`, set `HttpOnly` + `Secure` +
+        `SameSite=Strict`, scoped to `Path=/admin`, with a bounded `Max-Age`. Server-side revocable; never
+        a JWT and never returned in any body. RBAC (`owner > admin > viewer`) is enforced via each
+        operation's `x-rbac.minRole` (`viewer` reads; `admin` authors/edits/status/dry-run); every
+        state-changing or evaluating call additionally requires a matching `X-CSRF-Token`.
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: >
+        Double-submit CSRF token, REQUIRED on every mutating/evaluating `/admin/policy` request (create,
+        edit, status transition, dry-run). MUST equal the value of the non-HttpOnly CSRF cookie issued
+        alongside the session; a missing or mismatched token is refused fail-closed `403 forbidden`, the
+        action is not applied, and the denial is audited as a security event (FR-016, SC-011). GET (read)
+        operations do not require it.
+      schema: { type: string }
+    RuleKey:
+      name: ruleKey
+      in: path
+      required: true
+      description: >
+        The logical rule key (UUID) that groups a rule's IMMUTABLE version rows, within the caller's
+        tenant. An unknown or cross-tenant `ruleKey` resolves to `404 not_found` (never `403`, FR-015).
+      schema: { type: string, format: uuid }
+      example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+    EntitlementIdQuery:
+      name: entitlementId
+      in: query
+      required: false
+      description: >
+        Optionally narrow the list to rules targeting a single entitlement (UUID) in the caller's tenant.
+        A cross-tenant/unknown id yields an empty result (never leaks existence).
+      schema: { type: string, format: uuid }
+      example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+    StatusFilter:
+      name: status
+      in: query
+      required: false
+      description: Optionally filter the list by lifecycle status. Omit to return all statuses.
+      schema: { $ref: '#/components/schemas/RuleStatus' }
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }` (matches E008/E009/E013/
+        E014/E015/E016). `code` is a stable, enumerated snake_case machine-readable value; `message` is
+        human-readable; `details` is optional structured context whose shape depends on `code`. No field
+        ever carries a secret, API key, signing key, PII, or card/PAN data; and no field discloses another
+        tenant's existence — cross-tenant access resolves to `404`/`not_found` (never `403`).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error code (snake_case). Enumerated; new codes require a contract
+            change. Each refusal reason is a DISTINCT, testable code. The four author-time validation codes
+            (`invalid_condition` / `unsafe_operator` / `effect_out_of_bounds` / `condition_too_large`) are
+            all HTTP `400` but disambiguate WHY a rule was rejected before persist (FR-002).
+          enum:
+            - validation_error      # 400 — malformed request envelope / non-JSON / bad priority|status|context source
+            - invalid_condition     # 400 — structured-JSON condition malformed, ill-typed vs the context schema, or references an unknown field/entitlement (FR-002)
+            - unsafe_operator       # 400 — condition uses an operator/construct outside the safety allow-list (safety-lint boundary, FR-002/009)
+            - effect_out_of_bounds  # 400 — effect exceeds the authored per-entitlement maximum, toggles a non-rule-eligible boolean, or selects an undefined tier (FR-002/003/007)
+            - condition_too_large   # 400 — condition JSON exceeds the configured size / AST-depth / complexity cap (FR-002/009)
+            - rule_set_limit_exceeded # 400 — authoring would push the tenant's live rule set beyond the configured maximum size (per-issuance cost bound, FR-019)
+            - unauthorized          # 401 — missing/expired/revoked admin session (fail-closed)
+            - forbidden             # 403 — RBAC role deny (viewer authoring) or CSRF failure (fail-closed, FR-016)
+            - not_found             # 404 — unknown rule/entitlement/license within the tenant; cross-tenant resolves here (FR-015)
+            - invalid_state_transition # 409 — the requested lifecycle status transition is not permitted from the rule's current state (FR-011/012)
+          example: effect_out_of_bounds
+        message:
+          type: string
+          description: Human-readable summary. Never contains a secret, signing key, PII, or card/PAN data.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value? }`;
+            `invalid_condition` → `{ path?, reason }` (the JSON path into the condition and why it is invalid);
+            `unsafe_operator` → `{ operator }` (the disallowed operator that tripped the safety-lint);
+            `effect_out_of_bounds` → `{ target, kind, authoredMaximum?, value? }` (the over-bound effect and the ceiling);
+            `condition_too_large` → `{ limit, actual, dimension: "bytes" | "depth" | "nodes" }`;
+            `rule_set_limit_exceeded` → `{ limit, actual, scope: "entitlement" | "tenant" }` (the configured live rule-set size cap the author action breached, FR-019);
+            `unauthorized` → NO details;
+            `forbidden` → `{ minRole, role }` (RBAC deny) or `{ reason: "csrf" }` (CSRF failure);
+            `not_found` → the missing id (`{ ruleKey }`, `{ entitlementId }`, or `{ licenseId }`);
+            `invalid_state_transition` → `{ from, to }` (the current and requested lifecycle status of the disallowed transition, FR-011/012).
+            It never carries a secret, signing key, PII, or card/PAN data.
+
+    # --- Shared value types -----------------------------------------------------------------------
+    RuleStatus:
+      type: string
+      description: >
+        A rule's lifecycle status (FR-011/012). `active` = enforced at issuance (the effect adjusts the
+        signed snapshot); `preview` = report-only (evaluates and logs its would-be decision WITHOUT
+        changing the enforced outcome — for safe rollout); `disabled` = never evaluates. Only enabled
+        ACTIVE-version rules enforce.
+      enum: [active, preview, disabled]
+      example: active
+
+    EffectKind:
+      type: string
+      description: >
+        The CLOSED, allow-listed set of effect kinds (FR-003). `adjust_limit` sets a numeric entitlement
+        limit (clamped to the authored per-entitlement maximum, FR-007); `toggle_boolean` sets a boolean
+        entitlement (only where the plan marks it rule-eligible); `select_tier` selects an overage tier
+        from the plan-defined tiers. No other kind exists — a rule can never free-mutate arbitrary state.
+      enum: [adjust_limit, toggle_boolean, select_tier]
+      example: adjust_limit
+
+    PolicyCondition:
+      type: object
+      description: >
+        The rule's GUARDED, STRUCTURED-JSON condition (FR-001, clarify Q4) — a JSONLogic-style tree, NOT a
+        free-text expression and NEVER arbitrary code. It is a nested object of allow-listed operators over
+        the bounded decision context: comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean logic (`and`,
+        `or`, `!`), field access (`var` — an allow-listed context path such as `plan.tier`,
+        `entitlement.baseValue`, or a `has()`-guarded `usage.<key>.value`), a `has` guard for
+        possibly-absent fields (E016 usage), and bounded arithmetic. It has NO time/random/network/custom
+        operators (determinism + sandbox, FR-005/009). At author time it is shape-checked, type-checked
+        against the allow-listed context schema, safety-linted (any operator outside the allow-list →
+        `400 unsafe_operator`), and size/depth/complexity-capped (over-cap → `400 condition_too_large`);
+        an unknown field or type mismatch → `400 invalid_condition`. Modeled here as a free-form object
+        because the operator tree is recursive; the SERVER-SIDE allow-list — not this schema — is the
+        authoritative safety boundary. It never contains a secret or PII.
+      additionalProperties: true
+      minProperties: 1
+      example:
+        and:
+          - { "==": [ { var: "plan.tier" }, "enterprise" ] }
+          - { ">": [ { var: "usage.api_calls.value" }, 10000 ] }
+
+    PolicyEffect:
+      description: >
+        The rule's CLOSED, TYPED effect DESCRIPTOR (FR-003, AD-002) — a discriminated union on `kind`. The
+        rule RETURNS this descriptor; a trusted server-side applier validates and applies it to the
+        entitlement decision (a rule never mutates state directly). The `value` type is fixed by `kind`:
+        `adjust_limit` → number (clamped to the target entitlement's authored maximum, FR-007),
+        `toggle_boolean` → boolean (only where the plan marks the entitlement rule-eligible),
+        `select_tier` → string (a plan-defined tier id). An effect outside these bounds is refused
+        `400 effect_out_of_bounds` at author time and clamped/skipped at evaluation.
+      oneOf:
+        - $ref: '#/components/schemas/AdjustLimitEffect'
+        - $ref: '#/components/schemas/ToggleBooleanEffect'
+        - $ref: '#/components/schemas/SelectTierEffect'
+      discriminator:
+        propertyName: kind
+        mapping:
+          adjust_limit: '#/components/schemas/AdjustLimitEffect'
+          toggle_boolean: '#/components/schemas/ToggleBooleanEffect'
+          select_tier: '#/components/schemas/SelectTierEffect'
+      example: { kind: adjust_limit, target: "api_calls", value: 50000 }
+
+    AdjustLimitEffect:
+      type: object
+      description: >
+        Set a numeric entitlement limit. `value` may raise the effective limit ABOVE the base plan value
+        (a contract override) but is ALWAYS clamped to the target entitlement's authored maximum (≥ base);
+        an over-bound value is refused `400 effect_out_of_bounds` at author time and clamped at evaluation
+        (FR-007).
+      additionalProperties: false
+      required: [kind, target, value]
+      properties:
+        kind: { type: string, enum: [adjust_limit] }
+        target:
+          type: string
+          description: The target entitlement KEY on the license (the integer-limit entitlement to adjust).
+          minLength: 1
+          maxLength: 128
+          example: "api_calls"
+        value:
+          type: number
+          description: The adjusted numeric limit. Clamped to the authored per-entitlement maximum (FR-007).
+          minimum: 0
+          example: 50000
+
+    ToggleBooleanEffect:
+      type: object
+      description: >
+        Set a boolean entitlement — ONLY where the plan marks the entitlement RULE-ELIGIBLE (the plan
+        defines the reachable states, FR-003/007). Toggling a non-rule-eligible boolean is refused
+        `400 effect_out_of_bounds`.
+      additionalProperties: false
+      required: [kind, target, value]
+      properties:
+        kind: { type: string, enum: [toggle_boolean] }
+        target:
+          type: string
+          description: The target boolean entitlement KEY (must be plan-marked rule-eligible).
+          minLength: 1
+          maxLength: 128
+          example: "beta_export"
+        value:
+          type: boolean
+          description: The boolean state to set.
+          example: true
+
+    SelectTierEffect:
+      type: object
+      description: >
+        Select an overage tier for a metered entitlement — ONLY among the plan-defined tiers (FR-003/007).
+        An undefined tier is refused `400 effect_out_of_bounds`.
+      additionalProperties: false
+      required: [kind, target, value]
+      properties:
+        kind: { type: string, enum: [select_tier] }
+        target:
+          type: string
+          description: The target metered entitlement KEY whose overage tier is selected.
+          minLength: 1
+          maxLength: 128
+          example: "api_calls"
+        value:
+          type: string
+          description: The selected tier id — must be one of the plan-defined tiers for the entitlement.
+          minLength: 1
+          maxLength: 128
+          example: "tier_gold"
+
+    # --- Authorable rule fields (shared by create/edit) -------------------------------------------
+    AuthorableRuleFields:
+      type: object
+      description: >
+        The authorable content of a rule version — the structured-JSON condition, the closed typed effect,
+        an integer priority, and an optional human description. Validated at author time BEFORE persist
+        (FR-002). Never carries a secret or PII.
+      required: [condition, effect, priority]
+      properties:
+        description:
+          type: string
+          description: An OPTIONAL human-readable description of the rule's intent (no secret/PII).
+          maxLength: 500
+          example: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+        priority:
+          type: integer
+          description: >
+            The explicit integer evaluation priority (FR-006). Matching rules evaluate highest-priority
+            first with a stable rule-id/version tiebreak; exactly ONE effect applies per entitlement.
+          minimum: 0
+          maximum: 1000000
+          example: 100
+        condition: { $ref: '#/components/schemas/PolicyCondition' }
+        effect: { $ref: '#/components/schemas/PolicyEffect' }
+
+    CreatePolicyRuleRequest:
+      type: object
+      description: >
+        Author a new policy rule (FR-001). Carries the target entitlement, the authorable content
+        (condition/effect/priority/description), and an OPTIONAL initial `status` (defaults to `preview`
+        for safe rollout). Validated before persist (FR-002).
+      additionalProperties: false
+      required: [targetEntitlementId, condition, effect, priority]
+      properties:
+        targetEntitlementId:
+          type: string
+          format: uuid
+          description: >
+            The target entitlement (UUID) this rule adjusts, within the caller's tenant. An unknown or
+            cross-tenant id resolves `404 not_found` (FR-015). The entitlement's kind, authored maximum,
+            rule-eligibility, and plan-defined tiers bound the effect (FR-003/007).
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        description:
+          type: string
+          maxLength: 500
+          description: OPTIONAL human-readable intent (no secret/PII).
+          example: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+          description: The explicit integer evaluation priority (FR-006).
+          example: 100
+        status:
+          allOf: [{ $ref: '#/components/schemas/RuleStatus' }]
+          description: OPTIONAL initial lifecycle status. Defaults to `preview` (report-only) for safe rollout.
+          default: preview
+        condition: { $ref: '#/components/schemas/PolicyCondition' }
+        effect: { $ref: '#/components/schemas/PolicyEffect' }
+
+    EditPolicyRuleRequest:
+      type: object
+      description: >
+        Edit a rule's authorable content — creates a NEW immutable version (FR-011). The target
+        entitlement is fixed for a rule's lifetime and is NOT editable here; a status transition is a
+        separate operation. Validated identically to create (FR-002).
+      additionalProperties: false
+      required: [condition, effect, priority]
+      properties:
+        description:
+          type: string
+          maxLength: 500
+          description: OPTIONAL human-readable intent (no secret/PII).
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+          description: The explicit integer evaluation priority (FR-006).
+          example: 100
+        condition: { $ref: '#/components/schemas/PolicyCondition' }
+        effect: { $ref: '#/components/schemas/PolicyEffect' }
+
+    StatusTransitionRequest:
+      type: object
+      description: Transition the rule's lifecycle status (FR-011/012).
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/RuleStatus' }
+
+    # --- Rule read models -------------------------------------------------------------------------
+    PolicyRuleVersion:
+      type: object
+      description: >
+        One IMMUTABLE version of a policy rule (FR-011) — the exact content that evaluated (or would
+        evaluate) at this version. Returned by create and edit and inside the version history. Never
+        carries a secret or PII.
+      additionalProperties: false
+      required: [ruleKey, version, targetEntitlementId, priority, status, condition, effect, author, createdAt]
+      properties:
+        ruleKey:
+          type: string
+          format: uuid
+          description: The logical rule key (UUID) grouping this rule's immutable versions.
+          example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+        version:
+          type: integer
+          minimum: 1
+          description: The monotonic version number (1 for the first authored version; an edit increments it).
+          example: 1
+        targetEntitlementId:
+          type: string
+          format: uuid
+          description: The entitlement (UUID) this rule adjusts.
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        description:
+          type: [string, "null"]
+          description: The authored human-readable intent, or `null`.
+          example: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+        priority:
+          type: integer
+          minimum: 0
+          description: The explicit integer evaluation priority (FR-006).
+          example: 100
+        status: { $ref: '#/components/schemas/RuleStatus' }
+        condition: { $ref: '#/components/schemas/PolicyCondition' }
+        effect: { $ref: '#/components/schemas/PolicyEffect' }
+        author:
+          type: string
+          description: >
+            The PSEUDONYMOUS reference to the admin who authored this version (a user id, never a name/
+            email/PII, FR-017).
+          example: "u_9b2e1d40"
+        createdAt:
+          type: string
+          format: date-time
+          description: When this immutable version was authored (RFC3339 UTC).
+          example: "2026-08-11T09:00:00Z"
+
+    PolicyRuleSummary:
+      type: object
+      description: >
+        A latest-version summary of a policy rule for the list and status-transition responses (FR-011).
+        Carries the head version number, target, priority, status, and effect kind. Never carries a secret
+        or PII.
+      additionalProperties: false
+      required: [ruleKey, latestVersion, targetEntitlementId, priority, status, effectKind, updatedAt]
+      properties:
+        ruleKey:
+          type: string
+          format: uuid
+          example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+        latestVersion:
+          type: integer
+          minimum: 1
+          description: The current head version number.
+          example: 2
+        targetEntitlementId:
+          type: string
+          format: uuid
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        description:
+          type: [string, "null"]
+          example: "Enterprise contract override: lift api_calls to 50k over 10k usage"
+        priority:
+          type: integer
+          minimum: 0
+          example: 100
+        status: { $ref: '#/components/schemas/RuleStatus' }
+        effectKind: { $ref: '#/components/schemas/EffectKind' }
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the head version or status last changed (RFC3339 UTC).
+          example: "2026-08-11T10:30:00Z"
+
+    PolicyRuleList:
+      type: object
+      description: >
+        The tenant's policy rules as latest-version summaries (FR-011). Ordered DETERMINISTICALLY by
+        `priority` DESCENDING (ties broken by `ruleKey`); bounded to a hard cap of 1000 with a `truncated`
+        signal; NOT paginated.
+      additionalProperties: false
+      required: [rules, truncated]
+      properties:
+        rules:
+          type: array
+          description: >
+            The rule summaries, ordered by `priority` DESCENDING then `ruleKey`. Bounded to a hard cap of
+            1000: if more match, only the first 1000 by that order are returned and `truncated` is `true`.
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/PolicyRuleSummary' }
+        truncated:
+          type: boolean
+          default: false
+          description: >
+            The truncation signal for this non-paginated list: `true` when more than 1000 rules match and
+            the result was capped (remaining omitted); omitted or `false` when the full set fits. Narrow
+            with `entitlementId`/`status`.
+
+    PolicyRuleDetail:
+      type: object
+      description: >
+        A single rule with its FULL immutable version history (FR-011; US5). `versions` is ordered by
+        `version` DESCENDING (head first). Never carries a secret or PII.
+      additionalProperties: false
+      required: [ruleKey, latestVersion, status, versions]
+      properties:
+        ruleKey:
+          type: string
+          format: uuid
+          example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+        latestVersion:
+          type: integer
+          minimum: 1
+          description: The current head version number.
+          example: 2
+        status:
+          allOf: [{ $ref: '#/components/schemas/RuleStatus' }]
+          description: The rule's current lifecycle status (applies to the head version).
+        versions:
+          type: array
+          description: >
+            Every immutable version ever authored (edits create new versions; prior versions are
+            retained), ordered by `version` DESCENDING.
+          minItems: 1
+          items: { $ref: '#/components/schemas/PolicyRuleVersion' }
+
+    # --- Dry-run / simulate -----------------------------------------------------------------------
+    DecisionContext:
+      type: object
+      description: >
+        A BOUNDED, READ-ONLY, allow-listed decision context supplied for a dry-run (FR-004). It exposes
+        ONLY the plan/entitlement/license/usage fields a rule may reference plus an INJECTED
+        `decisionTimestamp` (the sole source of time, FR-005) — NO other host, global, secret, or PII. A
+        customer is referenced only by a PSEUDONYMOUS `customerReference` (FR-017). Usage fields are
+        `has()`-guarded in the condition; an unguarded access to an absent field fails that rule closed
+        (FR-010). This is the SAME allow-listed schema the author-time type-check targets; it is the
+        minimization boundary. It is additionally SIZE/DEPTH/FIELD-COUNT BOUNDED — a supplied context is
+        validated against the SAME serialized-size, nesting-depth, and field-count caps as the real
+        assembled context (FR-020) BEFORE evaluation; an out-of-schema, oversized, or over-depth supplied
+        context is refused `400 validation_error` and NEVER evaluated, so an admin cannot inject an
+        oversized context to escape the evaluation resource bounds or bypass FR-002/FR-009.
+      additionalProperties: false
+      required: [decisionTimestamp, plan, entitlement]
+      properties:
+        decisionTimestamp:
+          type: string
+          format: date-time
+          description: >
+            The INJECTED decision timestamp (RFC3339 UTC) — the ONLY time source an evaluation sees
+            (determinism, FR-005). Never wall-clock.
+          example: "2026-08-11T09:00:00Z"
+        plan:
+          type: object
+          description: The bounded plan context (E007). Minimized — no secret/PII.
+          additionalProperties: false
+          required: [planId, tier]
+          properties:
+            planId: { type: string, maxLength: 128, example: "pro-2026" }
+            tier: { type: string, maxLength: 64, example: "enterprise" }
+        entitlement:
+          type: object
+          description: >
+            The target entitlement's static context (E007) and its rule bounds — the base value, the
+            authored maximum (the ceiling, FR-007), rule-eligibility, and any plan-defined tiers.
+          additionalProperties: false
+          required: [entitlementId, key, kind, baseValue]
+          properties:
+            entitlementId: { type: string, format: uuid, example: "7c9e6679-7425-40de-944b-e07fc1f90ae7" }
+            key: { type: string, maxLength: 128, example: "api_calls" }
+            kind:
+              type: string
+              enum: [boolean, integer_limit, metered]
+              description: The entitlement kind (E007), which constrains the applicable effect kind.
+              example: integer_limit
+            baseValue:
+              description: The base plan value for the entitlement (number for a limit, boolean for a toggle, or `null`).
+              oneOf:
+                - { type: number }
+                - { type: boolean }
+                - { type: "null" }
+              example: 20000
+            authoredMaximum:
+              type: [number, "null"]
+              description: The vendor-authored per-entitlement MAXIMUM (≥ base) that an adjust_limit effect is clamped to (FR-007); `null` when not a numeric limit.
+              example: 50000
+            ruleEligible:
+              type: boolean
+              default: false
+              description: Whether a boolean entitlement is plan-marked RULE-ELIGIBLE (a toggle_boolean effect requires this, FR-003).
+              example: true
+            tiers:
+              type: array
+              description: The plan-defined overage tier ids a select_tier effect may choose from (metered only).
+              items: { type: string, maxLength: 128 }
+              example: ["tier_silver", "tier_gold"]
+        license:
+          type: object
+          description: >
+            OPTIONAL bounded license claims (E008) a rule may condition on. Minimized — the customer is a
+            PSEUDONYMOUS reference only, never a name/email/PII (FR-017).
+          additionalProperties: false
+          properties:
+            licenseId: { type: [string, "null"], format: uuid, description: "The license id, or null/synthetic for a supplied-context dry-run (FR-014)." }
+            product: { type: string, maxLength: 128, example: "render-suite" }
+            customerReference: { type: string, maxLength: 128, description: "Pseudonymous customer reference (never a name/email/PII).", example: "cust_7c9e6679" }
+            status: { type: string, enum: [active, suspended, revoked, expired], example: active }
+            expiresAt: { type: [string, "null"], format: date-time, example: "2027-01-01T00:00:00Z" }
+        usage:
+          type: object
+          description: >
+            OPTIONAL bounded usage aggregates (E016, when available) keyed by entitlement key. Each value
+            is `has()`-guarded in the condition; an unguarded access to an absent key fails that rule
+            closed (FR-004/010). Minimized — no PII.
+          additionalProperties:
+            type: object
+            additionalProperties: false
+            required: [value]
+            properties:
+              value: { type: number, example: 12500 }
+              unit: { type: string, maxLength: 64, example: "api-call" }
+          example:
+            api_calls: { value: 12500, unit: "api-call" }
+
+    DryRunRequest:
+      type: object
+      description: >
+        Dry-run / simulate a rule against a SUPPLIED sample context OR a REAL license (FR-013). Provide
+        EXACTLY ONE of `context` (a supplied allow-listed `DecisionContext`) or `licenseId` (a real
+        license whose bounded context the server assembles). An OPTIONAL `candidate` supplies an UNSAVED
+        edit to test before saving (validated at author time, FR-002, but never persisted). Non-enforcing:
+        nothing is persisted as active and no live decision changes.
+      additionalProperties: false
+      properties:
+        context:
+          allOf: [{ $ref: '#/components/schemas/DecisionContext' }]
+          description: A SUPPLIED allow-listed decision context. Provide this OR `licenseId`, not both.
+        licenseId:
+          type: string
+          format: uuid
+          description: >
+            A REAL license (UUID) in the caller's tenant whose bounded decision context the server
+            assembles from E007/E008/E016 + an injected timestamp. Provide this OR `context`, not both. An
+            unknown or cross-tenant id resolves `404 not_found` (FR-015).
+          example: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+        candidate:
+          allOf: [{ $ref: '#/components/schemas/AuthorableRuleFields' }]
+          description: >
+            OPTIONAL unsaved rule content to simulate INSTEAD of the persisted `{ruleKey}` version (test a
+            change before saving). Validated at author time (FR-002) — an invalid/unsafe/out-of-bounds
+            candidate is refused with the distinct `400` code — but NEVER persisted.
+      oneOf:
+        - required: [context]
+        - required: [licenseId]
+
+    PolicyDecision:
+      type: object
+      description: >
+        The WOULD-BE (dry-run) or resolved entitlement decision for the target entitlement (FR-013). Shows
+        the base value, the resolved value after the applied effect (clamped to the authored maximum,
+        FR-007), and whether it came from a rule or the base static decision. Never carries a secret or PII.
+      additionalProperties: false
+      required: [targetEntitlementId, target, effectKind, baseValue, resolvedValue, clamped, source]
+      properties:
+        targetEntitlementId:
+          type: string
+          format: uuid
+          description: The entitlement (UUID) this decision is for.
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        target:
+          type: string
+          description: The entitlement KEY the effect targeted.
+          example: "api_calls"
+        effectKind:
+          oneOf:
+            - { $ref: '#/components/schemas/EffectKind' }
+            - type: "null"
+          description: The applied effect kind, or `null` when the base static decision stands (no rule fired / failed closed).
+        baseValue:
+          description: The base plan value before any rule (number/boolean/null).
+          oneOf: [{ type: number }, { type: boolean }, { type: "null" }]
+          example: 20000
+        resolvedValue:
+          description: The resolved value after the applied effect (clamped to the authored maximum); equals `baseValue` when no rule fired.
+          oneOf: [{ type: number }, { type: boolean }, { type: string }, { type: "null" }]
+          example: 50000
+        authoredMaximum:
+          type: [number, "null"]
+          description: The authored per-entitlement maximum the effect was clamped to (FR-007); `null` when not a numeric limit.
+          example: 50000
+        clamped:
+          type: boolean
+          description: >
+            `true` when the applied effect value was CLAMPED down to the authored maximum (the rule
+            requested more than the ceiling, FR-007). Always `false` when no rule fired.
+          example: false
+        source:
+          type: string
+          enum: [base, rule]
+          description: >
+            `rule` = a fired rule adjusted the decision; `base` = the base static decision stands (no
+            matching rule, or a rule failed closed, FR-010).
+          example: rule
+
+    FiredRuleRef:
+      type: object
+      description: A reference to the EXACT rule version that fired or was considered (FR-006/014) — id + version, for reproducibility.
+      additionalProperties: false
+      required: [ruleKey, version]
+      properties:
+        ruleKey: { type: string, format: uuid, example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304" }
+        version: { type: integer, minimum: 1, example: 2 }
+
+    ConsideredRule:
+      type: object
+      description: >
+        A matching rule that was CONSIDERED but did NOT apply (FR-006) — because it lost the
+        highest-priority-wins contest, did not match, or failed closed. Recorded for explainability.
+      additionalProperties: false
+      required: [ruleKey, version, reason]
+      properties:
+        ruleKey: { type: string, format: uuid, example: "c3e4f5a6-3333-4d5e-bf60-718293a4b5c6" }
+        version: { type: integer, minimum: 1, example: 1 }
+        reason:
+          type: string
+          enum: [lower_priority, not_matched, failed_closed, disabled]
+          description: >
+            Why the rule did not apply: `lower_priority` (lost the highest-priority-wins contest / stable
+            tiebreak, FR-006); `not_matched` (its condition did not match the context); `failed_closed` (it
+            errored/timed out/exceeded a bound or hit an unguarded absent field — the base decision stands,
+            FR-010); `disabled` (a disabled version, never enforced).
+          example: lower_priority
+
+    DryRunResult:
+      type: object
+      description: >
+        The NON-ENFORCING dry-run result (FR-013; US4), MODE-marked `dry_run`. Returns the would-be
+        decision, the fired rule (id + version) if any, and the considered-but-not-applied rules. Nothing
+        was persisted as active and no live decision/license/enforcement state changed. Recorded on the
+        unified audit trail mode-marked `dry_run` (FR-014). Never carries a secret or PII.
+      additionalProperties: false
+      required: [mode, decisionTimestamp, decision, firedRule, consideredNotApplied]
+      properties:
+        mode:
+          type: string
+          enum: [dry_run]
+          description: Always `dry_run` — marks this as a non-enforcing simulation (never `enforced`/`preview`).
+          example: dry_run
+        decisionTimestamp:
+          type: string
+          format: date-time
+          description: The injected decision timestamp the simulation used (RFC3339 UTC) — the sole time source (FR-005).
+          example: "2026-08-11T09:00:00Z"
+        decision: { $ref: '#/components/schemas/PolicyDecision' }
+        firedRule:
+          oneOf:
+            - { $ref: '#/components/schemas/FiredRuleRef' }
+            - type: "null"
+          description: The exact rule version that fired (id + version), or `null` when the base static decision stands.
+        consideredNotApplied:
+          type: array
+          description: The matching rules that were considered but did not apply (FR-006) — for explainability.
+          items: { $ref: '#/components/schemas/ConsideredRule' }
+
+  responses:
+    RuleValidationError:
+      description: >
+        The rule was refused at AUTHOR TIME and NOTHING was persisted (create/edit) — a DISTINCT `400`
+        code says why (FR-002): `invalid_condition` (malformed/ill-typed/unknown-field structured JSON),
+        `unsafe_operator` (an operator outside the safety allow-list), `effect_out_of_bounds` (over the
+        authored maximum / non-rule-eligible boolean / undefined tier), `condition_too_large` (over the
+        size/depth/complexity cap), `rule_set_limit_exceeded` (author action would push the tenant's live
+        rule set beyond the configured maximum size, FR-019), or `validation_error` (a malformed request
+        envelope / bad priority|status). These reject BEFORE persist and are distinct from evaluation-time
+        fail-closed behaviour (which is internal, never an HTTP error).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            ruleSetLimitExceeded:
+              value:
+                code: rule_set_limit_exceeded
+                message: "This tenant's live rule set for the entitlement is at the configured maximum."
+                details: { limit: 50, actual: 50, scope: entitlement }
+            invalidCondition:
+              value:
+                code: invalid_condition
+                message: "The condition references an unknown context field."
+                details: { path: "and.1.>.0.var", reason: "unknown_field: usage.unknown.value" }
+            unsafeOperator:
+              value:
+                code: unsafe_operator
+                message: "The operator is not permitted in a policy condition."
+                details: { operator: "eval" }
+            effectOutOfBounds:
+              value:
+                code: effect_out_of_bounds
+                message: "The effect exceeds the authored maximum for this entitlement."
+                details: { target: "api_calls", kind: adjust_limit, authoredMaximum: 50000, value: 90000 }
+            conditionTooLarge:
+              value:
+                code: condition_too_large
+                message: "The condition exceeds the maximum nesting depth."
+                details: { limit: 16, actual: 22, dimension: depth }
+            malformed:
+              value:
+                code: validation_error
+                message: "priority must be a non-negative integer."
+                details: { field: priority }
+    ListBadRequest:
+      description: The list query was refused — a bad `entitlementId` or `status` filter value (`validation_error`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            badStatus:
+              value:
+                code: validation_error
+                message: "status must be one of active, preview, disabled."
+                details: { field: status, value: "paused" }
+    StatusBadRequest:
+      description: The status transition was refused — a missing/invalid `status` (`validation_error`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            badStatus:
+              value:
+                code: validation_error
+                message: "status must be one of active, preview, disabled."
+                details: { field: status, value: "on" }
+    InvalidStateTransition:
+      description: >
+        The `status` value is valid but the requested lifecycle transition is NOT permitted from the rule's
+        current state (FR-011/012) — e.g. re-activating a superseded `disabled` version while a newer live
+        version already holds the single-live slot, or a no-op transition to the same status. The rule's
+        state is unchanged; the refusal is audited (FR-016).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            invalidTransition:
+              value:
+                code: invalid_state_transition
+                message: "Cannot activate a superseded version; a newer live version exists."
+                details: { from: disabled, to: active }
+    DryRunBadRequest:
+      description: >
+        The dry-run was refused up front: `validation_error` — neither or both of `context`/`licenseId`
+        supplied, a malformed supplied context, or a supplied context that is out-of-schema, OVERSIZED, or
+        OVER-DEPTH under the SAME size/AST-depth/field-count bounds as the real assembled context (FR-020,
+        rejected before any evaluation); or, when a `candidate` was supplied, an author-time validation code
+        (`invalid_condition` / `unsafe_operator` / `effect_out_of_bounds` / `condition_too_large`). Nothing
+        was evaluated or persisted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            contextSource:
+              value:
+                code: validation_error
+                message: "Provide exactly one of context or licenseId."
+                details: { field: context }
+            oversizedContext:
+              value:
+                code: validation_error
+                message: "The supplied decision context exceeds the maximum nesting depth."
+                details: { field: context, limit: 16, actual: 24, dimension: depth }
+            candidateUnsafe:
+              value:
+                code: unsafe_operator
+                message: "The candidate condition uses a disallowed operator."
+                details: { operator: "require" }
+    Unauthorized:
+      description: No resolvable authentication — the `admin_session` cookie is missing, expired, or revoked. Fail-closed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noSession:
+              value: { code: unauthorized, message: "Authentication required." }
+    Forbidden:
+      description: >
+        Admin plane, fail-closed — either the session's role is below the operation's `x-rbac.minRole` (a
+        `viewer` attempting to author/edit/transition/dry-run, SC-011), or a mutation's `X-CSRF-Token` is
+        missing or mismatched (FR-016, SC-011). Both are recorded as an auditable security event.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the admin role."
+                details: { minRole: admin, role: viewer }
+            csrfFailure:
+              value:
+                code: forbidden
+                message: "Missing or invalid CSRF token."
+                details: { reason: csrf }
+    RuleNotFound:
+      description: >
+        No rule resolves within the caller's tenant for the path `ruleKey` (a cross-tenant reference also
+        resolves here, never `403`, FR-015, SC-012). Indistinguishable from a non-existent one.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownRule:
+              value:
+                code: not_found
+                message: "No such policy rule in this tenant."
+                details: { ruleKey: "00000000-0000-4000-8000-000000000000" }
+    EntitlementNotFound:
+      description: >
+        No entitlement resolves within the caller's tenant for the `targetEntitlementId` (a cross-tenant
+        reference also resolves here, never `403`, FR-015). Nothing is persisted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownEntitlement:
+              value:
+                code: not_found
+                message: "No such entitlement in this tenant."
+                details: { entitlementId: "00000000-0000-4000-8000-000000000000" }
+    RuleOrLicenseNotFound:
+      description: >
+        No rule resolves for the path `ruleKey`, OR (for a real-license dry-run) no license resolves for
+        the supplied `licenseId`, within the caller's tenant. A cross-tenant reference resolves here (never
+        `403`, FR-015, SC-012).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownRule:
+              value:
+                code: not_found
+                message: "No such policy rule in this tenant."
+                details: { ruleKey: "00000000-0000-4000-8000-000000000000" }
+            unknownLicense:
+              value:
+                code: not_found
+                message: "No such license in this tenant."
+                details: { licenseId: "00000000-0000-4000-8000-000000000000" }
