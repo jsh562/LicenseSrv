@@ -13,6 +13,7 @@ import {
   createEntitlement,
   getEntitlement,
   listEntitlements,
+  setEntitlementRuleBounds,
   updateEntitlement,
 } from "./entitlements.js";
 import { archivePlan, createPlan, getPlan, listPlans, updatePlan } from "./plans.js";
@@ -94,6 +95,21 @@ const updateEntitlementSchema = z
       v.allowance !== undefined,
     { message: "no changes supplied" },
   );
+// E017 authored-max governance (FR-021, AD-003, INV-4): the admin-only, CSRF-protected, audited surface that
+// sets/raises the per-entitlement rule bound the issuance-time policy applier clamps to — `rule_max` (the
+// adjust_limit ceiling), `rule_eligible` (the toggle_boolean gate), and `rule_tiers` (the select_tier options).
+// The route only shape-guards; `entitlements.ts:setEntitlementRuleBounds` (via `assertRuleBounds`) is the
+// authoritative validator — an out-of-range `rule_max` (< the base plan value or > the configured absolute cap)
+// is a 400 `validation_error` there, so the ceiling can never be raised arbitrarily to defeat the bound.
+const ruleBoundsSchema = z
+  .object({
+    ruleMax: z.number().nullable().optional(),
+    ruleEligible: z.boolean().optional(),
+    ruleTiers: z.array(z.unknown()).nullable().optional(),
+  })
+  .refine((v) => v.ruleMax !== undefined || v.ruleEligible !== undefined || v.ruleTiers !== undefined, {
+    message: "no rule bounds supplied",
+  });
 const setValueSchema = z.object({ value: z.union([z.boolean(), z.number()]) });
 const listQuerySchema = z.object({ status: statusFilterSchema });
 
@@ -107,6 +123,8 @@ const V = { validation: (r: FastifyReply, m = "invalid request") => err(r, 400, 
 export interface CatalogRouteConfig {
   /** Max rows a list endpoint returns (AD-009 — bounded, not paginated). */
   listCap: number;
+  /** E017 absolute per-entitlement authored-max ceiling `rule_max` can never exceed (FR-021, `policyAbsoluteMaxLimit`). */
+  policyAbsoluteMaxLimit: number;
 }
 
 /** Register the catalog routes. viewer reads, admin writes; every route runs behind requireRole. */
@@ -114,6 +132,7 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: pg.Pool, confi
   const viewer = { preHandler: requireRole(pool, "viewer") };
   const admin = { preHandler: requireRole(pool, "admin") };
   const cap = config.listCap;
+  const absoluteMax = config.policyAbsoluteMaxLimit;
 
   // --- Products -----------------------------------------------------------------------------------
   app.get("/admin/catalog/products", viewer, async (req, reply) => {
@@ -231,6 +250,21 @@ export function registerCatalogRoutes(app: FastifyInstance, pool: pg.Pool, confi
     const p = entitlementParams.safeParse(req.params);
     if (!p.success) return V.validation(reply, "invalid entitlementId");
     return guard(reply, async () => reply.code(200).send(await archiveEntitlement(pool, req.admin!.tenantId, req.admin!.userId, p.data.entitlementId)));
+  });
+
+  // Set/raise the E017 authored rule bound (FR-021, SC-019): admin-only (requireRole "admin") + CSRF (both via
+  // the shared preHandler) + audited (setEntitlementRuleBounds writes `catalog.entitlement.rule_bounds_set`). A
+  // viewer is refused 403 by requireRole; `rule_max` < the base plan value or > the configured absolute cap is a
+  // 400 `validation_error` from `setEntitlementRuleBounds` (via assertRuleBounds), so the ceiling can never be
+  // raised arbitrarily to defeat the effect bound. Partial-update merge — an omitted field keeps its value.
+  app.put("/admin/catalog/entitlements/:entitlementId/rule-bounds", admin, async (req, reply) => {
+    const p = entitlementParams.safeParse(req.params);
+    if (!p.success) return V.validation(reply, "invalid entitlementId");
+    const b = ruleBoundsSchema.safeParse(req.body);
+    if (!b.success) return V.validation(reply, "invalid rule bounds payload");
+    return guard(reply, async () =>
+      reply.code(200).send(await setEntitlementRuleBounds(pool, req.admin!.tenantId, req.admin!.userId, p.data.entitlementId, b.data, absoluteMax)),
+    );
   });
 
   // --- Per-plan values ----------------------------------------------------------------------------

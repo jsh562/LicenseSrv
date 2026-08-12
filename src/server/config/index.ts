@@ -81,6 +81,28 @@ export interface AppConfig {
   usageIngestRateWindow: string; // USAGE_INGEST_RATE_WINDOW — ingest rate-limit window, e.g. "1 minute" (FR-005)
   usageMaxBatch: number; // USAGE_MAX_BATCH — max events per ingest batch; clamped to the contract ceiling 1000 (FR-005)
   usageQueryMaxHours: number; // USAGE_QUERY_MAX_HOURS — query-window span bound (bucket-count cap) → window_too_large (~90d) (FR-011)
+  // Low-code policy rules (E017, FR-009/014/019/021; per {SAD:ADR-0014}). Deployment-wide DEFAULTS for the
+  // sandbox resource bounds (per-evaluation timeout; author-time JSON size / AST-depth / complexity caps on
+  // the guarded condition), the bounded decision-context caps (serialized size / JSON-depth / field-count —
+  // FR-004/020, the SAME caps a dry-run supplied context is bound against), the three FR-019 cost caps (max
+  // rules per entitlement + per tenant authored at author time, and max rules evaluated per issuance which
+  // fails closed), the FR-021 absolute per-entitlement authored-max ceiling (`rule_max` can never exceed it),
+  // the FR-014 append-only `policy_evaluation` retention window, and the conflict-resolution policy. The
+  // policy module (`modules/policy/config.ts`) reads the same SCREAMING_SNAKE keys LIVE. All defaulted +
+  // non-secret (the engine performs NO cryptography and holds no secret — FR-018).
+  policyEvalTimeoutMs: number; // POLICY_EVAL_TIMEOUT_MS — per-evaluation sandbox timeout (fail-closed on breach) (FR-009)
+  policyConditionMaxBytes: number; // POLICY_CONDITION_MAX_BYTES — author-time serialized condition size cap → condition_too_large (FR-009)
+  policyConditionMaxDepth: number; // POLICY_CONDITION_MAX_DEPTH — author-time condition AST-depth cap (FR-009)
+  policyConditionMaxComplexity: number; // POLICY_CONDITION_MAX_COMPLEXITY — author-time condition node-count / complexity cap (FR-009)
+  policyContextMaxBytes: number; // POLICY_CONTEXT_MAX_BYTES — decision-context serialized size cap (real + dry-run supplied) (FR-004/020)
+  policyContextMaxDepth: number; // POLICY_CONTEXT_MAX_DEPTH — decision-context JSON-depth cap (FR-004/020)
+  policyContextMaxFields: number; // POLICY_CONTEXT_MAX_FIELDS — decision-context field-count cap (FR-004/020)
+  policyMaxRulesPerEntitlement: number; // POLICY_MAX_RULES_PER_ENTITLEMENT — per-entitlement live rule-set size cap → rule_set_limit_exceeded (FR-019)
+  policyMaxRulesPerTenant: number; // POLICY_MAX_RULES_PER_TENANT — per-tenant live rule-set size cap → rule_set_limit_exceeded (FR-019)
+  policyMaxRulesPerIssuance: number; // POLICY_MAX_RULES_PER_ISSUANCE — max rules evaluated per issuance; over it → fail-closed (FR-019)
+  policyAbsoluteMaxLimit: number; // POLICY_ABSOLUTE_MAX_LIMIT — absolute per-entitlement authored-max ceiling `rule_max` can never exceed (FR-021)
+  policyEvaluationRetentionSecs: number; // POLICY_EVALUATION_RETENTION_SECS — append-only policy_evaluation retention window (~90d) (FR-014)
+  policyConflictPolicy: "highest_priority_wins"; // POLICY_CONFLICT_POLICY — conflict-resolution policy (highest-priority-wins one effect) (FR-006)
 }
 
 /** Thrown when required configuration is missing/invalid. Message lists each offending setting. */
@@ -163,6 +185,24 @@ const schema = z.object({
   usageIngestRateWindow: z.string().min(1).default("1 minute"),
   usageMaxBatch: z.coerce.number().int().positive().default(1_000),
   usageQueryMaxHours: z.coerce.number().int().positive().default(2_160), // 90 days
+  // E017 policy-rule defaults — a tight sandbox: a short per-evaluation timeout (issuance stays fast), small
+  // author-time condition size/depth/complexity caps (the allow-list IS the security boundary), bounded
+  // decision-context caps (also the dry-run supplied-context bound), the three FR-019 cost caps, a large-but-
+  // finite absolute authored-max ceiling, a ~90d audit retention window, and highest-priority-wins conflict
+  // resolution. The policy module reads the same SCREAMING_SNAKE keys LIVE. Operators retune without a migration.
+  policyEvalTimeoutMs: z.coerce.number().int().positive().default(50), // 50 ms per-evaluation sandbox timeout
+  policyConditionMaxBytes: z.coerce.number().int().positive().default(8_192), // 8 KiB serialized condition
+  policyConditionMaxDepth: z.coerce.number().int().positive().default(16),
+  policyConditionMaxComplexity: z.coerce.number().int().positive().default(128), // node-count / operator budget
+  policyContextMaxBytes: z.coerce.number().int().positive().default(16_384), // 16 KiB serialized context
+  policyContextMaxDepth: z.coerce.number().int().positive().default(8),
+  policyContextMaxFields: z.coerce.number().int().positive().default(128),
+  policyMaxRulesPerEntitlement: z.coerce.number().int().positive().default(50),
+  policyMaxRulesPerTenant: z.coerce.number().int().positive().default(500),
+  policyMaxRulesPerIssuance: z.coerce.number().int().positive().default(100),
+  policyAbsoluteMaxLimit: z.coerce.number().positive().default(1_000_000_000), // absolute authored-max ceiling (numeric)
+  policyEvaluationRetentionSecs: z.coerce.number().int().positive().default(7_776_000), // 90 days
+  policyConflictPolicy: z.enum(["highest_priority_wins"]).default("highest_priority_wins"),
 });
 
 /**
@@ -227,6 +267,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     usageIngestRateWindow: env.USAGE_INGEST_RATE_WINDOW,
     usageMaxBatch: env.USAGE_MAX_BATCH,
     usageQueryMaxHours: env.USAGE_QUERY_MAX_HOURS,
+    policyEvalTimeoutMs: env.POLICY_EVAL_TIMEOUT_MS,
+    policyConditionMaxBytes: env.POLICY_CONDITION_MAX_BYTES,
+    policyConditionMaxDepth: env.POLICY_CONDITION_MAX_DEPTH,
+    policyConditionMaxComplexity: env.POLICY_CONDITION_MAX_COMPLEXITY,
+    policyContextMaxBytes: env.POLICY_CONTEXT_MAX_BYTES,
+    policyContextMaxDepth: env.POLICY_CONTEXT_MAX_DEPTH,
+    policyContextMaxFields: env.POLICY_CONTEXT_MAX_FIELDS,
+    policyMaxRulesPerEntitlement: env.POLICY_MAX_RULES_PER_ENTITLEMENT,
+    policyMaxRulesPerTenant: env.POLICY_MAX_RULES_PER_TENANT,
+    policyMaxRulesPerIssuance: env.POLICY_MAX_RULES_PER_ISSUANCE,
+    policyAbsoluteMaxLimit: env.POLICY_ABSOLUTE_MAX_LIMIT,
+    policyEvaluationRetentionSecs: env.POLICY_EVALUATION_RETENTION_SECS,
+    policyConflictPolicy: env.POLICY_CONFLICT_POLICY,
     // Secrets follow the <VAR>_FILE convention (file wins; unset → the documented default salt).
     leaseHolderKeySalt: readSecret(env, "LEASE_HOLDER_KEY_SALT") ?? "licensesrv-lease-salt",
     fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
@@ -310,6 +363,20 @@ export function configSummary(c: AppConfig): Record<string, unknown> {
     usageIngestRateWindow: c.usageIngestRateWindow,
     usageMaxBatch: c.usageMaxBatch,
     usageQueryMaxHours: c.usageQueryMaxHours,
+    // E017 policy-rule bounds (non-secret; deployment-wide defaults read live by the policy module).
+    policyEvalTimeoutMs: c.policyEvalTimeoutMs,
+    policyConditionMaxBytes: c.policyConditionMaxBytes,
+    policyConditionMaxDepth: c.policyConditionMaxDepth,
+    policyConditionMaxComplexity: c.policyConditionMaxComplexity,
+    policyContextMaxBytes: c.policyContextMaxBytes,
+    policyContextMaxDepth: c.policyContextMaxDepth,
+    policyContextMaxFields: c.policyContextMaxFields,
+    policyMaxRulesPerEntitlement: c.policyMaxRulesPerEntitlement,
+    policyMaxRulesPerTenant: c.policyMaxRulesPerTenant,
+    policyMaxRulesPerIssuance: c.policyMaxRulesPerIssuance,
+    policyAbsoluteMaxLimit: c.policyAbsoluteMaxLimit,
+    policyEvaluationRetentionSecs: c.policyEvaluationRetentionSecs,
+    policyConflictPolicy: c.policyConflictPolicy,
     // Secrets are never summarised: presence-only, never the value.
     leaseHolderKeySalt: c.leaseHolderKeySalt ? "***" : "(unset)",
     fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",

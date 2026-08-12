@@ -27,6 +27,8 @@ import { loadEnforcementConfig } from "./modules/enforcement/config.js";
 import { type CrlWorkerHandle, startCrlWorker } from "./modules/enforcement/crl-worker.js";
 import { loadLeaseConfig } from "./modules/lease/config.js";
 import { type ReclaimWorkerHandle, startReclaimWorker } from "./modules/lease/reclaim-worker.js";
+import { loadPolicyConfig } from "./modules/policy/config.js";
+import { type PolicyRetentionWorkerHandle, startPolicyRetentionWorker } from "./modules/policy/retention-worker.js";
 import type { Signer } from "./modules/signing/signer.js";
 import { loadUsageConfig } from "./modules/usage/config.js";
 import { type UsageRetentionWorkerHandle, startUsageRetentionWorker } from "./modules/usage/retention-worker.js";
@@ -58,6 +60,8 @@ export interface Server {
   rollupWorker?: RollupWorkerHandle;
   /** The usage-metering retention/prune worker (E016/US6, FR-015), started fail-open and tied to app.close(). */
   usageRetentionWorker?: UsageRetentionWorkerHandle;
+  /** The policy_evaluation retention/prune worker (E017/US5, FR-014), started fail-open and tied to app.close(). */
+  policyRetentionWorker?: PolicyRetentionWorkerHandle;
 }
 
 type WithSigner = FastifyInstance & { signerReady?: () => boolean };
@@ -313,6 +317,31 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     );
   }
 
+  // Policy-evaluation retention/prune worker (E017/US5, FR-014; AD-008, INV-8): a periodic OWNER-ROLE maintenance
+  // job that prunes append-only `policy_evaluation` audit rows once older than the config-sourced retention window
+  // (`policyEvaluationRetentionSecs`, ~90d), keeping the unified mode-marked (enforced|preview|dry_run) decision
+  // trail bounded. The app role has NO DELETE grant on `policy_evaluation`, so the prune runs RLS-bypassing on the
+  // schema-owner (privileged) connection, per-tenant scoped by an explicit tenant_id predicate over the
+  // policy_evaluation_prune BRIN(created_at) index, and attributed to a synthetic worker actor (FR-014). FAIL-OPEN
+  // and cancelable exactly like the workers above: the cadence timer is unref'd, a prune fault is caught + logged
+  // and NEVER crashes boot (or blocks issuance/authoring; it re-fires next sweep). Tied to app.close().
+  // [COMPLETES FR-014]
+  let policyRetentionWorker: PolicyRetentionWorkerHandle | undefined;
+  try {
+    const policyConfig = loadPolicyConfig(env);
+    policyRetentionWorker = startPolicyRetentionWorker(pool, {
+      retentionSecs: policyConfig.evaluationRetentionSecs,
+      logger: app.log,
+    });
+    app.log.info({}, "policy retention worker started");
+    app.addHook("onClose", async () => policyRetentionWorker?.stop());
+  } catch (err: unknown) {
+    app.log.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      "policy retention worker failed to start (fail-open)",
+    );
+  }
+
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, "shutting down");
     try {
@@ -327,7 +356,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
-  return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker, rollupWorker, usageRetentionWorker };
+  return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker, rollupWorker, usageRetentionWorker, policyRetentionWorker };
 }
 
 // CLI entry: `node dist/server/main.js` (the image's serve command).

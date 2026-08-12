@@ -522,3 +522,155 @@ export const usageApi = {
 };
 
 export type UsageApi = typeof usageApi;
+
+// --- Low-code policy rules (E017) -----------------------------------------------------------------
+
+/** A rule's lifecycle status: only an `active` head enforces; `preview` logs report-only; `disabled` is idle. */
+export type PolicyRuleStatus = "active" | "preview" | "disabled";
+/** The closed typed effect kinds (AD-002): a bounded limit adjust, a rule-eligible toggle, or a plan-tier select. */
+export type PolicyEffectKind = "adjust_limit" | "toggle_boolean" | "select_tier";
+
+/** A structured-JSON `when` condition (an allow-listed JSONLogic subset — NOT free-form code). */
+export type PolicyCondition = Record<string, unknown>;
+/** A closed typed effect descriptor `{kind, target?, value}` the trusted server-side applier bounds/applies. */
+export type PolicyEffect = Record<string, unknown>;
+
+/**
+ * A non-blocking author-time lint finding (FR-006, SC-010) — an overlapping/unreachable/shadowed peer. A warning
+ * is surfaced on the create/edit response but never blocks the persist.
+ */
+export interface PolicyLintWarning {
+  code: string;
+  message: string;
+  ruleKey: string;
+  version: number;
+  priority: number;
+}
+
+/** One IMMUTABLE rule version (contract `PolicyRuleVersion`). `description` is accepted on the wire but not stored. */
+export interface PolicyRuleVersion {
+  ruleKey: string;
+  version: number;
+  targetEntitlementId: string;
+  description: string | null;
+  priority: number;
+  status: PolicyRuleStatus;
+  condition: PolicyCondition;
+  effect: PolicyEffect;
+  author: string;
+  createdAt: string;
+  /** Present on a create/edit response: the non-blocking author-time overlap/unreachable lint findings. */
+  warnings?: PolicyLintWarning[];
+}
+
+/** A latest-version summary of one logical rule (contract `PolicyRuleSummary`). */
+export interface PolicyRuleSummary {
+  ruleKey: string;
+  latestVersion: number;
+  targetEntitlementId: string;
+  description: string | null;
+  priority: number;
+  status: PolicyRuleStatus;
+  effectKind?: PolicyEffectKind;
+  updatedAt: string;
+}
+
+/** The bounded, deterministic rule list + a `truncated` signal when the tenant has more than the page cap. */
+export interface PolicyRuleList {
+  rules: PolicyRuleSummary[];
+  truncated: boolean;
+}
+
+/** A rule head + its FULL immutable version history (contract `PolicyRuleDetail`). */
+export interface PolicyRuleDetail {
+  ruleKey: string;
+  latestVersion: number;
+  status: PolicyRuleStatus;
+  versions: PolicyRuleVersion[];
+}
+
+/** The would-be decision a dry-run resolves (non-enforcing). */
+export interface DryRunDecision {
+  targetEntitlementId: string;
+  target: string;
+  effectKind: PolicyEffectKind | null;
+  baseValue: number | boolean | null;
+  resolvedValue: number | boolean | null;
+  authoredMaximum: number | null;
+  clamped: boolean;
+  source: "rule" | "base";
+}
+
+/** A rule considered in the highest-priority-wins scan but NOT applied (with the reason). */
+export interface ConsideredRule {
+  ruleKey: string;
+  version: number;
+  reason: string;
+}
+
+/** The dry-run/simulate result (contract `DryRunResult`) — mode-marked `dry_run`, non-enforcing (INV-9). */
+export interface DryRunResult {
+  mode: "dry_run";
+  decisionTimestamp: string;
+  decision: DryRunDecision;
+  firedRule: { ruleKey: string; version: number } | null;
+  consideredNotApplied: ConsideredRule[];
+}
+
+/** The create/author-a-rule request body (structured-JSON condition + typed effect + priority + target). */
+export interface CreatePolicyRuleInput {
+  targetEntitlementId: string;
+  description?: string;
+  priority: number;
+  status?: PolicyRuleStatus;
+  condition: PolicyCondition;
+  effect: PolicyEffect;
+}
+/** The edit request body — an edit creates a NEW immutable version (content columns are immutable). */
+export interface EditPolicyRuleInput {
+  description?: string;
+  priority: number;
+  condition: PolicyCondition;
+  effect: PolicyEffect;
+}
+/** A dry-run request: EXACTLY ONE of `context` (a supplied sample) or `licenseId` (a real assembled context). */
+export interface DryRunInput {
+  context?: Record<string, unknown>;
+  licenseId?: string;
+  /** An OPTIONAL unsaved candidate rule to simulate in place of the persisted content (validated author-time). */
+  candidate?: EditPolicyRuleInput;
+}
+
+export interface PolicyRuleFilters {
+  entitlementId?: string;
+  status?: PolicyRuleStatus;
+}
+
+function policyListQs(f: PolicyRuleFilters): string {
+  const p = new URLSearchParams();
+  if (f.entitlementId) p.set("entitlementId", f.entitlementId);
+  if (f.status) p.set("status", f.status);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/**
+ * The low-code policy-rule API surface (mirrors the /admin plane of src/server/modules/policy/routes.ts). ONE
+ * admin plane: viewer reads (list/detail); admin authors/edits/status/dry-run. There is NO runtime/API-key plane
+ * — evaluation is an internal issuance-path seam, so the console never triggers a live decision here. Every
+ * mutation rides the double-submit CSRF token automatically.
+ */
+export const policyApi = {
+  listRules: (filters: PolicyRuleFilters = {}) =>
+    request<PolicyRuleList>("GET", `/admin/policy/rules${policyListQs(filters)}`),
+  getRule: (ruleKey: string) => request<PolicyRuleDetail>("GET", `/admin/policy/rules/${ruleKey}`),
+  createRule: (input: CreatePolicyRuleInput) => request<PolicyRuleVersion>("POST", "/admin/policy/rules", input),
+  editRule: (ruleKey: string, input: EditPolicyRuleInput) =>
+    request<PolicyRuleVersion>("PATCH", `/admin/policy/rules/${ruleKey}`, input),
+  setStatus: (ruleKey: string, status: PolicyRuleStatus) =>
+    request<PolicyRuleSummary>("POST", `/admin/policy/rules/${ruleKey}/status`, { status }),
+  dryRun: (ruleKey: string, input: DryRunInput) =>
+    request<DryRunResult>("POST", `/admin/policy/rules/${ruleKey}/dry-run`, input),
+};
+
+export type PolicyApi = typeof policyApi;

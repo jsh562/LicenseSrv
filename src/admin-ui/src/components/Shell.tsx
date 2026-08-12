@@ -10,10 +10,11 @@ import { Billing } from "../pages/billing/Billing";
 import { Catalog } from "../pages/catalog/Catalog";
 import { Leases } from "../pages/leases/Leases";
 import { Licensing } from "../pages/licensing/Licensing";
+import { PolicyRules } from "../pages/policy/PolicyRules";
 import { Usage } from "../pages/usage/Usage";
 import { Users } from "../pages/Users";
 
-type Tab = "users" | "api-keys" | "audit" | "catalog" | "licensing" | "billing" | "leases" | "usage";
+type Tab = "users" | "api-keys" | "audit" | "catalog" | "licensing" | "billing" | "leases" | "usage" | "policy";
 
 export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () => void }): JSX.Element {
   const [tab, setTab] = useState<Tab>("users");
@@ -54,6 +55,9 @@ export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () =>
           <button type="button" aria-current={tab === "usage"} onClick={() => setTab("usage")}>
             Usage
           </button>
+          <button type="button" aria-current={tab === "policy"} onClick={() => setTab("policy")}>
+            Policy
+          </button>
         </nav>
         <div className="session">
           <span>{who.role}</span>
@@ -71,6 +75,7 @@ export function Shell({ who, onSignedOut }: { who: Principal; onSignedOut: () =>
         {tab === "billing" && <Billing sessionRole={who.role} />}
         {tab === "leases" && <Leases sessionRole={who.role} />}
         {tab === "usage" && <Usage sessionRole={who.role} />}
+        {tab === "policy" && <PolicyRules sessionRole={who.role} />}
       </main>
     </div>
   );

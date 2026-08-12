@@ -764,7 +764,7 @@ components:
         entitlement decision (a rule never mutates state directly). The `value` type is fixed by `kind`:
         `adjust_limit` → number (clamped to the target entitlement's authored maximum, FR-007),
         `toggle_boolean` → boolean (only where the plan marks the entitlement rule-eligible),
-        `select_tier` → string (a plan-defined tier id). An effect outside these bounds is refused
+        `select_tier` → number (a plan-defined numeric tier). An effect outside these bounds is refused
         `400 effect_out_of_bounds` at author time and clamped/skipped at evaluation.
       oneOf:
         - $ref: '#/components/schemas/AdjustLimitEffect'
@@ -825,8 +825,9 @@ components:
     SelectTierEffect:
       type: object
       description: >
-        Select an overage tier for a metered entitlement — ONLY among the plan-defined tiers (FR-003/007).
-        An undefined tier is refused `400 effect_out_of_bounds`.
+        Select an overage tier for a metered entitlement — ONLY among the plan-defined numeric tiers
+        (FR-003/007). The selected tier is a NUMBER so it embeds in the signed token unchanged (no
+        token-format change, SC-014). An undefined tier is refused `400 effect_out_of_bounds`.
       additionalProperties: false
       required: [kind, target, value]
       properties:
@@ -838,11 +839,10 @@ components:
           maxLength: 128
           example: "api_calls"
         value:
-          type: string
-          description: The selected tier id — must be one of the plan-defined tiers for the entitlement.
-          minLength: 1
-          maxLength: 128
-          example: "tier_gold"
+          type: number
+          description: The selected numeric tier — must be one of the plan-defined tiers for the entitlement.
+          minimum: 0
+          example: 10000
 
     # --- Authorable rule fields (shared by create/edit) -------------------------------------------
     AuthorableRuleFields:
@@ -1138,9 +1138,9 @@ components:
               example: true
             tiers:
               type: array
-              description: The plan-defined overage tier ids a select_tier effect may choose from (metered only).
-              items: { type: string, maxLength: 128 }
-              example: ["tier_silver", "tier_gold"]
+              description: The plan-defined numeric overage tiers a select_tier effect may choose from (metered only).
+              items: { type: number, minimum: 0 }
+              example: [1000, 5000, 10000]
         license:
           type: object
           description: >

@@ -41,10 +41,10 @@ description: "Task list for feature implementation: Low-Code Policy Rules (E017)
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 Extend coverage globs for src/server/modules/policy/** (≥80% line+branch) in vitest.config.ts
-- [ ] T002 {FR-009,FR-019,FR-021,FR-014} Policy config keys (eval timeout; size/AST-depth/complexity caps; rule-set + per-issuance cost caps FR-019; absolute authored-max cap FR-021; audit retention window FR-014; conflict policy) in src/server/config/index.ts
-- [ ] T003 Module scaffold: registerPolicy seam + PolicyError + app.policy (evaluate seam) in src/server/modules/policy/index.ts → exports: registerPolicy, PolicyError
-- [ ] T004 Register registerPolicy after registerUsage (end of MODULES) in src/server/modules/index.ts ← T003:registerPolicy
+- [X] T001 Extend coverage globs for src/server/modules/policy/** (≥80% line+branch) in vitest.config.ts
+- [X] T002 {FR-009,FR-019,FR-021,FR-014} Policy config keys (eval timeout; size/AST-depth/complexity caps; rule-set + per-issuance cost caps FR-019; absolute authored-max cap FR-021; audit retention window FR-014; conflict policy) in src/server/config/index.ts
+- [X] T003 Module scaffold: registerPolicy seam + PolicyError + app.policy (evaluate seam) in src/server/modules/policy/index.ts → exports: registerPolicy, PolicyError
+- [X] T004 Register registerPolicy after registerUsage (end of MODULES) in src/server/modules/index.ts ← T003:registerPolicy
 
 ---
 
@@ -52,22 +52,22 @@ description: "Task list for feature implementation: Low-Code Policy Rules (E017)
 
 **The migration `0013` (finalized across T005→T006, same file), the module scaffold + seam (Phase 1), the E007 rule-bound authoring + governance validation (T007), and the shared building blocks — `config.ts` (resource-bound + cost-cap + retention resolvers), the SANDBOXED `condition.ts` evaluator, `context.ts` (+ canonical hash), `effect.ts`, `validate.ts`, and `rule-repo.ts` (+ the live-rule-count for the FR-019 cap) — block every delivery story (authoring AND evaluation compose them). Complete before any US phase. The unit tests (T008–T012) are TDD-first and precede their implementations; the migration + repo integration tests (T019–T020) verify the finalized artifacts. The condition/effect sandbox + clamp unit tests carry the load-bearing sandbox-escape / no-eval / determinism / effect-clamp acceptance evidence ADR-0014 requires.**
 
-- [ ] T005 {FR-007} Migration 0013: entitlement expand-only rule_max/rule_eligible/rule_tiers columns + nonneg/array CHECKs (default rule_eligible=false) in migrations/0013_policy_rules.sql
-- [ ] T006 {FR-011,FR-014,FR-015} Migration 0013: policy_rule + policy_evaluation (+considered_rules, canonical input_hash, license-shape CHECK) — one-live UNIQUE, forced RLS, grants, indexes, BRIN retention in migrations/0013_policy_rules.sql after:T005
-- [ ] T007 [P] {FR-007,FR-021} E007 rule-bound authoring + governance: rule_max/rule_eligible/rule_tiers validation (≥ base plan value, ≤ absolute cap) + persistence in src/server/modules/catalog/validation.ts + entitlements.ts after:T005
-- [ ] T008 [P] Unit (TDD): config resolvers — eval timeout + JSON size/AST-depth/complexity caps + rule-set/per-issuance cost caps + absolute authored-max cap + retention window + conflict policy in src/server/modules/policy/__tests__/config.unit.test.ts
-- [ ] T009 [P] Unit (TDD): sandboxed evaluator — no eval/vm, escape refused (no host/IO reachable), determinism, timeout/depth bounds in src/server/modules/policy/__tests__/condition.unit.test.ts
-- [ ] T010 [P] Unit (TDD): effect applier — clamp adjust_limit ≤ authored max, toggle only rule-eligible, select only plan tier in src/server/modules/policy/__tests__/effect.unit.test.ts
-- [ ] T011 [P] Unit (TDD): author-time validate — shape + allow-list + type-check + effect-bounds → distinct 400 codes in src/server/modules/policy/__tests__/validate.unit.test.ts
-- [ ] T012 [P] Unit (TDD): context builder — allow-listed minimized fields, has()-guard, no secret/PII, canonical serialization/hash reproducible (INV-12) in src/server/modules/policy/__tests__/context.unit.test.ts
-- [ ] T013 [P] {FR-009,FR-019} Config resolvers — eval timeout + size/AST-depth/complexity caps + rule-set/per-issuance cost caps + retention + conflict policy in src/server/modules/policy/config.ts → exports: PolicyConfig
-- [ ] T014 {FR-005,FR-009} [COMPLETES FR-005] Sandboxed allow-listed non-eval evaluator (injected clock, bounded, deterministic) in src/server/modules/policy/condition.ts → exports: evaluateCondition after:T013
-- [ ] T015 {FR-004,FR-017} [COMPLETES FR-004] Bounded minimized decision-context builder (E007/E008/E016, has()-guarded) + canonical hash (INV-12) in src/server/modules/policy/context.ts → exports: buildDecisionContext, canonicalContextHash
-- [ ] T016 {FR-003,FR-007} [COMPLETES FR-003,FR-007] Closed typed effect applier: clamp ≤ rule_max, rule_eligible toggle, plan-tier select in src/server/modules/policy/effect.ts → exports: applyEffect
-- [ ] T017 {FR-002} Author-time validate: allow-list + type-check + effect-bounds, reject-before-persist in src/server/modules/policy/validate.ts ← T016:applyEffect → exports: validateRule after:T014
-- [ ] T018 {FR-011,FR-014,FR-019} Rule repo: CRUD + immutable versioning + UPDATE restricted to status/updated_at + eval append + live-rule-count + reads in src/server/modules/policy/rule-repo.ts → exports: PolicyRuleRepo
-- [ ] T019 [P] Migration IT (TDD): unset-GUC→0 both tables + version/one-live UNIQUE + dry-run-license CHECK + considered_rules array CHECK in src/server/modules/policy/__tests__/migration.integration.test.ts after:T006
-- [ ] T020 [P] Repo IT (TDD): content-column UPDATE refused, restricted to status/updated_at (INV-2) in src/server/modules/policy/__tests__/rule-repo.integration.test.ts after:T018
+- [X] T005 {FR-007} Migration 0013: entitlement expand-only rule_max/rule_eligible/rule_tiers columns + nonneg/array CHECKs (default rule_eligible=false) in migrations/0013_policy_rules.sql
+- [X] T006 {FR-011,FR-014,FR-015} Migration 0013: policy_rule + policy_evaluation (+considered_rules, canonical input_hash, license-shape CHECK) — one-live UNIQUE, forced RLS, grants, indexes, BRIN retention in migrations/0013_policy_rules.sql after:T005
+- [X] T007 [P] {FR-007,FR-021} E007 rule-bound authoring + governance: rule_max/rule_eligible/rule_tiers validation (≥ base plan value, ≤ absolute cap) + persistence in src/server/modules/catalog/validation.ts + entitlements.ts after:T005
+- [X] T008 [P] Unit (TDD): config resolvers — eval timeout + JSON size/AST-depth/complexity caps + rule-set/per-issuance cost caps + absolute authored-max cap + retention window + conflict policy in src/server/modules/policy/__tests__/config.unit.test.ts
+- [X] T009 [P] Unit (TDD): sandboxed evaluator — no eval/vm, escape refused (no host/IO reachable), determinism, timeout/depth bounds in src/server/modules/policy/__tests__/condition.unit.test.ts
+- [X] T010 [P] Unit (TDD): effect applier — clamp adjust_limit ≤ authored max, toggle only rule-eligible, select only plan tier in src/server/modules/policy/__tests__/effect.unit.test.ts
+- [X] T011 [P] Unit (TDD): author-time validate — shape + allow-list + type-check + effect-bounds → distinct 400 codes in src/server/modules/policy/__tests__/validate.unit.test.ts
+- [X] T012 [P] Unit (TDD): context builder — allow-listed minimized fields, has()-guard, no secret/PII, canonical serialization/hash reproducible (INV-12) in src/server/modules/policy/__tests__/context.unit.test.ts
+- [X] T013 [P] {FR-009,FR-019} Config resolvers — eval timeout + size/AST-depth/complexity caps + rule-set/per-issuance cost caps + retention + conflict policy in src/server/modules/policy/config.ts → exports: PolicyConfig
+- [X] T014 {FR-005,FR-009} [COMPLETES FR-005] Sandboxed allow-listed non-eval evaluator (injected clock, bounded, deterministic) in src/server/modules/policy/condition.ts → exports: evaluateCondition after:T013
+- [X] T015 {FR-004,FR-017} [COMPLETES FR-004] Bounded minimized decision-context builder (E007/E008/E016, has()-guarded) + canonical hash (INV-12) in src/server/modules/policy/context.ts → exports: buildDecisionContext, canonicalContextHash
+- [X] T016 {FR-003,FR-007} [COMPLETES FR-003,FR-007] Closed typed effect applier: clamp ≤ rule_max, rule_eligible toggle, plan-tier select in src/server/modules/policy/effect.ts → exports: applyEffect
+- [X] T017 {FR-002} Author-time validate: allow-list + type-check + effect-bounds, reject-before-persist in src/server/modules/policy/validate.ts ← T016:applyEffect → exports: validateRule after:T014
+- [X] T018 {FR-011,FR-014,FR-019} Rule repo: CRUD + immutable versioning + UPDATE restricted to status/updated_at + eval append + live-rule-count + reads in src/server/modules/policy/rule-repo.ts → exports: PolicyRuleRepo
+- [X] T019 [P] Migration IT (TDD): unset-GUC→0 both tables + version/one-live UNIQUE + dry-run-license CHECK + considered_rules array CHECK in src/server/modules/policy/__tests__/migration.integration.test.ts after:T006
+- [X] T020 [P] Repo IT (TDD): content-column UPDATE refused, restricted to status/updated_at (INV-2) in src/server/modules/policy/__tests__/rule-repo.integration.test.ts after:T018
 
 ---
 
@@ -75,13 +75,13 @@ description: "Task list for feature implementation: Low-Code Policy Rules (E017)
 
 **Independent test**: author a syntactically valid, safe, in-bounds `when → then` rule → it validates and saves as version 1 (SC-001); author a rule whose condition uses a disallowed/host-access construct → `400 unsafe_operator`, NOT persisted; author a rule whose effect exceeds the authored maximum or targets an undefined entitlement → `400 effect_out_of_bounds`, NOT persisted; an oversize condition → `400 condition_too_large`; an authoring action that would push the tenant's live rule set past the configured size → `400 rule_set_limit_exceeded`, NOT persisted; a viewer attempting to author → `403 forbidden`; a missing/mismatched CSRF → `403`, audited; a PATCH edit → a new immutable version with the prior retained; setting/raising an entitlement's authored maximum succeeds only for an admin over a CSRF-protected audited action and only when ≥ the base plan value and within the absolute cap (SC-019).
 
-- [ ] T021 [P] [US1] {FR-002} IT (TDD): create/edit reject the distinct 400 codes before persist — invalid_condition/unsafe_operator/effect_out_of_bounds/condition_too_large (SC-001) in src/server/modules/policy/__tests__/authoring.integration.test.ts
-- [ ] T022 [P] [US1] {FR-001,FR-016} IT (TDD): session+RBAC+CSRF on routes; viewer denied; CSRF miss→403; PATCH→new version in src/server/modules/policy/__tests__/rules-routes.integration.test.ts
-- [ ] T023 [P] [US1] {FR-021} IT (TDD): catalog authored-max admin-only + CSRF + audited; refused when < base or > absolute cap; viewer/out-of-range refused (SC-019) in src/server/modules/catalog/__tests__/authored-max.integration.test.ts
-- [ ] T024 [US1] {FR-001,FR-016} [COMPLETES FR-001] Routes: POST create + GET list/detail + PATCH edit→new version in src/server/modules/policy/routes.ts ← T017:validateRule, T018:PolicyRuleRepo
-- [ ] T025 [US1] {FR-002} [COMPLETES FR-002] Wire validate-before-persist into create/edit; distinct 400 codes; rejected rule never persisted in src/server/modules/policy/routes.ts after:T024
-- [ ] T026 [US1] {FR-019} [COMPLETES FR-019] Author-time rule-set size cap: reject rule_set_limit_exceeded (400) when the live rule set would exceed the configured max in src/server/modules/policy/validate.ts + rule-repo.ts + routes.ts after:T025 ← T018:PolicyRuleRepo
-- [ ] T027 [US1] {FR-021} [COMPLETES FR-021] Catalog route: set/raise rule_max/rule_eligible/rule_tiers (admin-only + CSRF + audited) in src/server/modules/catalog/routes.ts after:T007
+- [X] T021 [P] [US1] {FR-002} IT (TDD): create/edit reject the distinct 400 codes before persist — invalid_condition/unsafe_operator/effect_out_of_bounds/condition_too_large (SC-001) in src/server/modules/policy/__tests__/authoring.integration.test.ts
+- [X] T022 [P] [US1] {FR-001,FR-016} IT (TDD): session+RBAC+CSRF on routes; viewer denied; CSRF miss→403; PATCH→new version in src/server/modules/policy/__tests__/rules-routes.integration.test.ts
+- [X] T023 [P] [US1] {FR-021} IT (TDD): catalog authored-max admin-only + CSRF + audited; refused when < base or > absolute cap; viewer/out-of-range refused (SC-019) in src/server/modules/catalog/__tests__/authored-max.integration.test.ts
+- [X] T024 [US1] {FR-001,FR-016} [COMPLETES FR-001] Routes: POST create + GET list/detail + PATCH edit→new version in src/server/modules/policy/routes.ts ← T017:validateRule, T018:PolicyRuleRepo
+- [X] T025 [US1] {FR-002} [COMPLETES FR-002] Wire validate-before-persist into create/edit; distinct 400 codes; rejected rule never persisted in src/server/modules/policy/routes.ts after:T024
+- [X] T026 [US1] {FR-019} [COMPLETES FR-019] Author-time rule-set size cap: reject rule_set_limit_exceeded (400) when the live rule set would exceed the configured max in src/server/modules/policy/validate.ts + rule-repo.ts + routes.ts after:T025 ← T018:PolicyRuleRepo
+- [X] T027 [US1] {FR-021} [COMPLETES FR-021] Catalog route: set/raise rule_max/rule_eligible/rule_tiers (admin-only + CSRF + audited) in src/server/modules/catalog/routes.ts after:T007
 
 ---
 
@@ -89,10 +89,10 @@ description: "Task list for feature implementation: Low-Code Policy Rules (E017)
 
 **Independent test**: define a rule "when usage > 10,000 then set api_calls to 50,000"; resolve at issuance with a matching context → the limit becomes 50,000 (SC-002); with a non-matching context → the base value stands; re-resolve the matching context → an identical decision, fired rule, AND input_hash (SC-003); an effect above the authored maximum is clamped/refused while a lift above the base plan value (up to the authored max) is allowed (SC-004/015); evaluation runs only on the issuance/signing path with no per-validate re-decision (SC-016); an already-issued offline license token verifies byte-identical — no token bytes change and no code runs in the verifier core (SC-014).
 
-- [ ] T028 [P] [US2] {FR-006} Unit (TDD): highest-priority-wins ONE effect + stable (rule_key,version) tiebreak + considered-not-applied + fail-closed skip in src/server/modules/policy/__tests__/evaluate.unit.test.ts
-- [ ] T029 [P] [US2] {FR-008} IT (TDD): adjusts at issuance; determinism (identical decision+fired+input_hash); clamp/lift; issuance-only no per-validate re-decision; offline token unchanged (SC-002/003/004/014/016) in src/server/modules/policy/__tests__/issuance.integration.test.ts
-- [ ] T030 [US2] {FR-006,FR-010,FR-014} Evaluate: highest-priority-wins ONE effect + tiebreak + considered_rules + fail-closed + canonical-hash audit in src/server/modules/policy/evaluate.ts ← T015:canonicalContextHash, T016:applyEffect → exports: evaluatePolicy after:T016
-- [ ] T031 [US2] {FR-008} [COMPLETES FR-008] E008 hook: adjust effective def BEFORE sign (signer/verifier/token untouched) in src/server/modules/issuance/licenses.ts after:T030 ← T030:evaluatePolicy
+- [X] T028 [P] [US2] {FR-006} Unit (TDD): highest-priority-wins ONE effect + stable (rule_key,version) tiebreak + considered-not-applied + fail-closed skip in src/server/modules/policy/__tests__/evaluate.unit.test.ts
+- [X] T029 [P] [US2] {FR-008} IT (TDD): adjusts at issuance; determinism (identical decision+fired+input_hash); clamp/lift; issuance-only no per-validate re-decision; offline token unchanged (SC-002/003/004/014/016) in src/server/modules/policy/__tests__/issuance.integration.test.ts
+- [X] T030 [US2] {FR-006,FR-010,FR-014} Evaluate: highest-priority-wins ONE effect + tiebreak + considered_rules + fail-closed + canonical-hash audit in src/server/modules/policy/evaluate.ts ← T015:canonicalContextHash, T016:applyEffect → exports: evaluatePolicy after:T016
+- [X] T031 [US2] {FR-008} [COMPLETES FR-008] E008 hook: adjust effective def BEFORE sign (signer/verifier/token untouched) in src/server/modules/issuance/licenses.ts after:T030 ← T030:evaluatePolicy
 
 ---
 
@@ -100,10 +100,10 @@ description: "Task list for feature implementation: Low-Code Policy Rules (E017)
 
 **Independent test**: attempt to author/evaluate an expression that calls eval/require/process, reaches a host global, or loops unboundedly → each is refused at author time or fails closed at evaluation with no side effect and no host state read or written (SC-005); a well-formed rule evaluates within the configured resource bounds; a deliberately slow/over-limit or erroring rule, or a rule set exceeding the per-decision rule cap, times out / fails closed to the base decision, the issuance path neither crashes nor blocks, and the failure is audited — including when the audit write itself fails (SC-006/017/020).
 
-- [ ] T032 [P] [US3] {FR-009} IT (TDD): sandbox-escape — eval/vm/host/IO refused, NO host state read/written (SC-005) in src/server/modules/policy/__tests__/sandbox-escape.integration.test.ts
-- [ ] T033 [P] [US3] {FR-010,FR-019} IT (TDD): error/timeout/bound + per-decision rule cap → base + audited; audit-write failure ALSO fails closed (SC-006/017/020) in src/server/modules/policy/__tests__/fail-closed.integration.test.ts
-- [ ] T034 [US3] {FR-009} [COMPLETES FR-009] Enforce sandbox resource bounds (timeout + size/AST-depth/complexity) at author + eval paths in src/server/modules/policy/condition.ts after:T030
-- [ ] T035 [US3] {FR-010,FR-019} [COMPLETES FR-010] Fail-closed: per-rule error/timeout/bound + per-decision rule cap skip → base + audited; audit-write failure also fails closed in src/server/modules/policy/evaluate.ts after:T034
+- [X] T032 [P] [US3] {FR-009} IT (TDD): sandbox-escape — eval/vm/host/IO refused, NO host state read/written (SC-005) in src/server/modules/policy/__tests__/sandbox-escape.integration.test.ts
+- [X] T033 [P] [US3] {FR-010,FR-019} IT (TDD): error/timeout/bound + per-decision rule cap → base + audited; audit-write failure ALSO fails closed (SC-006/017/020) in src/server/modules/policy/__tests__/fail-closed.integration.test.ts
+- [X] T034 [US3] {FR-009} [COMPLETES FR-009] Enforce sandbox resource bounds (timeout + size/AST-depth/complexity) at author + eval paths in src/server/modules/policy/condition.ts after:T030
+- [X] T035 [US3] {FR-010,FR-019} [COMPLETES FR-010] Fail-closed: per-rule error/timeout/bound + per-decision rule cap skip → base + audited; audit-write failure also fails closed in src/server/modules/policy/evaluate.ts after:T034
 
 ---
 
@@ -111,10 +111,10 @@ description: "Task list for feature implementation: Low-Code Policy Rules (E017)
 
 **Independent test**: author a candidate rule, dry-run it against a supplied sample context or a real license/plan context, and confirm the returned would-be decision + fired rule (id+version) + considered-but-not-applied rules match expectation while no live entitlement decision, license, or rule-enforcement state changed and nothing was persisted as active (SC-007); a supplied context that is out-of-schema, oversized, or over-depth is rejected (`validation_error`) under the SAME allow-listed schema + size/AST-depth/field-count bounds as the real assembled context BEFORE any evaluation, while a within-bounds supplied context evaluates identically to an assembled real context (SC-018); the dry-run is recorded distinctly mode-marked `dry_run` (with a nullable/synthetic license reference for a supplied context).
 
-- [ ] T036 [P] [US4] {FR-013} IT (TDD): dry-run → decision + fired + considered-not-applied; no persist/enforce; mode=dry_run (SC-007) in src/server/modules/policy/__tests__/dry-run.integration.test.ts
-- [ ] T037 [P] [US4] {FR-020} IT (TDD): supplied context out-of-schema/oversized/over-depth → validation_error before eval; within-bounds evaluates identically to real (SC-018) in src/server/modules/policy/__tests__/dry-run-context-bound.integration.test.ts
-- [ ] T038 [US4] {FR-013,FR-016} [COMPLETES FR-013] POST .../dry-run (supplied|real ctx, candidate validated, non-enforcing, mode=dry_run) in src/server/modules/policy/routes.ts after:T030 ← T030:evaluatePolicy
-- [ ] T039 [US4] {FR-020} [COMPLETES FR-020] Bound the dry-run SUPPLIED context vs the SAME allow-listed schema + size/AST-depth/field-count caps (reject validation_error before eval) in src/server/modules/policy/context.ts + routes.ts after:T038 ← T015:buildDecisionContext
+- [X] T036 [P] [US4] {FR-013} IT (TDD): dry-run → decision + fired + considered-not-applied; no persist/enforce; mode=dry_run (SC-007) in src/server/modules/policy/__tests__/dry-run.integration.test.ts
+- [X] T037 [P] [US4] {FR-020} IT (TDD): supplied context out-of-schema/oversized/over-depth → validation_error before eval; within-bounds evaluates identically to real (SC-018) in src/server/modules/policy/__tests__/dry-run-context-bound.integration.test.ts
+- [X] T038 [US4] {FR-013,FR-016} [COMPLETES FR-013] POST .../dry-run (supplied|real ctx, candidate validated, non-enforcing, mode=dry_run) in src/server/modules/policy/routes.ts after:T030 ← T030:evaluatePolicy
+- [X] T039 [US4] {FR-020} [COMPLETES FR-020] Bound the dry-run SUPPLIED context vs the SAME allow-listed schema + size/AST-depth/field-count caps (reject validation_error before eval) in src/server/modules/policy/context.ts + routes.ts after:T038 ← T015:buildDecisionContext
 
 ---
 
@@ -122,11 +122,11 @@ description: "Task list for feature implementation: Low-Code Policy Rules (E017)
 
 **Independent test**: author a rule, put it in preview and confirm it logs a would-be decision without changing the enforced outcome (SC-008); edit it and confirm a new immutable version is created while the prior version is retained (SC-008); attempt a status transition the lifecycle does not permit from the current state → `409 invalid_state_transition`, no state changes; resolve a decision and confirm the append-only audit records the fired rule id + version, the considered-but-not-applied rule ids + versions, a canonical input snapshot/hash, and the resolved decision, distinctly marking enforced vs preview vs dry-run (SC-009).
 
-- [ ] T040 [P] [US5] {FR-011,FR-012} IT (TDD): edit→new version, prior retained; preview logs would-be, not enforced; impermissible transition→409 (SC-008) in src/server/modules/policy/__tests__/lifecycle.integration.test.ts
-- [ ] T041 [P] [US5] {FR-014} IT (TDD): unified mode-marked append-only audit; fired id+version + considered_rules + canonical hash/snapshot + decision (SC-009) in src/server/modules/policy/__tests__/audit.integration.test.ts
-- [ ] T042 [US5] {FR-011} [COMPLETES FR-011] POST .../status (active|preview|disabled) + single-live promotion + 409 invalid_state_transition (session+RBAC+CSRF) in src/server/modules/policy/routes.ts after:T024
-- [ ] T043 [US5] {FR-012} [COMPLETES FR-012] Preview (report-only) branch in evaluate — logs would-be decision, enforced outcome unchanged in src/server/modules/policy/evaluate.ts after:T035
-- [ ] T044 [US5] {FR-014} Unified mode-marked append-only policy_evaluation write: fired id+version + considered_rules + canonical input_hash/snapshot + decision in src/server/modules/policy/evaluate.ts after:T043
+- [X] T040 [P] [US5] {FR-011,FR-012} IT (TDD): edit→new version, prior retained; preview logs would-be, not enforced; impermissible transition→409 (SC-008) in src/server/modules/policy/__tests__/lifecycle.integration.test.ts
+- [X] T041 [P] [US5] {FR-014} IT (TDD): unified mode-marked append-only audit; fired id+version + considered_rules + canonical hash/snapshot + decision (SC-009) in src/server/modules/policy/__tests__/audit.integration.test.ts
+- [X] T042 [US5] {FR-011} [COMPLETES FR-011] POST .../status (active|preview|disabled) + single-live promotion + 409 invalid_state_transition (session+RBAC+CSRF) in src/server/modules/policy/routes.ts after:T024
+- [X] T043 [US5] {FR-012} [COMPLETES FR-012] Preview (report-only) branch in evaluate — logs would-be decision, enforced outcome unchanged in src/server/modules/policy/evaluate.ts after:T035
+- [X] T044 [US5] {FR-014} Unified mode-marked append-only policy_evaluation write: fired id+version + considered_rules + canonical input_hash/snapshot + decision in src/server/modules/policy/evaluate.ts after:T043
 
 ---
 
@@ -134,22 +134,22 @@ description: "Task list for feature implementation: Low-Code Policy Rules (E017)
 
 **Independent test**: define two overlapping rules with different priorities targeting the same entitlement, resolve a matching context, and confirm the higher-priority rule's effect wins reproducibly on every re-evaluation (SC-010); define two same-priority overlapping rules and confirm the stable (rule_key,version) tiebreak yields one reproducible outcome; author an overlapping/unreachable rule and confirm the author-time lint flags it.
 
-- [ ] T045 [P] [US6] {FR-006} IT (TDD): distinct-priority → highest wins; same → tiebreak; overlap/unreachable → lint (SC-010) in src/server/modules/policy/__tests__/conflict.integration.test.ts
-- [ ] T046 [US6] {FR-006} [COMPLETES FR-006] Priority + stable (rule_key,version) tiebreak + author-time overlap/unreachable lint in src/server/modules/policy/evaluate.ts + validate.ts after:T030
+- [X] T045 [P] [US6] {FR-006} IT (TDD): distinct-priority → highest wins; same → tiebreak; overlap/unreachable → lint (SC-010) in src/server/modules/policy/__tests__/conflict.integration.test.ts
+- [X] T046 [US6] {FR-006} [COMPLETES FR-006] Priority + stable (rule_key,version) tiebreak + author-time overlap/unreachable lint in src/server/modules/policy/evaluate.ts + validate.ts after:T030
 
 ---
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T047 {FR-016} [COMPLETES FR-016] Finalize RBAC + double-submit CSRF 403 on every mutation + audit each denial as a security event in src/server/modules/policy/routes.ts after:T042
-- [ ] T048 {FR-014} [COMPLETES FR-014] Fail-open owner-role policy_evaluation retention prune (config window, BRIN, synthetic-actor audit) in src/server/modules/policy/retention-worker.ts + src/server/main.ts after:T044
-- [ ] T049 [P] {FR-015} [COMPLETES FR-015] Isolation IT: cross-tenant→404 all routes; unset-GUC→0 rows on both tables (SC-012) in src/server/modules/policy/__tests__/isolation.integration.test.ts
-- [ ] T050 [P] {FR-017} [COMPLETES FR-017] Security/PII IT: no secret/key/PII in condition/context/response/log/audit; minimized (SC-013) in src/server/modules/policy/__tests__/secret-leakage.test.ts
-- [ ] T051 [P] {FR-018} [COMPLETES FR-018] NO-CRYPTO IT: no crypto/signer/verifier touch; issued token byte-identical (SC-014) in src/server/modules/policy/__tests__/no-crypto.integration.test.ts
-- [ ] T052 [P] Perf IT: author-time validation fast + bounded evaluation honors timeout/size/depth caps + per-decision rule cap on issuance in src/server/modules/policy/__tests__/perf.integration.test.ts
-- [ ] T053 Enforce ≥80% line+branch coverage of src/server/modules/policy/** in vitest.config.ts after:T052
-- [ ] T054 [P] Add policy CI (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep + a sandbox/no-eval lint; SHA-pinned actions) in .github/workflows/policy.yml mirroring usage.yml
-- [ ] T055 Policy Rules admin page (author/validate, priority, preview/active, dry-run, version history) in src/admin-ui/src/pages/policy/PolicyRules.tsx after:T038
+- [X] T047 {FR-016} [COMPLETES FR-016] Finalize RBAC + double-submit CSRF 403 on every mutation + audit each denial as a security event in src/server/modules/policy/routes.ts after:T042
+- [X] T048 {FR-014} [COMPLETES FR-014] Fail-open owner-role policy_evaluation retention prune (config window, BRIN, synthetic-actor audit) in src/server/modules/policy/retention-worker.ts + src/server/main.ts after:T044
+- [X] T049 [P] {FR-015} [COMPLETES FR-015] Isolation IT: cross-tenant→404 all routes; unset-GUC→0 rows on both tables (SC-012) in src/server/modules/policy/__tests__/isolation.integration.test.ts
+- [X] T050 [P] {FR-017} [COMPLETES FR-017] Security/PII IT: no secret/key/PII in condition/context/response/log/audit; minimized (SC-013) in src/server/modules/policy/__tests__/secret-leakage.test.ts
+- [X] T051 [P] {FR-018} [COMPLETES FR-018] NO-CRYPTO IT: no crypto/signer/verifier touch; issued token byte-identical (SC-014) in src/server/modules/policy/__tests__/no-crypto.integration.test.ts
+- [X] T052 [P] Perf IT: author-time validation fast + bounded evaluation honors timeout/size/depth caps + per-decision rule cap on issuance in src/server/modules/policy/__tests__/perf.integration.test.ts
+- [X] T053 Enforce ≥80% line+branch coverage of src/server/modules/policy/** in vitest.config.ts after:T052
+- [X] T054 [P] Add policy CI (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep + a sandbox/no-eval lint; SHA-pinned actions) in .github/workflows/policy.yml mirroring usage.yml
+- [X] T055 Policy Rules admin page (author/validate, priority, preview/active, dry-run, version history) in src/admin-ui/src/pages/policy/PolicyRules.tsx after:T038
 
 ---
 
@@ -212,3 +212,12 @@ Setup (Phase 1) → Foundational (Phase 2) → US1 (Phase 3) → US2 (Phase 4) �
 | FR-021 | T002, T007, T023, T027 | T027 |
 
 **Rollup**: 21/21 functional requirements covered (FR-001..FR-021), each with exactly one `[COMPLETES FR-###]` marker. 20 success criteria exercised — SC-001 (US1), SC-002/003/004/014/015/016 (US2), SC-005/006/017/020 (US3), SC-007/018 (US4), SC-008/009 (US5), SC-010 (US6), SC-011/012/013/019 (US1 routes + catalog + Polish). 2 new tables (`policy_rule`/`policy_evaluation` — the latter with the new `considered_rules` column, canonical `input_hash`, and BRIN retention) + an expand-only `entitlement` rule-bound extension via one migration `0013_policy_rules.sql`; 6 admin endpoints (create/list/detail/edit/status incl. 409 invalid_state_transition/dry-run) + the catalog authored-max governance action + 1 internal issuance-path evaluation seam (no wire op) + 1 fail-open retention prune worker; 1 console page. P1 (US1–US3) forms a viable MVP. No deferred in-epic work; no coverage gaps. NOTE: per the task brief the FR-019 completion marker is placed on the author-time rule-set-cap task (T026); its evaluation-side per-decision cap is implemented by the fail-closed task T035.
+
+## Phase: Bug Fixes
+
+> Appended by QC (iteration 1). Severity order: CRITICAL → ERROR → WARNING.
+
+- [X] T056 [BUG:ERROR] {SEC} [security] `fast-uri` HIGH transitive vuln (GHSA-7p8r-x3mc-p8w7, host confusion via backslash authority) reachable through `fastify@5.8.5` → `@fastify/ajv-compiler`/`fast-json-stringify` → `ajv` → `fast-uri@3.1.4` — `npm audit --omit=dev --audit-level=high` exits 1
+  > Fix: run `npm audit fix` (fixAvailable:true, non-breaking → fast-uri ≥3.1.5), then re-run `npm audit --omit=dev --audit-level=high` and confirm 0 HIGH/CRITICAL and no test regression.
+- [X] T057 [BUG:ERROR] {FR-003} [conformance] `select_tier` string effect is validated/clamped/dry-run-reported/audited but SILENTLY DROPPED from the signed token at real issuance — src/server/modules/issuance/licenses.ts:163-164 only copies `number|boolean` while effect.ts/context.ts permit string tiers (audit-vs-token discrepancy, SC-015/FR-003 partial)
+  > Fix: constrain `select_tier` to NUMERIC tier values end-to-end (effect.ts value handling, validate.ts effect-bounds, context.ts dry-run `tiers` schema z.array(z.string())→numeric, catalog `rule_tiers` validation) so a selected tier flows through the token's numeric branch WITHOUT any token-format change (Principle I / SC-014). Add a test proving a select_tier decision is embedded in the signed token AND matches the audit row. Do NOT extend the token snapshot to carry a string (would change token format).

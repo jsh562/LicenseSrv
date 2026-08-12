@@ -1,0 +1,87 @@
+name: policy
+
+# CI for the low-code policy-rule engine (E017): the author-time validator + sandboxed allow-listed
+# JSONLogic-subset evaluator (no `eval`/`Function`/`vm`, injected clock, resource bounds), the bounded typed
+# effect applier (clamp to the authored per-entitlement maximum), the highest-priority-wins evaluation hooked
+# into the E008 issuance snapshot BEFORE signing, immutable rule versioning + preview/active/disabled lifecycle,
+# the unified mode-marked append-only `policy_evaluation` audit + retention prune, and dry-run/simulate. Gates:
+# typecheck + lint, the real-Postgres integration suite (Testcontainers) with the >=80% line+branch coverage
+# gate on src/server/modules/policy/**, a production-scope dependency audit, a semgrep scan over the policy
+# sources, AND a sandbox/no-eval lint proving no `eval`/`Function`/`vm` construct in the policy module (the
+# operator allow-list — not a language interpreter — IS the security boundary).
+
+on:
+  push:
+    paths:
+      - "src/server/modules/policy/**"
+      - "src/server/modules/catalog/**"
+      - "src/server/modules/issuance/**"
+      - "migrations/0013_policy_rules.sql"
+      - "src/server/app.ts"
+      - "src/server/main.ts"
+      - ".github/workflows/policy.yml"
+  pull_request:
+    paths:
+      - "src/server/modules/policy/**"
+      - "src/server/modules/catalog/**"
+      - "src/server/modules/issuance/**"
+      - "migrations/0013_policy_rules.sql"
+      - "src/server/app.ts"
+      - "src/server/main.ts"
+      - ".github/workflows/policy.yml"
+
+jobs:
+  server:
+    name: server (policy module + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker → Testcontainers spins up Postgres 16 for the policy integration suite
+      # (author-time validate distinct 400 codes; adjust-decision-at-issuance + clamp to the authored max;
+      # deterministic re-evaluation with an identical input_hash; sandbox-escape — no host state reachable;
+      # fail-closed on error/timeout/bound/per-decision-cap incl. an audit-write failure; immutable versioning +
+      # status incl. 409 invalid_state_transition; dry-run/preview no-enforce + supplied-context bounding; conflict
+      # precedence; RLS isolation; append-only mode-marked audit; retention prune; secret/PII; no-crypto token
+      # byte-identity) with the >=80% line+branch coverage gate on src/server/modules/policy/**.
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  sandbox:
+    name: sandbox lint (no eval/Function/vm in the policy module)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # The allow-list IS the sandbox boundary (AD-001/HINT-001, INV-6): the policy module MUST NOT reach any
+      # language-level code-execution primitive. Fail the build if an `eval(`, `new Function`/`Function(`, or a
+      # `vm`/`node:vm` import appears anywhere under src/server/modules/policy — the word-boundary + `(` guards
+      # keep the benign `evaluate`/`evaluation`/`evaluator` identifiers from matching.
+      - name: Grep for banned code-execution primitives
+        run: |
+          set -euo pipefail
+          pattern='(\beval[[:space:]]*\()|(\bnew[[:space:]]+Function\b)|(\bFunction[[:space:]]*\()|(require\([[:space:]]*['"'"'"]vm['"'"'"])|(from[[:space:]]+['"'"'"](node:)?vm['"'"'"])|(import[[:space:]]*\([[:space:]]*['"'"'"](node:)?vm['"'"'"])'
+          if grep -rnEI "$pattern" src/server/modules/policy --include='*.ts'; then
+            echo "::error::Sandbox violation — an eval/Function/vm code-execution primitive was found in src/server/modules/policy. The allow-listed evaluator is the security boundary; no language interpreter is permitted."
+            exit 1
+          fi
+          echo "Sandbox lint passed: no eval/Function/vm construct in src/server/modules/policy."
+
+  semgrep:
+    name: semgrep (policy)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/policy
