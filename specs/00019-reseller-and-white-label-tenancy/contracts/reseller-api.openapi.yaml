@@ -1,0 +1,1883 @@
+openapi: 3.1.0
+info:
+  title: Reseller and White-label Tenancy (Admin) API
+  version: 0.1.0
+  description: >
+    REST surface for epic E018 (Reseller and White-label Tenancy). A vendor/platform OPERATOR onboards
+    RESELLERS (partners) that manage their own SUB-TENANTS (customers) under delegated, downward-only
+    administration, and resellers/sub-tenants WHITE-LABEL the console per tenant (logo, colors, product
+    name, support links, email-sender identity, optional custom domain). Covers FR-001..017 and
+    SC-001..012. Concretizes {SAD:ADR-0015} (reseller hierarchy + delegated cross-tenant administration)
+    and plan AD-001..009.
+
+
+    ADMIN-PLANE, CONSOLE-ONLY SURFACE — ONE AUTH PLANE (there is NO runtime / API-key plane and NO
+    signing/crypto/token surface in this contract). Every operation is invoked by a HUMAN
+    operator/reseller-admin/sub-tenant-admin in the console and is authenticated by the opaque
+    `admin_session` cookie (E005) established by `POST /admin/auth/login`, NEVER by an `X-API-Key`. RBAC
+    is `owner > admin > viewer`: READ operations (list / get) require `viewer` or higher; every MUTATING
+    operation requires `admin` or higher and additionally carries a double-submit `X-CSRF-Token` header
+    that MUST equal the non-HttpOnly CSRF cookie issued at login — a missing/mismatched token is refused
+    fail-closed `403 forbidden` and recorded as a security event (SC-005/007). GET operations do not
+    require it. (Mirrors the E005/E006/E015/E016/E017 console surfaces.)
+
+
+    THREE ACTOR PLANES, ONE ISOLATION MODEL (FR-002/004/005, AD-001/002). Each operation is marked with
+    an `x-rbac.plane`:
+      - `operator` — the vendor/platform operator (the actor above all resellers): onboard / list / get /
+        re-quota / suspend / reinstate / offboard a reseller, and move a sub-tenant between resellers or
+        to/from direct-platform ownership. Operator-only actions are NEVER reachable by a reseller-admin
+        (a reseller-admin attempting one is denied and recorded as a security event, US1-AS4).
+      - `reseller` — a reseller-admin (an `admin`/`owner` of a RESELLER tenant) acting over its WHOLE
+        subtree: list/get/provision its own sub-tenants (metadata only), and set its own branding +
+        domain/email verification. Authority over a sub-tenant is a subtree-membership GATE that then
+        executes under the sub-tenant's OWN tenant scope (scoped descent) — never a broadening of the
+        per-tenant forced-RLS predicate.
+      - `sub_tenant` — a sub-tenant (end-tenant) admin acting on its OWN tenant only: set its own branding
+        overrides. It cannot see the reseller hierarchy or any tenant other than itself (FR-014, SC-012).
+
+
+    DOWNWARD-ONLY VISIBILITY, NO DISCLOSURE (FR-004/005, SC-002/007). A reseller session is scoped to its
+    subtree; a sub-tenant session to itself. ANY reference to a tenant/reseller/binding OUTSIDE the
+    caller's scope — a sibling, a parent, the platform, or another reseller's customer — resolves to
+    `404 not_found` (NEVER `403`, which would leak existence), indistinguishable from a non-existent id,
+    and the attempt is recorded as a security event. Isolation is enforced at the DATA-ACCESS layer (an
+    unset tenant GUC yields zero rows), not only at the API; an out-of-subtree read returns zero rows.
+    There is NO tenant/reseller path or query parameter a caller can widen to escalate.
+
+
+    METADATA-ONLY REseller VIEW OF A SUB-TENANT (FR-017, SC-001; clarify 2026-08-12). A reseller-admin
+    sees ONLY a sub-tenant's administrative/provisioning/branding metadata — its display name, status,
+    quota position, and branding. This contract EXPOSES NO license, usage, or activation operational data
+    of a sub-tenant to a reseller (privacy-minimizing default for the MVP); any future broader access
+    would be an explicit, audited, consented grant, out of scope here.
+
+
+    WHITE-LABEL BRANDING IS PRESENTATION-ONLY (FR-006/007/008, SC-003/004/006; Principle I). Branding is
+    a per-tenant presentation-layer setting resolved PER FIELD by precedence
+    `sub-tenant override → reseller default → platform default` (each field falls back independently),
+    EXCEPT a field the reseller has marked `locked`, which a sub-tenant CANNOT override (the reseller
+    value is authoritative). Branding NEVER alters a license's contents or the signed token and NEVER
+    touches the signer/verifier — this contract introduces NO cryptography, NO signing surface, and NO
+    token-format change; already-issued tokens verify byte-identical offline. TRUST SIGNALS ARE NEVER
+    WHITE-LABELED: license revocation/tamper/security notices, the license-signing identity, audit
+    records, and legal/compliance text are authoritative and unspoofable regardless of branding — they are
+    NEVER sourced from a `branding_profile` and are deliberately absent from every schema here (FR-008,
+    SC-006). A locked field is presented to a sub-tenant as simply not editable ("set by your provider")
+    WITHOUT revealing that a managing reseller exists (FR-006/014, SC-012).
+
+
+    RESELLER LIFECYCLE GOVERNANCE (FR-003/010/011/012/015/016). Onboarding (operator) establishes the
+    reseller tenant — created NEW or PROMOTED from an existing tenant via ONE create-or-select flow — its
+    first reseller-admin, and a hard sub-tenant QUOTA (platform-configured numeric default; ONLY the
+    operator may change a reseller's quota — a reseller can never raise its own). Provisioning a sub-tenant
+    beyond the hard cap is refused `409 quota_exceeded`. SUSPEND is reversible and distinct from OFFBOARD:
+    a suspended reseller retains data, blocks new reseller activity, and cascades a READ-ONLY state to its
+    sub-tenants (sign-in and read allowed; NO new provisioning/activation/branding change — a mutation on a
+    sub-tenant under a suspended reseller is refused `409 reseller_suspended`); already-issued licenses keep
+    verifying offline; reinstating restores access. OFFBOARD is BLOCKED (`409 sub_tenants_unresolved`)
+    until every sub-tenant is transferred to another reseller or reassigned to direct-platform ownership
+    (no orphans), applying a notice/grace window; each move is audited on source + destination. Only the
+    operator may MOVE a sub-tenant; a move preserves the sub-tenant's own overrides while the
+    reseller-default layer and per-field LOCKS re-resolve to the destination reseller. LAST-OWNER
+    protection is preserved for both reseller and sub-tenant tenants (`409 last_owner`).
+
+
+    DOMAIN / EMAIL VERIFICATION BEFORE ACTIVATION (FR-013, SC-011). A custom domain is verified via a DNS
+    TXT/CNAME challenge; an email sender via DNS-based SPF + DKIM/DMARC alignment (proving authorized
+    sending, not mere address control). A `domain_binding` moves `pending → verified` and may then be
+    ACTIVATED for white-label; activation before verification is refused `409 not_verified`. A given host
+    (domain/sender) binds to AT MOST ONE tenant — claiming a host already bound to another tenant is
+    refused `409 binding_conflict`. The DNS challenge token is a PUBLIC proof, never a secret.
+
+
+    DUAL-IDENTITY, APPEND-ONLY AUDIT (FR-009, SC-005). Every reseller action on a sub-tenant, every
+    lifecycle transition, and every denied attempt (RBAC / CSRF / out-of-scope) is written to the existing
+    append-only, tamper-evident audit trail with BOTH the acting admin identity and the target sub-tenant
+    (dual-identity); no role may edit or delete an audit entry.
+
+
+    SECRECY & PII INVARIANTS (FR-017; project-instructions non-negotiables). NO field of any request or
+    response — nor any log or audit entry — ever carries a SECRET, API key, SIGNING KEY, or PII beyond a
+    PSEUDONYMOUS reference. A user is referenced only by a pseudonymous `userReference`, never by
+    name/email/card data. NO card/PAN/CVV/expiry data appears anywhere.
+
+
+    ERROR MODEL. Project-standard structured JSON `{ code, message, details? }` with a stable, enumerated
+    snake_case `code` (matches E015/E016/E017). Every refusal reason is a DISTINCT, testable code. Field
+    naming is camelCase throughout the bodies (the data-model's snake_case columns — e.g.
+    `parent_reseller_id`, `branding_profile`, `domain_binding` — map to camelCase wire fields).
+
+
+    VERSIONING. The admin/console plane is deliberately UNVERSIONED (`/admin/...`), the established
+    platform convention (the same `/admin` split as E015/E016/E017). There is no `/v1` runtime plane
+    because there is no runtime wire operation.
+
+
+    MEDIA TYPE. Every request and response body is `application/json` (UTF-8); a non-JSON body is rejected
+    `400 validation_error`.
+
+
+    TIMESTAMPS. Every timestamp (`createdAt`/`updatedAt`/`verifiedAt`/`activatedAt`/`graceEndsAt`) is
+    RFC 3339 / ISO 8601 in UTC with a trailing `Z` offset (e.g. `2026-08-14T09:00:00Z`).
+servers:
+  - url: https://{host}/{basePath}
+    variables:
+      host: { default: api.example.com }
+      basePath: { default: "" }
+
+tags:
+  - name: operator-resellers
+    description: >
+      OPERATOR plane — the vendor/platform operator onboards, lists, gets, re-quotas, suspends,
+      reinstates, and offboards resellers. `admin_session` cookie + operator authority + double-submit
+      `X-CSRF-Token` on every mutation. Operator-only; a reseller-admin attempting these is denied and
+      recorded as a security event (FR-001/003/010/011/012, US1-AS4/US4).
+  - name: operator-sub-tenants
+    description: >
+      OPERATOR plane — move a sub-tenant between resellers or to/from direct-platform ownership; audited
+      on source + destination; preserves the sub-tenant's overrides while re-resolving reseller-default
+      branding + per-field locks to the destination (FR-015, US4).
+  - name: reseller-sub-tenants
+    description: >
+      RESELLER plane — a reseller-admin lists / gets / provisions its OWN sub-tenants (metadata only, NO
+      license/usage/activation data). Downward-only; out-of-subtree ids resolve `404`. Hard sub-tenant
+      quota (FR-003/004/017, US1).
+  - name: reseller-branding
+    description: >
+      RESELLER plane — the reseller's OWN branding profile, including per-field `locked` flags
+      (non-overridable by sub-tenants). Presentation-only; trust signals excluded (FR-006/007/008, US2).
+  - name: reseller-domains
+    description: >
+      RESELLER plane — initiate + check DNS ownership verification for a custom domain (TXT/CNAME) or
+      email sender (SPF/DKIM/DMARC), and activate it for white-label AFTER verification. One binding per
+      host (FR-013, US5).
+  - name: sub-tenant-branding
+    description: >
+      SUB-TENANT plane — a sub-tenant admin sets its OWN branding overrides. A reseller-`locked` field
+      override is refused `409 field_locked`; a locked field is shown as "set by your provider" without
+      revealing the hierarchy (FR-006/007/014, US2).
+
+paths:
+  # =============================================================================================
+  # OPERATOR plane — reseller lifecycle
+  # =============================================================================================
+  /admin/operator/resellers:
+    post:
+      tags: [operator-resellers]
+      operationId: onboardReseller
+      summary: Onboard a reseller (create-new OR promote-existing) with a first admin and a quota
+      description: >
+        Onboard a reseller via ONE create-or-select flow (FR-001/010): either CREATE a new reseller tenant
+        or PROMOTE an existing tenant to reseller. Establishes the reseller tenant, designates its first
+        reseller-admin (a pseudonymous existing `userReference`), and sets a hard sub-tenant QUOTA
+        (defaulting to the platform-configured value when omitted, FR-003). OPERATOR plane; carries the
+        double-submit `X-CSRF-Token`. Audited.
+
+
+        Refusals: `400 validation_error` — malformed envelope / bad `mode` / missing required field for the
+        chosen mode; `404 not_found` — a `promote_existing` `tenantId` that does not resolve on the
+        platform; `409 onboarding_conflict` — the tenant to promote is ALREADY a reseller, or is itself a
+        sub-tenant of another reseller (one level only — a tenant cannot be both).
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: operator, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OnboardResellerRequest' }
+            examples:
+              createNew:
+                summary: Create a brand-new reseller tenant
+                value:
+                  mode: create_new
+                  displayName: "Acme Partners"
+                  firstAdminUserReference: "u_9b2e1d40"
+                  subTenantQuota: 25
+              promoteExisting:
+                summary: Promote an existing tenant to reseller
+                value:
+                  mode: promote_existing
+                  tenantId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+                  firstAdminUserReference: "u_9b2e1d40"
+      responses:
+        '201':
+          description: The reseller was onboarded. Body is the created `Reseller`.
+          headers:
+            Location:
+              required: true
+              description: Canonical path of the created reseller (`/admin/operator/resellers/{resellerId}`).
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reseller' }
+              examples:
+                created:
+                  value:
+                    resellerId: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                    displayName: "Acme Partners"
+                    status: active
+                    subTenantQuota: 25
+                    subTenantCount: 0
+                    createdAt: "2026-08-14T09:00:00Z"
+                    updatedAt: "2026-08-14T09:00:00Z"
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/TenantNotFound' }
+        '409': { $ref: '#/components/responses/OnboardingConflict' }
+
+    get:
+      tags: [operator-resellers]
+      operationId: listResellers
+      summary: List resellers (operator; deterministic, bounded)
+      description: >
+        List all resellers on the platform (operator plane), optionally narrowed by lifecycle status.
+        Ordered DETERMINISTICALLY by `displayName` then `resellerId`; bounded to a hard cap of 1000 with a
+        `truncated` signal; NOT paginated. READ: operator `viewer` or higher. No secret/PII.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: operator, minRole: viewer }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/ResellerStatusFilter'
+      responses:
+        '200':
+          description: The platform's resellers (summaries), deterministically ordered and bounded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResellerList' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/operator/resellers/{resellerId}:
+    parameters:
+      - $ref: '#/components/parameters/ResellerId'
+    get:
+      tags: [operator-resellers]
+      operationId: getReseller
+      summary: Get a reseller (operator)
+      description: >
+        Return one reseller by id, including its status and quota position. OPERATOR plane; READ `viewer`
+        or higher. An unknown `resellerId` resolves `404 not_found`.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: operator, minRole: viewer }
+      x-priority: P2
+      responses:
+        '200':
+          description: The reseller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reseller' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ResellerNotFound' }
+
+  /admin/operator/resellers/{resellerId}/quota:
+    parameters:
+      - $ref: '#/components/parameters/ResellerId'
+    patch:
+      tags: [operator-resellers]
+      operationId: updateResellerQuota
+      summary: Update a reseller's hard sub-tenant quota (operator-only)
+      description: >
+        Set a reseller's hard sub-tenant quota (FR-003). ONLY the vendor/platform operator may change a
+        reseller's quota — a reseller can never raise its own. Lowering a quota below the current
+        `subTenantCount` does NOT delete existing sub-tenants but blocks further provisioning until the
+        count falls below the new cap. OPERATOR plane; carries `X-CSRF-Token`. Audited.
+
+
+        Refusals: `400 validation_error` — a missing/negative/non-integer `subTenantQuota`; `404 not_found`
+        — an unknown reseller.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: operator, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateQuotaRequest' }
+            examples:
+              raise:
+                value: { subTenantQuota: 50 }
+      responses:
+        '200':
+          description: The updated reseller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reseller' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ResellerNotFound' }
+
+  /admin/operator/resellers/{resellerId}/suspend:
+    parameters:
+      - $ref: '#/components/parameters/ResellerId'
+    post:
+      tags: [operator-resellers]
+      operationId: suspendReseller
+      summary: Suspend a reseller (reversible; read-only cascade)
+      description: >
+        Suspend a reseller (FR-011, SC-009). Blocks new reseller activity while RETAINING data, and
+        cascades a READ-ONLY state to its sub-tenants (sign-in and read allowed; no new
+        provisioning/activation/branding change — a sub-tenant mutation is then refused
+        `409 reseller_suspended`). The cascade is DERIVED at request time from the reseller's status, not
+        fanned out; already-issued licenses keep verifying offline. Reversible via `reinstate`. OPERATOR
+        plane; carries `X-CSRF-Token`. Audited.
+
+
+        Refusals: `409 invalid_state_transition` — the reseller is not `active` (already suspended, or
+        offboarding); `404 not_found` — an unknown reseller.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: operator, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: The reseller, now `suspended`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reseller' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ResellerNotFound' }
+        '409': { $ref: '#/components/responses/InvalidStateTransition' }
+
+  /admin/operator/resellers/{resellerId}/reinstate:
+    parameters:
+      - $ref: '#/components/parameters/ResellerId'
+    post:
+      tags: [operator-resellers]
+      operationId: reinstateReseller
+      summary: Reinstate a suspended reseller (restore normal access)
+      description: >
+        Reverse a suspension (FR-011, SC-009) — restore normal access to the reseller and lift the
+        read-only cascade from its sub-tenants. Applies SOLELY to a `suspended` reseller: an `offboarding`
+        reseller cannot be reinstated (offboarding is terminal, not reversible), and an already-`active`
+        reseller is a no-op refusal. OPERATOR plane; carries `X-CSRF-Token`. Audited.
+
+
+        Refusals: `409 invalid_state_transition` — the reseller is not `suspended` (it is `active` or
+        `offboarding`); `404 not_found` — an unknown reseller.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: operator, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: The reseller, now `active`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reseller' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ResellerNotFound' }
+        '409': { $ref: '#/components/responses/InvalidStateTransition' }
+
+  /admin/operator/resellers/{resellerId}/offboard:
+    parameters:
+      - $ref: '#/components/parameters/ResellerId'
+    post:
+      tags: [operator-resellers]
+      operationId: offboardReseller
+      summary: Offboard a reseller — blocked until every sub-tenant is resolved
+      description: >
+        Begin offboarding a reseller (FR-012, SC-010). Offboarding is BLOCKED with
+        `409 sub_tenants_unresolved` until EVERY sub-tenant has been transferred to another reseller or
+        reassigned to direct-platform ownership (via `POST /admin/operator/sub-tenants/{subTenantId}/move`)
+        — no sub-tenant is ever orphaned. This operation transitions the reseller to `offboarding` and
+        applies a notice/grace window (`graceEndsAt`); the resolution is audited. When called with all
+        sub-tenants already resolved (`subTenantCount == 0`), it completes the offboard. OPERATOR plane;
+        carries `X-CSRF-Token`. Audited.
+
+
+        IDEMPOTENT PROGRESS: this endpoint may be invoked from either `active` or `offboarding`. Re-invoking
+        it on an ALREADY-`offboarding` reseller is NOT `invalid_state_transition` — it re-reports current
+        progress (refreshing `unresolvedSubTenantCount` and the `graceEndsAt` window) and completes the
+        offboard once the count reaches `0`. Offboarding is a ONE-WAY, TERMINAL lifecycle path: it CANNOT be
+        reversed back to `active` (only `active`⇄`suspended` is reversible; `reinstate` applies solely to a
+        `suspended` reseller — see data-model reseller state transitions).
+
+
+        Refusals: `409 sub_tenants_unresolved` — one or more sub-tenants remain under the reseller (the
+        `details` carry the unresolved count); `404 not_found` — an unknown reseller.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: operator, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: The reseller entered/updated `offboarding` (grace window applied), or completed offboarding.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OffboardResult' }
+              examples:
+                blockedInfo:
+                  summary: Offboarding initiated with a grace window; sub-tenants still to resolve
+                  value:
+                    resellerId: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+                    status: offboarding
+                    unresolvedSubTenantCount: 3
+                    graceEndsAt: "2026-09-13T09:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ResellerNotFound' }
+        '409': { $ref: '#/components/responses/SubTenantsUnresolved' }
+
+  # =============================================================================================
+  # OPERATOR plane — move a sub-tenant
+  # =============================================================================================
+  /admin/operator/sub-tenants/{subTenantId}/move:
+    parameters:
+      - $ref: '#/components/parameters/SubTenantId'
+    post:
+      tags: [operator-sub-tenants]
+      operationId: moveSubTenant
+      summary: Move a sub-tenant between resellers or to/from direct-platform ownership (operator-only)
+      description: >
+        Re-point a sub-tenant's `parent_reseller_id` to another reseller, or reassign it to/from
+        DIRECT-PLATFORM ownership (FR-015). ONLY the vendor/platform operator may move a sub-tenant. The
+        move PRESERVES the sub-tenant's OWN branding overrides while the reseller-DEFAULT branding layer and
+        per-field LOCKS re-resolve to the destination reseller (a field the source reseller locked may
+        become overridable at the destination, or vice-versa). The move AND the branding-context change are
+        audited on BOTH the source and the destination. OPERATOR plane; carries `X-CSRF-Token`.
+
+
+        Refusals: `400 validation_error` — malformed envelope / bad `destination`; `404 not_found` — an
+        unknown sub-tenant, or a `to_reseller` `destinationResellerId` that does not resolve;
+        `409 quota_exceeded` — the destination reseller is at its hard sub-tenant quota;
+        `409 reseller_suspended` — the source or destination reseller is suspended (moves are blocked while
+        suspended); `409 invalid_state_transition` — the destination reseller is offboarding.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: operator, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MoveSubTenantRequest' }
+            examples:
+              toReseller:
+                summary: Move under another reseller
+                value:
+                  destination: { type: to_reseller, destinationResellerId: "b2d3f4a5-2222-4c4d-ae5f-60718293a4b5" }
+              toDirectPlatform:
+                summary: Reassign to direct-platform ownership (no reseller)
+                value:
+                  destination: { type: to_direct_platform }
+      responses:
+        '200':
+          description: The moved sub-tenant, re-parented; its overrides preserved and locks re-resolved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubTenant' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/SubTenantOrResellerNotFound' }
+        '409': { $ref: '#/components/responses/MoveConflict' }
+
+  # =============================================================================================
+  # RESELLER plane — sub-tenants (metadata only)
+  # =============================================================================================
+  /admin/reseller/sub-tenants:
+    get:
+      tags: [reseller-sub-tenants]
+      operationId: listSubTenants
+      summary: List my sub-tenants (metadata only; downward-only)
+      description: >
+        List the calling reseller's OWN sub-tenants — its whole subtree (FR-002/004/017, SC-001, US1). The
+        result is METADATA ONLY (display name, status, branding-context) — it carries NO license, usage, or
+        activation operational data of any sub-tenant (FR-017). A sibling reseller's customers and the
+        platform are NEVER visible: a reseller session resolves zero out-of-subtree rows at the data layer
+        (SC-002/007). Ordered by `displayName` then `subTenantId`; bounded to 1000 with a `truncated`
+        signal. The response also carries the reseller's OWN quota position (`subTenantQuota` /
+        `subTenantCount`) so it can see its standing against the hard cap (FR-003, SC-008). READ: reseller
+        `viewer` or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: viewer }
+      x-priority: P1
+      responses:
+        '200':
+          description: The reseller's own sub-tenants (metadata-only summaries).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubTenantList' }
+              examples:
+                mine:
+                  value:
+                    truncated: false
+                    subTenantQuota: 25
+                    subTenantCount: 2
+                    subTenants:
+                      - subTenantId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                        displayName: "Northwind Ltd"
+                        status: active
+                        readOnly: false
+                        createdAt: "2026-08-13T09:00:00Z"
+                      - subTenantId: "e5f60718-3333-4c4d-ae5f-60718293a4b5"
+                        displayName: "Globex Inc"
+                        status: active
+                        readOnly: false
+                        createdAt: "2026-08-13T10:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+    post:
+      tags: [reseller-sub-tenants]
+      operationId: provisionSubTenant
+      summary: Provision a new sub-tenant under my reseller (hard quota)
+      description: >
+        Provision a new sub-tenant (customer) under the calling reseller (FR-003, US1-AS3). Subject to the
+        reseller's HARD sub-tenant quota — at the cap the request is refused `409 quota_exceeded` with a
+        clear reason (only the operator can raise the quota). Designates the sub-tenant's first admin (a
+        pseudonymous `userReference`). The action is recorded with dual-identity audit (acting
+        reseller-admin + the new sub-tenant, FR-009). RESELLER plane; `admin` or higher; carries
+        `X-CSRF-Token`.
+
+
+        Refusals: `400 validation_error` — malformed envelope / missing `displayName`;
+        `409 quota_exceeded` — the reseller is at its hard sub-tenant cap; `409 reseller_suspended` — the
+        reseller is suspended (read-only cascade blocks new provisioning, FR-011).
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: admin }
+      x-priority: P1
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProvisionSubTenantRequest' }
+            examples:
+              provision:
+                value:
+                  displayName: "Initech LLC"
+                  firstAdminUserReference: "u_3c4d5e6f"
+      responses:
+        '201':
+          description: The sub-tenant was created under the reseller and is immediately administrable by it.
+          headers:
+            Location:
+              required: true
+              description: Canonical path of the created sub-tenant (`/admin/reseller/sub-tenants/{subTenantId}`).
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubTenant' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/ProvisionConflict' }
+
+  /admin/reseller/sub-tenants/{subTenantId}:
+    parameters:
+      - $ref: '#/components/parameters/SubTenantId'
+    get:
+      tags: [reseller-sub-tenants]
+      operationId: getSubTenant
+      summary: Get one of my sub-tenants (metadata only; out-of-subtree → 404)
+      description: >
+        Return one sub-tenant's administrative/provisioning/branding METADATA (FR-004/017, SC-001/002).
+        NO license/usage/activation data is exposed. A `subTenantId` OUTSIDE the caller's subtree — a
+        sibling's customer, a parent, the platform — resolves `404 not_found` (NEVER `403`), with no
+        disclosure that the tenant exists, and the attempt is recorded as a security event. READ: reseller
+        `viewer` or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: viewer }
+      x-priority: P1
+      responses:
+        '200':
+          description: The sub-tenant metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubTenant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/SubTenantNotFound' }
+
+  # =============================================================================================
+  # RESELLER plane — own branding (with locks)
+  # =============================================================================================
+  /admin/reseller/branding:
+    get:
+      tags: [reseller-branding]
+      operationId: getResellerBranding
+      summary: Get my reseller branding profile (values + per-field locked flags)
+      description: >
+        Return the calling reseller's OWN branding profile — the branding field values it has set (which
+        serve as the DEFAULT for its sub-tenants) plus the set of fields it has marked `locked`
+        (non-overridable by sub-tenants, FR-006/007). Also returns the RESOLVED branding for the reseller
+        itself (reseller value → platform default per field). Trust signals are never part of a branding
+        profile (FR-008). READ: reseller `viewer` or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: viewer }
+      x-priority: P1
+      responses:
+        '200':
+          description: The reseller's branding profile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResellerBrandingProfile' }
+              examples:
+                profile:
+                  value:
+                    fields:
+                      logoUrl: "https://cdn.acme.example/logo.svg"
+                      primaryColor: "#0a5"
+                      productName: "Acme License Manager"
+                      supportUrl: "https://support.acme.example"
+                    locked: [primaryColor, productName]
+                    resolved:
+                      - { field: logoUrl, value: "https://cdn.acme.example/logo.svg", source: reseller, locked: false }
+                      - { field: primaryColor, value: "#0a5", source: reseller, locked: true }
+                      - { field: productName, value: "Acme License Manager", source: reseller, locked: true }
+                    updatedAt: "2026-08-14T09:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+    put:
+      tags: [reseller-branding]
+      operationId: setResellerBranding
+      summary: Set my reseller branding profile (values + per-field locked flags)
+      description: >
+        Set the calling reseller's OWN branding field values and its per-field `locked` flags (FR-006/007,
+        US2). A locked field becomes the authoritative value for all its sub-tenants — a sub-tenant cannot
+        override it. Branding is PRESENTATION-ONLY: this never alters any license/token/crypto (FR-008,
+        Principle I). Setting a custom-domain / email-sender field to an UNVERIFIED host is refused
+        `409 not_verified` (verify + activate via the domains surface first). RESELLER plane; `admin` or
+        higher; carries `X-CSRF-Token`. Audited.
+
+
+        Refusals: `400 validation_error` — a malformed field value (bad color/URL/email) or an unknown
+        field name in `locked`; `409 not_verified` — a `customDomain`/`emailSenderAddress` value whose host
+        is not a verified+active binding; `409 reseller_suspended` — the reseller is suspended.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: admin }
+      x-priority: P1
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetResellerBrandingRequest' }
+            examples:
+              setWithLocks:
+                value:
+                  fields:
+                    logoUrl: "https://cdn.acme.example/logo.svg"
+                    primaryColor: "#0a5"
+                    productName: "Acme License Manager"
+                    supportUrl: "https://support.acme.example"
+                  locked: [primaryColor, productName]
+      responses:
+        '200':
+          description: The updated reseller branding profile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResellerBrandingProfile' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/BrandingWriteConflict' }
+
+  # =============================================================================================
+  # RESELLER plane — domain / email verification
+  # =============================================================================================
+  /admin/reseller/domains:
+    get:
+      tags: [reseller-domains]
+      operationId: listDomainBindings
+      summary: List my domain / email-sender bindings and their verification status
+      description: >
+        List the calling reseller's custom-domain and email-sender bindings with their current status
+        (`pending` / `verified` / `active`) and DNS challenge records (FR-013). Ordered deterministically by
+        `host` then `bindingId`; bounded to 1000 with a `truncated` signal; not paginated. READ: reseller
+        `viewer` or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: viewer }
+      x-priority: P2
+      responses:
+        '200':
+          description: The reseller's domain/sender bindings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainBindingList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+    post:
+      tags: [reseller-domains]
+      operationId: initiateDomainVerification
+      summary: Initiate DNS ownership verification for a custom domain or email sender
+      description: >
+        Begin ownership verification for a custom DOMAIN (via a DNS TXT/CNAME challenge) or an EMAIL SENDER
+        (via DNS-based SPF + DKIM/DMARC alignment records) (FR-013, US5). Creates a `pending`
+        `domain_binding` and returns the DNS records the reseller must publish. The challenge token is a
+        PUBLIC proof, never a secret. A given host binds to AT MOST ONE tenant — claiming a host already
+        bound to another tenant is refused `409 binding_conflict`. RESELLER plane; `admin` or higher;
+        carries `X-CSRF-Token`.
+
+
+        Refusals: `400 validation_error` — a malformed `host` or bad `kind`; `409 binding_conflict` — the
+        host is already bound to another tenant; `409 reseller_suspended` — the reseller is suspended.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InitiateVerificationRequest' }
+            examples:
+              domain:
+                value: { kind: domain, host: "licensing.acme.example" }
+              emailSender:
+                value: { kind: email_sender, host: "acme.example" }
+      responses:
+        '201':
+          description: A pending binding was created; publish the returned DNS records, then verify.
+          headers:
+            Location:
+              required: true
+              description: Canonical path of the created binding (`/admin/reseller/domains/{bindingId}`).
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainBinding' }
+              examples:
+                pendingDomain:
+                  value:
+                    bindingId: "c3e4f5a6-3333-4d5e-bf60-718293a4b5c6"
+                    kind: domain
+                    host: "licensing.acme.example"
+                    status: pending
+                    challenge:
+                      - { purpose: domain_ownership, recordType: TXT, name: "_licensing-challenge.licensing.acme.example", value: "lic-verify=8f3a2b1c" }
+                    createdAt: "2026-08-14T09:00:00Z"
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/BindingConflict' }
+
+  /admin/reseller/domains/{bindingId}:
+    parameters:
+      - $ref: '#/components/parameters/BindingId'
+    get:
+      tags: [reseller-domains]
+      operationId: getDomainBinding
+      summary: Get a domain / email-sender binding and its verification status
+      description: >
+        Return one binding by id — its status, DNS challenge records, and verification/activation
+        timestamps (FR-013). A binding outside the caller's tenant resolves `404 not_found`. READ: reseller
+        `viewer` or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: viewer }
+      x-priority: P2
+      responses:
+        '200':
+          description: The binding.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BindingNotFound' }
+
+  /admin/reseller/domains/{bindingId}/verify:
+    parameters:
+      - $ref: '#/components/parameters/BindingId'
+    post:
+      tags: [reseller-domains]
+      operationId: checkDomainVerification
+      summary: Check DNS and transition a binding pending → verified
+      description: >
+        Trigger a DNS check for a `pending` binding (FR-013, US5). For a DOMAIN the server checks the
+        TXT/CNAME challenge; for an EMAIL SENDER it checks SPF + DKIM/DMARC alignment (proving authorized
+        sending, not mere address control). On success the binding transitions `pending → verified`; on
+        failure it stays `pending` and the response reports the unmet records. IDEMPOTENT: re-invoking
+        `verify` on an ALREADY-`verified` (or already-`active`) binding is a no-op that returns `200` with
+        the current binding state — no transition and no error. RESELLER plane; `admin` or higher; carries
+        `X-CSRF-Token`.
+
+
+        Refusals: `409 not_verified` — the DNS challenge is not yet satisfied (the binding remains
+        `pending`; `details` list the unmet records); `409 binding_conflict` — the host was verified/activated
+        by ANOTHER tenant first, so promoting THIS binding to `verified` would violate the global
+        one-binding-per-host guarantee (the losing verify hits the global partial-unique index, data-model
+        INV-5); `409 reseller_suspended` — the reseller is suspended; `404 not_found` — an unknown binding.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: The binding, now `verified`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BindingNotFound' }
+        '409': { $ref: '#/components/responses/VerifyConflict' }
+
+  /admin/reseller/domains/{bindingId}/activate:
+    parameters:
+      - $ref: '#/components/parameters/BindingId'
+    post:
+      tags: [reseller-domains]
+      operationId: activateDomainBinding
+      summary: Activate a verified binding for white-label (refused until verified)
+      description: >
+        Activate a `verified` binding so it may be used for white-label branding (FR-013, US5-AS1).
+        Activation is REFUSED `409 not_verified` while the binding is still `pending` — ownership MUST be
+        proven first. On success the binding transitions `verified → active`. IDEMPOTENT: re-invoking
+        `activate` on an ALREADY-`active` binding is a no-op that returns `200` with the current state — no
+        transition and no error. RESELLER plane; `admin` or higher; carries `X-CSRF-Token`. Audited.
+
+
+        Refusals: `409 not_verified` — the binding is not yet `verified`; `409 binding_conflict` — the host
+        was bound+activated by another tenant since verification; `409 reseller_suspended` — the reseller
+        is suspended; `404 not_found` — an unknown binding.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: reseller, minRole: admin }
+      x-priority: P2
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: The binding, now `active` and usable for white-label.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/BindingNotFound' }
+        '409': { $ref: '#/components/responses/ActivateConflict' }
+
+  # =============================================================================================
+  # SUB-TENANT plane — own branding overrides
+  # =============================================================================================
+  /admin/branding:
+    get:
+      tags: [sub-tenant-branding]
+      operationId: getOwnBranding
+      summary: Get my own branding (overrides + resolved applied branding)
+      description: >
+        Return the calling tenant's OWN branding overrides and the RESOLVED applied branding — each field
+        resolved by precedence `sub-tenant override → reseller default → platform default`, except a
+        reseller-`locked` field which shows the reseller value and is NOT editable (FR-006/007, SC-004).
+        Locked fields are surfaced as "set by your provider" WITHOUT revealing that a managing reseller
+        exists (FR-006/014, SC-012) — a sub-tenant cannot see the hierarchy or any other tenant. Trust
+        signals are never part of branding (FR-008). READ: `viewer` or higher.
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: sub_tenant, minRole: viewer }
+      x-priority: P1
+      responses:
+        '200':
+          description: The tenant's overrides plus resolved applied branding and locked-field markers.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubTenantBranding' }
+              examples:
+                resolved:
+                  value:
+                    overrides:
+                      logoUrl: "https://cdn.northwind.example/logo.svg"
+                    lockedFields: [primaryColor, productName]
+                    resolved:
+                      - { field: logoUrl, value: "https://cdn.northwind.example/logo.svg", source: sub_tenant, locked: false }
+                      - { field: primaryColor, value: "#0a5", source: reseller, locked: true }
+                      - { field: productName, value: "Acme License Manager", source: reseller, locked: true }
+                      - { field: supportUrl, value: "https://support.acme.example", source: reseller, locked: false }
+                    updatedAt: "2026-08-14T09:00:00Z"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+    put:
+      tags: [sub-tenant-branding]
+      operationId: setOwnBranding
+      summary: Set my own branding overrides (a reseller-locked field is refused)
+      description: >
+        Set the calling tenant's OWN branding overrides (FR-006/007, US2-AS2). REPLACE semantics — the
+        `overrides` body replaces the override set: each unlocked field PRESENT overrides the
+        reseller/platform default; a field OMITTED removes its override and falls back to the reseller
+        default then platform default. Branding fields are non-nullable, so removal is by OMISSION (a `null`
+        is rejected `400 validation_error`). Overriding a field the reseller has LOCKED is
+        refused `409 field_locked` — the reseller value is authoritative (STF-001/002). Branding is
+        PRESENTATION-ONLY (no license/token/crypto change, FR-008). Setting a `customDomain` /
+        `emailSenderAddress` to an unverified host is refused `409 not_verified`. `admin` or higher; carries
+        `X-CSRF-Token`. Audited.
+
+
+        Refusals: `400 validation_error` — a malformed field value; `409 field_locked` — an override of a
+        reseller-locked field; `409 not_verified` — an unverified custom domain/email host;
+        `409 reseller_suspended` — the tenant's reseller is suspended (read-only cascade blocks branding
+        changes, FR-011).
+      security:
+        - sessionCookie: []
+      x-rbac: { plane: sub_tenant, minRole: admin }
+      x-priority: P1
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetSubTenantBrandingRequest' }
+            examples:
+              setOverride:
+                value:
+                  overrides:
+                    logoUrl: "https://cdn.northwind.example/logo.svg"
+      responses:
+        '200':
+          description: The updated overrides plus resolved applied branding.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubTenantBranding' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/SubTenantBrandingConflict' }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: admin_session
+      description: >
+        ADMIN plane credential (this contract has NO machine `X-API-Key` plane). The opaque `admin_session`
+        cookie established by the E005 `POST /admin/auth/login`, set `HttpOnly` + `Secure` +
+        `SameSite=Strict`, scoped to `Path=/admin`, with a bounded `Max-Age`. Server-side revocable; never
+        a JWT and never returned in any body. RBAC (`owner > admin > viewer`) is enforced per operation via
+        `x-rbac` (with the acting `plane`: `operator` / `reseller` / `sub_tenant`); every state-changing
+        call additionally requires a matching `X-CSRF-Token`. The plane and subtree membership are derived
+        SERVER-SIDE from the session — never from a client-supplied tenant/reseller id (FR-004/005).
+
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: >
+        Double-submit CSRF token, REQUIRED on every mutating `/admin` request (POST/PUT/PATCH). MUST equal
+        the value of the non-HttpOnly CSRF cookie issued alongside the session; a missing or mismatched
+        token is refused fail-closed `403 forbidden`, the action is not applied, and the denial is audited
+        as a security event (SC-005). GET (read) operations do not require it.
+      schema: { type: string }
+    ResellerId:
+      name: resellerId
+      in: path
+      required: true
+      description: >
+        The reseller's id (its tenant id, UUID). Operator plane only. An unknown id resolves
+        `404 not_found`.
+      schema: { type: string, format: uuid }
+      example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+    SubTenantId:
+      name: subTenantId
+      in: path
+      required: true
+      description: >
+        A sub-tenant's id (its tenant id, UUID). On the RESELLER plane a `subTenantId` OUTSIDE the caller's
+        subtree resolves `404 not_found` (NEVER `403`), with no disclosure of existence (FR-004, SC-002).
+      schema: { type: string, format: uuid }
+      example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+    BindingId:
+      name: bindingId
+      in: path
+      required: true
+      description: A domain/email-sender binding id (UUID) within the caller's tenant; cross-tenant resolves `404`.
+      schema: { type: string, format: uuid }
+      example: "c3e4f5a6-3333-4d5e-bf60-718293a4b5c6"
+    ResellerStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: Optionally filter the reseller list by lifecycle status. Omit to return all.
+      schema: { $ref: '#/components/schemas/ResellerStatus' }
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Project-standard structured JSON error `{ code, message, details? }` (matches E015/E016/E017).
+        `code` is a stable, enumerated snake_case machine-readable value; `message` is human-readable;
+        `details` is optional structured context whose shape depends on `code`. No field ever carries a
+        secret, API key, signing key, PII, or card/PAN data; and no field discloses another tenant's
+        existence — out-of-scope/cross-tenant access resolves to `404`/`not_found` (never `403`).
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable machine-readable error code (snake_case). Enumerated; new codes require a contract
+            change. Each refusal reason is a DISTINCT, testable code.
+          enum:
+            - validation_error         # 400 — malformed request envelope / non-JSON / bad field/mode/filter value
+            - unauthorized             # 401 — missing/expired/revoked admin session (fail-closed)
+            - forbidden                # 403 — RBAC role/plane deny OR CSRF failure (fail-closed; security event)
+            - not_found                # 404 — unknown or OUT-OF-SCOPE tenant/reseller/sub-tenant/binding; cross-tenant resolves here, never 403 (FR-004/005)
+            - onboarding_conflict      # 409 — promote-existing target is already a reseller, or is itself a sub-tenant (one level only)
+            - quota_exceeded           # 409 — provisioning/moving would exceed the reseller's hard sub-tenant quota (FR-003)
+            - field_locked             # 409 — a sub-tenant tried to override a reseller-LOCKED branding field (FR-006/007)
+            - not_verified             # 409 — a custom domain/email sender used/activated before DNS ownership verification (FR-013)
+            - binding_conflict         # 409 — the host is already bound to another tenant (one binding per host, FR-013)
+            - sub_tenants_unresolved   # 409 — offboarding blocked: the reseller still has unresolved sub-tenants (FR-012)
+            - reseller_suspended       # 409 — a mutation on a sub-tenant/reseller under a suspended reseller (read-only cascade, FR-011)
+            - last_owner               # 409 — the action would leave a reseller or sub-tenant with no administrator (FR-016)
+            - invalid_state_transition # 409 — a lifecycle transition not permitted from the current reseller state (suspend/reinstate/offboard, FR-011/012)
+          example: quota_exceeded
+        message:
+          type: string
+          description: Human-readable summary. Never contains a secret, signing key, PII, or card/PAN data.
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Optional structured context whose shape depends on `code`:
+            `validation_error` → `{ field, value? }`;
+            `forbidden` → `{ plane, minRole, role }` (RBAC/plane deny) or `{ reason: "csrf" }` (CSRF failure);
+            `not_found` → the missing id (`{ resellerId }` | `{ subTenantId }` | `{ bindingId }` | `{ tenantId }`);
+            `onboarding_conflict` → `{ tenantId, reason: "already_reseller" | "already_sub_tenant" }`;
+            `quota_exceeded` → `{ quota, used }`;
+            `field_locked` → `{ field }` (the reseller-locked branding field the sub-tenant tried to override);
+            `not_verified` → `{ host, kind, unmet?: [ { purpose, recordType } ] }`;
+            `binding_conflict` → `{ host }`;
+            `sub_tenants_unresolved` → `{ unresolvedSubTenantCount }`;
+            `reseller_suspended` → `{ resellerId }`;
+            `last_owner` → `{ tenantId }`;
+            `invalid_state_transition` → `{ from, to }`.
+            It never carries a secret, signing key, PII, or card/PAN data.
+
+    # --- Shared value types -----------------------------------------------------------------------
+    ResellerStatus:
+      type: string
+      description: >
+        A reseller's lifecycle status (FR-010/011/012). `active` = normal; `suspended` = reversible, data
+        retained, new activity blocked, read-only cascade to sub-tenants (FR-011); `offboarding` = in the
+        transfer-or-reassign grace window, blocked from completion until every sub-tenant is resolved
+        (FR-012).
+      enum: [active, suspended, offboarding]
+      example: active
+
+    SubTenantStatus:
+      type: string
+      description: >
+        A sub-tenant's own lifecycle status (metadata only). Independent of the DERIVED read-only cascade,
+        which is reported separately by `readOnly` (computed from the reseller's `suspended` status at
+        request time, AD-007).
+      enum: [active, suspended]
+      example: active
+
+    OnboardMode:
+      type: string
+      description: The onboarding path (FR-001) — `create_new` a reseller tenant, or `promote_existing` tenant to reseller.
+      enum: [create_new, promote_existing]
+      example: create_new
+
+    VerificationKind:
+      type: string
+      description: What is being verified — a custom `domain` (TXT/CNAME) or an `email_sender` (SPF + DKIM/DMARC), FR-013.
+      enum: [domain, email_sender]
+      example: domain
+
+    BindingStatus:
+      type: string
+      description: >
+        A domain/email-sender binding's status (FR-013). `pending` = challenge issued, not yet proven;
+        `verified` = DNS ownership proven; `active` = verified AND activated for white-label use. Activation
+        before `verified` is refused `409 not_verified`.
+      enum: [pending, verified, active]
+      example: pending
+
+    BrandingFieldName:
+      type: string
+      description: >
+        The set of white-labelable branding FIELDS (FR-006). PRESENTATION-ONLY. Trust signals
+        (revocation/tamper/security notices, signing identity, audit records, legal text) are NEVER in this
+        set and are never white-labeled (FR-008, SC-006).
+      enum:
+        - logoUrl
+        - primaryColor
+        - secondaryColor
+        - productName
+        - supportUrl
+        - helpUrl
+        - emailSenderAddress
+        - customDomain
+      example: primaryColor
+
+    BrandingSource:
+      type: string
+      description: Which precedence layer supplied a resolved branding field's value (FR-007) — `sub_tenant` override, `reseller` default, or `platform` default.
+      enum: [sub_tenant, reseller, platform]
+      example: reseller
+
+    BrandingFields:
+      type: object
+      description: >
+        The white-label branding field VALUES (FR-006). Each field is optional; an omitted field falls
+        back per the precedence resolver (FR-007). PRESENTATION-ONLY — no field here alters any
+        license/token/crypto, and none is a trust signal (FR-008). No secret/PII.
+      additionalProperties: false
+      properties:
+        logoUrl: { type: string, format: uri, maxLength: 2048, example: "https://cdn.acme.example/logo.svg" }
+        primaryColor:
+          type: string
+          description: A CSS hex color.
+          pattern: '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$'
+          example: "#0a5"
+        secondaryColor:
+          type: string
+          pattern: '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$'
+          example: "#083"
+        productName: { type: string, maxLength: 128, example: "Acme License Manager" }
+        supportUrl: { type: string, format: uri, maxLength: 2048, example: "https://support.acme.example" }
+        helpUrl: { type: string, format: uri, maxLength: 2048, example: "https://help.acme.example" }
+        emailSenderAddress:
+          type: string
+          format: email
+          maxLength: 320
+          description: The white-label email sender. Requires a VERIFIED+active email-sender binding for its domain (FR-013).
+          example: "licensing@acme.example"
+        customDomain:
+          type: string
+          format: hostname
+          maxLength: 253
+          description: The white-label custom domain. Requires a VERIFIED+active domain binding (FR-013).
+          example: "licensing.acme.example"
+
+    ResolvedField:
+      type: object
+      description: One RESOLVED branding field — its effective value, the precedence layer it came from, and whether it is reseller-locked (FR-007, SC-004).
+      additionalProperties: false
+      required: [field, source, locked]
+      properties:
+        field: { $ref: '#/components/schemas/BrandingFieldName' }
+        value:
+          description: The effective value, or `null` when no layer set it (falls through to nothing).
+          type: [string, "null"]
+        source: { $ref: '#/components/schemas/BrandingSource' }
+        locked:
+          type: boolean
+          description: >
+            `true` when the reseller has LOCKED this field — the sub-tenant cannot override it and it is
+            shown as "set by your provider" without revealing the hierarchy (FR-006/014).
+          example: false
+
+    # --- Reseller lifecycle read/write models -----------------------------------------------------
+    Reseller:
+      type: object
+      description: A reseller (partner) — its identity, lifecycle status, and quota position. Extends an existing tenant (AD-003). No secret/PII.
+      additionalProperties: false
+      required: [resellerId, displayName, status, subTenantQuota, subTenantCount, createdAt, updatedAt]
+      properties:
+        resellerId:
+          type: string
+          format: uuid
+          description: The reseller's id (its tenant id).
+          example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+        displayName: { type: string, maxLength: 128, example: "Acme Partners" }
+        status: { $ref: '#/components/schemas/ResellerStatus' }
+        subTenantQuota:
+          type: integer
+          minimum: 0
+          description: The HARD sub-tenant cap (FR-003); operator-controlled. A reseller can never raise its own.
+          example: 25
+        subTenantCount:
+          type: integer
+          minimum: 0
+          description: The current number of sub-tenants under this reseller.
+          example: 0
+        createdAt: { type: string, format: date-time, example: "2026-08-14T09:00:00Z" }
+        updatedAt: { type: string, format: date-time, example: "2026-08-14T09:00:00Z" }
+
+    ResellerSummary:
+      type: object
+      description: A reseller list summary (FR-010). No secret/PII.
+      additionalProperties: false
+      required: [resellerId, displayName, status, subTenantQuota, subTenantCount]
+      properties:
+        resellerId: { type: string, format: uuid, example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304" }
+        displayName: { type: string, maxLength: 128, example: "Acme Partners" }
+        status: { $ref: '#/components/schemas/ResellerStatus' }
+        subTenantQuota: { type: integer, minimum: 0, example: 25 }
+        subTenantCount: { type: integer, minimum: 0, example: 4 }
+
+    ResellerList:
+      type: object
+      description: The platform's resellers as summaries; ordered by `displayName` then `resellerId`; bounded to 1000 with a `truncated` signal; NOT paginated.
+      additionalProperties: false
+      required: [resellers, truncated]
+      properties:
+        resellers:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/ResellerSummary' }
+        truncated:
+          type: boolean
+          default: false
+          description: '`true` when more than 1000 resellers exist and the result was capped.'
+
+    OnboardResellerRequest:
+      type: object
+      description: >
+        Onboard a reseller via ONE create-or-select flow (FR-001/010). Discriminated on `mode`:
+        `create_new` (supply `displayName`) creates a new reseller tenant; `promote_existing` (supply
+        `tenantId`) promotes an existing tenant. Both designate a first reseller-admin and an optional quota
+        (defaulting to the platform-configured value).
+      oneOf:
+        - $ref: '#/components/schemas/OnboardCreateNew'
+        - $ref: '#/components/schemas/OnboardPromoteExisting'
+      discriminator:
+        propertyName: mode
+        mapping:
+          create_new: '#/components/schemas/OnboardCreateNew'
+          promote_existing: '#/components/schemas/OnboardPromoteExisting'
+
+    OnboardCreateNew:
+      type: object
+      description: Create a NEW reseller tenant (FR-001/010).
+      additionalProperties: false
+      required: [mode, displayName, firstAdminUserReference]
+      properties:
+        mode: { type: string, enum: [create_new] }
+        displayName: { type: string, minLength: 1, maxLength: 128, example: "Acme Partners" }
+        firstAdminUserReference:
+          type: string
+          maxLength: 128
+          description: The PSEUDONYMOUS reference to the user to designate as the first reseller-admin (never a name/email/PII, FR-017).
+          example: "u_9b2e1d40"
+        subTenantQuota:
+          type: [integer, "null"]
+          minimum: 0
+          description: OPTIONAL hard quota; defaults to the platform-configured value when omitted/null (FR-003).
+          example: 25
+
+    OnboardPromoteExisting:
+      type: object
+      description: PROMOTE an existing tenant to reseller (FR-001/010). Refused `409 onboarding_conflict` if it is already a reseller or is itself a sub-tenant.
+      additionalProperties: false
+      required: [mode, tenantId, firstAdminUserReference]
+      properties:
+        mode: { type: string, enum: [promote_existing] }
+        tenantId:
+          type: string
+          format: uuid
+          description: The existing tenant (UUID) to promote. Unknown → `404 not_found`.
+          example: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        firstAdminUserReference:
+          type: string
+          maxLength: 128
+          description: The PSEUDONYMOUS reference to the first reseller-admin (no PII, FR-017).
+          example: "u_9b2e1d40"
+        subTenantQuota:
+          type: [integer, "null"]
+          minimum: 0
+          description: OPTIONAL hard quota; defaults to the platform-configured value when omitted/null (FR-003).
+          example: 25
+
+    UpdateQuotaRequest:
+      type: object
+      description: Set a reseller's hard sub-tenant quota (operator-only, FR-003).
+      additionalProperties: false
+      required: [subTenantQuota]
+      properties:
+        subTenantQuota: { type: integer, minimum: 0, example: 50 }
+
+    OffboardResult:
+      type: object
+      description: The result of an offboard attempt (FR-012). Reports the (now `offboarding`) status, the grace-window end, and how many sub-tenants remain to resolve.
+      additionalProperties: false
+      required: [resellerId, status, unresolvedSubTenantCount]
+      properties:
+        resellerId: { type: string, format: uuid, example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304" }
+        status: { $ref: '#/components/schemas/ResellerStatus' }
+        unresolvedSubTenantCount:
+          type: integer
+          minimum: 0
+          description: Sub-tenants still to be transferred/reassigned before offboarding can complete (FR-012).
+          example: 3
+        graceEndsAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the notice/grace window ends (FR-012); `null` if not applicable.
+          example: "2026-09-13T09:00:00Z"
+
+    # --- Sub-tenant read/write models -------------------------------------------------------------
+    SubTenant:
+      type: object
+      description: >
+        A sub-tenant (customer) — METADATA ONLY (FR-017): identity, status, and the DERIVED read-only
+        cascade flag. This model NEVER carries the sub-tenant's license, usage, or activation operational
+        data (privacy-minimizing, FR-017). `resellerId` is present only on the operator plane; it is OMITTED
+        on the sub-tenant plane so the hierarchy is not disclosed (FR-014, SC-012).
+      additionalProperties: false
+      required: [subTenantId, displayName, status, readOnly, createdAt]
+      properties:
+        subTenantId: { type: string, format: uuid, example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" }
+        displayName: { type: string, maxLength: 128, example: "Northwind Ltd" }
+        status: { $ref: '#/components/schemas/SubTenantStatus' }
+        readOnly:
+          type: boolean
+          description: >
+            The DERIVED read-only-cascade flag (AD-007): `true` when this sub-tenant's reseller is
+            `suspended` (sign-in and read allowed; no new provisioning/activation/branding change, FR-011).
+          example: false
+        resellerId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The managing reseller's id — present on the OPERATOR plane only (`null` for a direct-platform
+            tenant). OMITTED on the sub-tenant plane so the hierarchy is never disclosed (FR-014, SC-012).
+          example: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304"
+        createdAt: { type: string, format: date-time, example: "2026-08-13T09:00:00Z" }
+
+    SubTenantList:
+      type: object
+      description: >
+        A reseller's own sub-tenants (metadata-only summaries); ordered by `displayName` then `subTenantId`;
+        bounded to 1000 with a `truncated` signal. Also reports the calling reseller's OWN quota position
+        (`subTenantQuota` / `subTenantCount`) so a reseller can see how close it is to its hard cap before a
+        provision is refused `409 quota_exceeded` (FR-003, SC-008) — this is the reseller reading its own
+        position, not cross-tenant data.
+      additionalProperties: false
+      required: [subTenants, truncated, subTenantQuota, subTenantCount]
+      properties:
+        subTenants:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/SubTenant' }
+        truncated: { type: boolean, default: false }
+        subTenantQuota:
+          type: integer
+          minimum: 0
+          description: The calling reseller's HARD sub-tenant cap (read-only here; only the operator may change it, FR-003).
+          example: 25
+        subTenantCount:
+          type: integer
+          minimum: 0
+          description: The calling reseller's current number of sub-tenants (its position against `subTenantQuota`).
+          example: 2
+
+    ProvisionSubTenantRequest:
+      type: object
+      description: Provision a new sub-tenant under the calling reseller (FR-003). Subject to the hard quota.
+      additionalProperties: false
+      required: [displayName, firstAdminUserReference]
+      properties:
+        displayName: { type: string, minLength: 1, maxLength: 128, example: "Initech LLC" }
+        firstAdminUserReference:
+          type: string
+          maxLength: 128
+          description: The PSEUDONYMOUS reference to the sub-tenant's first admin (no PII, FR-017).
+          example: "u_3c4d5e6f"
+
+    MoveSubTenantRequest:
+      type: object
+      description: Move a sub-tenant to a new owner (operator-only, FR-015). `destination` is a discriminated union.
+      additionalProperties: false
+      required: [destination]
+      properties:
+        destination:
+          oneOf:
+            - $ref: '#/components/schemas/MoveToReseller'
+            - $ref: '#/components/schemas/MoveToDirectPlatform'
+          discriminator:
+            propertyName: type
+            mapping:
+              to_reseller: '#/components/schemas/MoveToReseller'
+              to_direct_platform: '#/components/schemas/MoveToDirectPlatform'
+
+    MoveToReseller:
+      type: object
+      description: Re-point the sub-tenant under another reseller (FR-015). Subject to the destination's quota and locks.
+      additionalProperties: false
+      required: [type, destinationResellerId]
+      properties:
+        type: { type: string, enum: [to_reseller] }
+        destinationResellerId: { type: string, format: uuid, example: "b2d3f4a5-2222-4c4d-ae5f-60718293a4b5" }
+
+    MoveToDirectPlatform:
+      type: object
+      description: Reassign the sub-tenant to DIRECT-PLATFORM ownership (no reseller); its overrides are preserved and locks no longer apply (FR-015).
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [to_direct_platform] }
+
+    # --- Branding read/write models ---------------------------------------------------------------
+    ResellerBrandingProfile:
+      type: object
+      description: >
+        The reseller's OWN branding profile (FR-006/007) — the field values it set (the DEFAULT for its
+        sub-tenants), the set of fields it LOCKED (non-overridable), and the resolved branding for the
+        reseller itself. Presentation-only; trust signals excluded (FR-008).
+      additionalProperties: false
+      required: [fields, locked, resolved, updatedAt]
+      properties:
+        fields: { $ref: '#/components/schemas/BrandingFields' }
+        locked:
+          type: array
+          description: The branding fields the reseller has LOCKED (non-overridable by sub-tenants, FR-006/007). Deduplicated.
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/BrandingFieldName' }
+          example: [primaryColor, productName]
+        resolved:
+          type: array
+          description: The reseller's own resolved branding (reseller value → platform default per field).
+          items: { $ref: '#/components/schemas/ResolvedField' }
+        updatedAt: { type: string, format: date-time, example: "2026-08-14T09:00:00Z" }
+
+    SetResellerBrandingRequest:
+      type: object
+      description: Set the reseller's OWN branding field values and per-field locks (FR-006/007). Replaces the profile.
+      additionalProperties: false
+      required: [fields]
+      properties:
+        fields: { $ref: '#/components/schemas/BrandingFields' }
+        locked:
+          type: array
+          description: The fields to LOCK (non-overridable by sub-tenants, FR-006/007). Omit/empty for none.
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/BrandingFieldName' }
+          example: [primaryColor, productName]
+
+    SubTenantBranding:
+      type: object
+      description: >
+        A sub-tenant's OWN branding view (FR-006/007, US2) — the overrides it set, the RESOLVED applied
+        branding (per-field precedence sub-tenant→reseller→platform, SC-004), and the set of locked fields
+        it may NOT override. Locked fields are surfaced WITHOUT revealing that a managing reseller exists
+        (FR-006/014, SC-012). Trust signals are never part of branding (FR-008).
+      additionalProperties: false
+      required: [overrides, lockedFields, resolved, updatedAt]
+      properties:
+        overrides: { $ref: '#/components/schemas/BrandingFields' }
+        lockedFields:
+          type: array
+          description: >
+            The fields the sub-tenant may NOT override (presented as "set by your provider" without
+            disclosing the hierarchy, FR-006/014). Setting an override for one of these is refused
+            `409 field_locked`.
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/BrandingFieldName' }
+          example: [primaryColor, productName]
+        resolved:
+          type: array
+          description: The applied branding, each field resolved by precedence with its source and lock state (SC-004).
+          items: { $ref: '#/components/schemas/ResolvedField' }
+        updatedAt: { type: string, format: date-time, example: "2026-08-14T09:00:00Z" }
+
+    SetSubTenantBrandingRequest:
+      type: object
+      description: >
+        Set the sub-tenant's OWN branding overrides (FR-006/007). REPLACE semantics: the `overrides` object
+        fully replaces the sub-tenant's override set — a field PRESENT sets/updates its override; a field
+        OMITTED removes its override (that field then falls back per precedence: reseller default → platform
+        default, FR-007). Branding fields are NON-nullable (see `BrandingFields`, `additionalProperties:
+        false` with non-null value types), so removal is by OMISSION only — a `null` value is NOT a distinct
+        signal and is rejected `400 validation_error`. Overriding a reseller-LOCKED field is refused
+        `409 field_locked`.
+      additionalProperties: false
+      required: [overrides]
+      properties:
+        overrides: { $ref: '#/components/schemas/BrandingFields' }
+
+    # --- Domain / email verification models -------------------------------------------------------
+    DnsRecord:
+      type: object
+      description: A DNS record the reseller must publish to prove ownership/authorization (FR-013). The challenge token is PUBLIC, never a secret.
+      additionalProperties: false
+      required: [purpose, recordType, name, value]
+      properties:
+        purpose:
+          type: string
+          description: What this record proves — domain ownership (TXT/CNAME) or email send-authorization (SPF/DKIM/DMARC), FR-013.
+          enum: [domain_ownership, spf, dkim, dmarc]
+          example: domain_ownership
+        recordType:
+          type: string
+          enum: [TXT, CNAME]
+          example: TXT
+        name: { type: string, maxLength: 253, example: "_licensing-challenge.licensing.acme.example" }
+        value: { type: string, maxLength: 2048, example: "lic-verify=8f3a2b1c" }
+
+    DomainBinding:
+      type: object
+      description: >
+        A custom-domain or email-sender binding and its verification lifecycle (FR-013). Bound to AT MOST
+        ONE tenant. `challenge` lists the DNS records to publish; `status` moves `pending → verified →
+        active`. No secret/PII — the challenge token is a public proof.
+      additionalProperties: false
+      required: [bindingId, kind, host, status, challenge, createdAt]
+      properties:
+        bindingId: { type: string, format: uuid, example: "c3e4f5a6-3333-4d5e-bf60-718293a4b5c6" }
+        kind: { $ref: '#/components/schemas/VerificationKind' }
+        host:
+          type: string
+          maxLength: 253
+          description: The domain (for `domain`) or sending domain (for `email_sender`) being bound.
+          example: "licensing.acme.example"
+        status: { $ref: '#/components/schemas/BindingStatus' }
+        challenge:
+          type: array
+          description: The DNS records to publish to prove ownership/send-authorization (FR-013).
+          items: { $ref: '#/components/schemas/DnsRecord' }
+        verifiedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When DNS ownership was proven (`null` while `pending`).
+          example: null
+        activatedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the binding was activated for white-label (`null` until `active`).
+          example: null
+        createdAt: { type: string, format: date-time, example: "2026-08-14T09:00:00Z" }
+
+    DomainBindingList:
+      type: object
+      description: >
+        The calling reseller's domain/email-sender bindings (FR-013). Ordered DETERMINISTICALLY by `host`
+        then `bindingId`; bounded to 1000 with a `truncated` signal; NOT paginated — consistent with
+        `ResellerList` / `SubTenantList`.
+      additionalProperties: false
+      required: [bindings, truncated]
+      properties:
+        bindings:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/DomainBinding' }
+        truncated:
+          type: boolean
+          default: false
+          description: '`true` when more than 1000 bindings exist and the result was capped.'
+
+    InitiateVerificationRequest:
+      type: object
+      description: Begin DNS ownership verification for a custom domain or email sender (FR-013).
+      additionalProperties: false
+      required: [kind, host]
+      properties:
+        kind: { $ref: '#/components/schemas/VerificationKind' }
+        host:
+          type: string
+          maxLength: 253
+          description: The domain (for `domain`) or sending domain (for `email_sender`) to verify. Already bound elsewhere → `409 binding_conflict`.
+          example: "licensing.acme.example"
+
+  responses:
+    ValidationError:
+      description: The request was malformed — a bad envelope, field value, mode, or filter (`validation_error`). Nothing changed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            badField:
+              value:
+                code: validation_error
+                message: "primaryColor must be a CSS hex color."
+                details: { field: primaryColor, value: "green" }
+    Unauthorized:
+      description: No resolvable authentication — the `admin_session` cookie is missing, expired, or revoked. Fail-closed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            noSession:
+              value: { code: unauthorized, message: "Authentication required." }
+    Forbidden:
+      description: >
+        Admin plane, fail-closed — either the session's role/plane is below the operation's `x-rbac` (e.g. a
+        `viewer` mutating, a reseller-admin attempting an OPERATOR-plane action, or a sub-tenant reaching
+        the reseller plane, US1-AS4), or a mutation's `X-CSRF-Token` is missing/mismatched. Both are
+        recorded as an auditable security event (SC-005/007).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            insufficientRole:
+              value:
+                code: forbidden
+                message: "This action requires the admin role."
+                details: { plane: reseller, minRole: admin, role: viewer }
+            wrongPlane:
+              value:
+                code: forbidden
+                message: "This action is reserved for the platform operator."
+                details: { plane: operator, minRole: admin, role: admin }
+            csrfFailure:
+              value:
+                code: forbidden
+                message: "Missing or invalid CSRF token."
+                details: { reason: csrf }
+    TenantNotFound:
+      description: No tenant resolves on the platform for the supplied `tenantId` (promote-existing). Never discloses another tenant.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownTenant:
+              value:
+                code: not_found
+                message: "No such tenant."
+                details: { tenantId: "00000000-0000-4000-8000-000000000000" }
+    ResellerNotFound:
+      description: No reseller resolves for the path `resellerId`. Indistinguishable from a non-existent one.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownReseller:
+              value:
+                code: not_found
+                message: "No such reseller."
+                details: { resellerId: "00000000-0000-4000-8000-000000000000" }
+    SubTenantNotFound:
+      description: >
+        No sub-tenant resolves within the caller's SUBTREE for the path `subTenantId` — an out-of-subtree
+        (sibling/parent/platform) or unknown id BOTH resolve here (never `403`), with no disclosure of
+        existence (FR-004, SC-002). Recorded as a security event.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            outOfScope:
+              value:
+                code: not_found
+                message: "No such sub-tenant."
+                details: { subTenantId: "00000000-0000-4000-8000-000000000000" }
+    SubTenantOrResellerNotFound:
+      description: No sub-tenant resolves for the path `subTenantId`, OR (for `to_reseller`) no reseller resolves for `destinationResellerId`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownSubTenant:
+              value:
+                code: not_found
+                message: "No such sub-tenant."
+                details: { subTenantId: "00000000-0000-4000-8000-000000000000" }
+            unknownDestination:
+              value:
+                code: not_found
+                message: "No such destination reseller."
+                details: { resellerId: "00000000-0000-4000-8000-000000000000" }
+    BindingNotFound:
+      description: No domain/email-sender binding resolves for the path `bindingId` within the caller's tenant.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unknownBinding:
+              value:
+                code: not_found
+                message: "No such binding."
+                details: { bindingId: "00000000-0000-4000-8000-000000000000" }
+    OnboardingConflict:
+      description: >
+        Promote-existing refused — the target is ALREADY a reseller, or is itself a sub-tenant of another
+        reseller (one reseller level only; a tenant cannot be both), FR-001.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            alreadyReseller:
+              value:
+                code: onboarding_conflict
+                message: "This tenant is already a reseller."
+                details: { tenantId: "7c9e6679-7425-40de-944b-e07fc1f90ae7", reason: already_reseller }
+            alreadySubTenant:
+              value:
+                code: onboarding_conflict
+                message: "This tenant is a sub-tenant and cannot be promoted (one reseller level only)."
+                details: { tenantId: "7c9e6679-7425-40de-944b-e07fc1f90ae7", reason: already_sub_tenant }
+    SubTenantsUnresolved:
+      description: >
+        Offboarding is BLOCKED — the reseller still has sub-tenants that must be transferred to another
+        reseller or reassigned to direct-platform ownership first (no orphans, FR-012, SC-010). The reseller
+        remains `offboarding`; nothing is deleted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            unresolved:
+              value:
+                code: sub_tenants_unresolved
+                message: "Resolve all sub-tenants before offboarding this reseller."
+                details: { unresolvedSubTenantCount: 3 }
+    InvalidStateTransition:
+      description: The requested reseller lifecycle transition is not permitted from the current state (suspend/reinstate/offboard, FR-011/012). State unchanged; audited.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            notActive:
+              value:
+                code: invalid_state_transition
+                message: "Only an active reseller can be suspended."
+                details: { from: suspended, to: suspended }
+    ProvisionConflict:
+      description: >
+        Provisioning a sub-tenant was refused — `quota_exceeded` (the reseller is at its hard sub-tenant
+        cap, FR-003, SC-008) or `reseller_suspended` (the read-only cascade blocks new provisioning,
+        FR-011).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            quotaExceeded:
+              value:
+                code: quota_exceeded
+                message: "This reseller is at its sub-tenant quota."
+                details: { quota: 25, used: 25 }
+            resellerSuspended:
+              value:
+                code: reseller_suspended
+                message: "The reseller is suspended; no new provisioning is allowed."
+                details: { resellerId: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304" }
+    MoveConflict:
+      description: >
+        The move was refused — `quota_exceeded` (destination at its hard cap), `reseller_suspended` (source
+        or destination suspended), or `invalid_state_transition` (destination offboarding), FR-015.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            destinationFull:
+              value:
+                code: quota_exceeded
+                message: "The destination reseller is at its sub-tenant quota."
+                details: { quota: 50, used: 50 }
+            suspended:
+              value:
+                code: reseller_suspended
+                message: "The source or destination reseller is suspended."
+                details: { resellerId: "b2d3f4a5-2222-4c4d-ae5f-60718293a4b5" }
+    BrandingWriteConflict:
+      description: The reseller branding write was refused — `not_verified` (a custom domain/email host is not verified+active) or `reseller_suspended`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            notVerified:
+              value:
+                code: not_verified
+                message: "The custom domain is not verified for white-label use."
+                details: { host: "licensing.acme.example", kind: domain }
+            suspended:
+              value:
+                code: reseller_suspended
+                message: "The reseller is suspended; branding changes are blocked."
+                details: { resellerId: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304" }
+    SubTenantBrandingConflict:
+      description: >
+        The sub-tenant branding write was refused — `field_locked` (an override of a reseller-locked field,
+        FR-006/007), `not_verified` (an unverified custom domain/email host), or `reseller_suspended` (the
+        read-only cascade, FR-011).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            fieldLocked:
+              value:
+                code: field_locked
+                message: "This field is set by your provider and cannot be changed."
+                details: { field: primaryColor }
+            notVerified:
+              value:
+                code: not_verified
+                message: "The custom domain is not verified for white-label use."
+                details: { host: "shop.northwind.example", kind: domain }
+            suspended:
+              value:
+                code: reseller_suspended
+                message: "Branding changes are temporarily unavailable."
+                details: { resellerId: "a1c2e3f4-1111-4b3c-9d4e-5f6071829304" }
+    BindingConflict:
+      description: The host is already bound to another tenant — one binding per host (FR-013, SC-011). Never discloses which tenant.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            alreadyBound:
+              value:
+                code: binding_conflict
+                message: "This host is already bound to another tenant."
+                details: { host: "licensing.acme.example" }
+    VerifyConflict:
+      description: >
+        Verification was refused — `not_verified` (the DNS challenge is not yet satisfied; the binding stays
+        `pending` and `details.unmet` lists the missing records), `binding_conflict` (the host was already
+        verified/activated by another tenant, so this binding cannot be promoted to `verified` without
+        violating the global one-binding-per-host guarantee, data-model INV-5; never discloses which tenant),
+        or `reseller_suspended`, FR-013.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            challengeUnmet:
+              value:
+                code: not_verified
+                message: "The DNS challenge records were not found."
+                details:
+                  host: "acme.example"
+                  kind: email_sender
+                  unmet: [ { purpose: dkim, recordType: TXT }, { purpose: dmarc, recordType: TXT } ]
+            alreadyBound:
+              value:
+                code: binding_conflict
+                message: "This host is already bound to another tenant."
+                details: { host: "licensing.acme.example" }
+    ActivateConflict:
+      description: >
+        Activation was refused — `not_verified` (the binding is still `pending`; ownership must be proven
+        first, FR-013), `binding_conflict` (the host was activated by another tenant since verification), or
+        `reseller_suspended`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            notVerified:
+              value:
+                code: not_verified
+                message: "Verify ownership before activating this host for white-label."
+                details: { host: "licensing.acme.example", kind: domain }

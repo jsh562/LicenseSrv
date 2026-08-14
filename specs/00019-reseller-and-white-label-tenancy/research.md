@@ -1,0 +1,25 @@
+# Research — E018 Reseller and White-label Multi-tenancy
+
+Domain best practices for adding a RESELLER/PARTNER hierarchy and WHITE-LABEL branding on top of an existing strict-isolation licensing platform (Node/TS/Fastify, Postgres 16 forced RLS, GUC `app.current_tenant`, RBAC owner>admin>viewer, append-only audit). Focus: story priorities, acceptance criteria, edge cases — not implementation.
+
+## Reseller / partner tenancy models
+Keep the underlying store SHARED and configurable, not duplicated per partner; model the partner as a first-class tenant with a parent→child (reseller→customer) link rather than a new isolation mechanism. A reseller-admin manages only its own sub-tenants; the platform (vendor) operator sits above all resellers; end-tenant admins are unchanged and unaware of the reseller. Prefer a shallow, explicit hierarchy (one reseller level for the MVP) over arbitrary nesting. Treat "reseller can manage customer" as delegated, scoped administration — a grant, never ambient access. Avoid: deep/unbounded nesting, giving resellers direct DB-level cross-tenant reach.
+Sources: aws.amazon.com/blogs/apn (SaaS tenant isolation strategies); frontegg.com/blog/saas-multitenancy.
+
+## White-label branding / theming per tenant
+Brandable: logo, color/theme, product name, email sender address + sending domain, support/help links, and custom domain (Host-header → tenant lookup). Resolve branding by precedence: sub-tenant override → reseller default → platform default, so a customer inherits its reseller's brand unless it sets its own. Apply branding without leaking the vendor's identity into partner-facing surfaces. Do NOT white-label security-critical trust signals: security/breach notices, license-tamper and revocation warnings, audit records, signing-key identity, and legal/compliance text must remain authoritative and unspoofable. Avoid: unverified custom domains/email senders (spoofing/spam), branding that hides who signed a license.
+Sources: saascustomdomains.com; firma.dev/insights/complete-guide-white-label-e-signature-api.
+
+## Isolation & security in reseller hierarchies
+Authorization is NOT isolation — enforce at the data-access layer, not just the API. Derive tenant + reseller context from the verified session/token; validate ownership on every read/write. A reseller sees ONLY tenants under its own subtree; sibling resellers and their customers stay invisible. The dangerous direction is UPWARD/LATERAL: block a sub-tenant or reseller from reaching a parent, the platform, or a sibling (IDOR via tenant/reseller id is the classic exploit). Audit every reseller action on a sub-tenant with BOTH the acting reseller-admin identity and the target sub-tenant. Avoid: global roles assigned without tenant scope (privilege bleed), trusting client-supplied tenant ids.
+Sources: cheatsheetseries.owasp.org/cheatsheets/Multi_Tenant_Security_Cheat_Sheet.html; workos.com/blog/how-to-design-multi-tenant-rbac-saas.
+
+## Reseller lifecycle & governance
+Assign a named owner to every reseller and every sub-tenant; separate standard from elevated (reseller-admin) access with stronger approval. Onboarding provisions the reseller tenant, its first admin, and a sub-tenant quota/limit (cap how many customers it may create). Support suspend (reversible, keeps data, blocks new activity) distinct from offboard/delete. Offboarding a reseller must resolve its sub-tenants first — transfer to another reseller or to direct-platform ownership — with a notice/grace window before deauthorization (cf. Microsoft CSP's 30-day transition). Suspending a reseller should cascade a defined state to its customers. Avoid: orphaned sub-tenants on reseller deletion, unbounded sub-tenant creation, silent (unaudited) transfers.
+Sources: learn.microsoft.com/partner-center/enroll/partner-transition-guide; 1password.com/solutions/saas-onboarding-offboarding.
+
+## E002/E005 integration grounding
+Reuse E002 forced RLS + GUC `app.current_tenant` and the append-only audit — do NOT weaken them. The reseller link is an additive, expand/contract migration over existing tenant rows; reseller scoping layers on top of per-tenant RLS (a reseller session still resolves to tenant scope per sub-tenant, plus a subtree filter). Extends E005's RBAC (owner>admin>viewer) with a reseller-admin role and delegated, scoped administration; every reseller action on a sub-tenant is a cross-tenant admin action and MUST follow E005/E002's audited platform-admin path (Principle II).
+
+## Summary
+Model resellers as a shallow parent→child overlay on the existing tenant/RLS/audit substrate (E002) — a scoped delegation, never a new cross-tenant path. Downward-only visibility, ownership checks at the data layer, and dual-identity (reseller + target) audit are the isolation backbone; the top exploit risks are upward/sibling escalation and IDOR. Branding resolves sub-tenant→reseller→platform, but security/trust signals (revocation, tamper, audit, signing identity) are never white-labeled. Governance needs quotas, reversible suspend vs. offboard, and mandatory sub-tenant transfer-or-reassign before reseller deletion.
