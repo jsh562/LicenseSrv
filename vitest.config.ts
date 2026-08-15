@@ -16,11 +16,14 @@ export default defineConfig({
       // enforced on `src/server/modules/usage/**` (T001/T044).
       // The E017 policy module is likewise listed explicitly so the ≥80% line+branch gate is unambiguously
       // enforced on `src/server/modules/policy/**` (E017 T001; the per-directory threshold below lands in T053).
+      // The E018 reseller module is likewise listed explicitly so the ≥80% line+branch gate is unambiguously
+      // enforced on `src/server/modules/reseller/**` (E018 T001; the per-directory threshold below lands in T048).
       include: [
         "src/server/**/*.ts",
         "src/server/modules/lease/**/*.ts",
         "src/server/modules/usage/**/*.ts",
         "src/server/modules/policy/**/*.ts",
+        "src/server/modules/reseller/**/*.ts",
       ],
       exclude: [
         "src/server/**/*.{test,spec}.ts",
@@ -39,6 +42,13 @@ export default defineConfig({
         lines: 80,
         branches: 80,
         "src/server/modules/policy/**": { lines: 80, branches: 80 },
+        // A per-directory threshold on the E018 reseller module (T048): the subtree-membership gate + scoped
+        // descent, the reseller repo (incl. the privileged subtree READ), the per-field branding resolver + locks
+        // + trust-signal exclusion, the reseller lifecycle (onboard/suspend/offboard/move), the domain/email
+        // verify state machine + one-binding-per-host, the dual-identity audit projection, and the routes must
+        // each hold >=80% line+branch on their OWN, independent of the global rollup — the load-bearing isolation
+        // (no-RLS-broadening) + dual-identity-audit evidence {SAD:ADR-0015} requires cannot be diluted.
+        "src/server/modules/reseller/**": { lines: 80, branches: 80 },
       },
     },
   },

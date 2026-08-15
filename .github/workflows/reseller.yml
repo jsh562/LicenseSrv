@@ -1,0 +1,127 @@
+name: reseller
+
+# CI for the reseller & white-label tenancy module (E018): the delegated downward-only reseller->sub-tenant
+# administration model (the subtree-membership gate + scoped descent + the audited privileged subtree READ), the
+# per-tenant white-label branding resolver (per-field precedence sub-tenant->reseller->platform + reseller locks +
+# trust-signal exclusion), the reseller lifecycle (onboard create-or-promote / suspend read-only cascade / offboard
+# transfer-or-reassign / operator-only move), the domain/email verify-before-activate state machine + the global
+# one-binding-per-host guarantee, and the dual-identity append-only audit. Gates: typecheck + lint, the real-Postgres
+# integration suite (Testcontainers) with the >=80% line+branch coverage gate on src/server/modules/reseller/**, a
+# production-scope dependency audit, a semgrep scan over the reseller sources, AND an isolation / no-RLS-broadening
+# lint proving the module NEVER adds parent_reseller_id to an RLS policy predicate and NEVER `SET ROLE`s / bypasses
+# the `withTenant`/`privileged` seams (the unchanged per-tenant forced-RLS predicate IS the isolation boundary,
+# AD-001/002, HINT-001).
+
+on:
+  push:
+    paths:
+      - "src/server/modules/reseller/**"
+      - "src/server/modules/admin/**"
+      - "migrations/0014_reseller_branding.sql"
+      - "src/server/modules/index.ts"
+      - "src/server/app.ts"
+      - "src/server/main.ts"
+      - ".github/workflows/reseller.yml"
+  pull_request:
+    paths:
+      - "src/server/modules/reseller/**"
+      - "src/server/modules/admin/**"
+      - "migrations/0014_reseller_branding.sql"
+      - "src/server/modules/index.ts"
+      - "src/server/app.ts"
+      - "src/server/main.ts"
+      - ".github/workflows/reseller.yml"
+
+jobs:
+  server:
+    name: server (reseller module + real Postgres)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # ubuntu-latest ships Docker -> Testcontainers spins up Postgres 16 for the reseller integration suite
+      # (migration unset-GUC->0-rows on all three new forced-RLS tables + one-level CHECK + one-binding-per-host
+      # partial-unique; downward-only visibility + upward/lateral/IDOR escalation -> 404 no-disclosure + security
+      # event; reseller onboard/suspend/offboard/transfer; branding CRUD + per-field resolution + locks + trust
+      # exclusion; verify-before-activate + binding_conflict; hard-quota enforcement; RLS isolation across two
+      # resellers; dual-identity append-only audit) with the >=80% line+branch coverage gate on
+      # src/server/modules/reseller/**.
+      - name: Tests + >=80% coverage gate
+        run: npm run test:cov
+      - name: Production dependency audit (fail on high/critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  isolation:
+    name: isolation lint (no RLS broadening / no SET ROLE / no withTenant bypass)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # The per-tenant forced-RLS `tenant_isolation` predicate is the isolation boundary and MUST stay unchanged
+      # (AD-001/002, HINT-001). A reseller subtree reach is confined to the audited `privileged` seam (a READ
+      # filtered by parent_reseller_id AFTER an ownership assertion) and a scoped descent under the sub-tenant's
+      # OWN `app.current_tenant` via `withTenant` -- never a broadened predicate. Fail the build if the reseller
+      # feature ever (a) references parent_reseller_id INSIDE a CREATE POLICY predicate (RLS broadening), (b)
+      # issues a `SET ROLE` / `SET LOCAL ROLE` from the module sources (privilege escalation -- only db/client.ts
+      # may drop to the non-owner app role), or (c) disables / un-forces RLS on the new tables.
+      - name: No parent_reseller_id inside any RLS policy predicate (migration 0014)
+        run: |
+          set -euo pipefail
+          migration=migrations/0014_reseller_branding.sql
+          # Capture each `CREATE POLICY ... ;` statement and fail if its predicate references parent_reseller_id.
+          if awk '
+            /CREATE[[:space:]]+POLICY/ { inpol=1 }
+            inpol { block = block $0 "\n"; if ($0 ~ /;[[:space:]]*$/) { if (block ~ /parent_reseller_id/) { print block; found=1 } inpol=0; block="" } }
+            END { if (found) exit 1 }
+          ' "$migration"; then
+            echo "Isolation lint passed: no parent_reseller_id in any RLS policy predicate."
+          else
+            echo "::error::RLS broadening -- parent_reseller_id appears inside a CREATE POLICY predicate in $migration. The per-tenant tenant_isolation predicate MUST stay unchanged; a reseller subtree reach is the audited privileged seam, never a widened predicate (AD-001/002, HINT-001)."
+            exit 1
+          fi
+      - name: No SET ROLE / no RLS disable in the reseller module or migration 0014
+        run: |
+          set -euo pipefail
+          # (b) The module sources MUST NOT escalate the connection role -- only src/server/db/client.ts may
+          # `SET LOCAL ROLE licensesrv_app` (the non-owner app role). Exclude __tests__ (which legitimately drop
+          # to the app role to PROVE forced RLS blocks unscoped/cross-tenant access).
+          role='(\bSET[[:space:]]+(LOCAL[[:space:]]+)?ROLE\b)'
+          if grep -rnEI --include='*.ts' --exclude-dir=__tests__ "$role" src/server/modules/reseller; then
+            echo "::error::Privilege escalation -- a SET ROLE / SET LOCAL ROLE construct was found in the reseller module. All DB access MUST route through withTenant (drops to the non-owner app role under forced RLS) or the audited privileged seam; the module never sets a role itself (AD-002)."
+            exit 1
+          fi
+          # (c) The migration MUST keep forced RLS on the three new tables -- never DISABLE / NO FORCE it.
+          disable='(DISABLE[[:space:]]+ROW[[:space:]]+LEVEL[[:space:]]+SECURITY)|(NO[[:space:]]+FORCE[[:space:]]+ROW[[:space:]]+LEVEL[[:space:]]+SECURITY)'
+          if grep -rnEI "$disable" migrations/0014_reseller_branding.sql; then
+            echo "::error::RLS weakening -- the reseller migration disables or un-forces row level security. The three new tenant-owned tables MUST stay ENABLE + FORCE ROW LEVEL SECURITY (unset GUC -> 0 rows)."
+            exit 1
+          fi
+          echo "Isolation lint passed: no SET ROLE in the module; forced RLS preserved on the new tables."
+      - name: No withTenant bypass -- all reseller DB access via withTenant/privileged (no raw pool.query)
+        run: |
+          set -euo pipefail
+          # (d) Every reseller DB access MUST route through the withTenant (tenant-scoped, forced RLS) or the
+          # audited `privileged` platform-admin seam -- never a raw `pool.query(` that skips the GUC/role setup.
+          # Exclude __tests__ (harness/raw-connection setup is expected there).
+          if grep -rnEI --include='*.ts' --exclude-dir=__tests__ '\bpool\.query[[:space:]]*\(' src/server/modules/reseller; then
+            echo "::error::withTenant bypass -- a raw pool.query( appears in the reseller module. Tenant-owned access MUST go through withTenant (per-tenant forced RLS) and cross-tenant reads through the audited privileged seam (AD-002, HINT-001)."
+            exit 1
+          fi
+          echo "Isolation lint passed: no raw pool.query in the reseller module (all access via withTenant/privileged)."
+
+  semgrep:
+    name: semgrep (reseller)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Semgrep scan (typescript + OWASP top-ten)
+        run: >
+          semgrep scan --error --config p/typescript --config p/owasp-top-ten
+          src/server/modules/reseller

@@ -9,6 +9,7 @@ import { registerEnforcement } from "./enforcement/index.js";
 import { registerIssuance } from "./issuance/index.js";
 import { registerLease } from "./lease/index.js";
 import { registerPolicy } from "./policy/index.js";
+import { registerReseller } from "./reseller/index.js";
 import { registerSigning } from "./signing/index.js";
 import { registerUsage } from "./usage/index.js";
 
@@ -31,6 +32,7 @@ const MODULES: ServerModule[] = [
   registerLease, // E015 — floating & concurrent seats (race-safe lease acquire/renew/release + reclaim sweeper)
   registerUsage, // E016 — usage metering & aggregation (idempotent batch ingest + watermark hourly rollup)
   registerPolicy, // E017 — low-code policy rules (sandboxed author-time-validated + issuance-time bounded effect)
+  registerReseller, // E018 — reseller & white-label tenancy (subtree gate + scoped descent + per-field branding)
 ];
 
 export function registerModules(app: FastifyInstance, deps: AppDeps): void {

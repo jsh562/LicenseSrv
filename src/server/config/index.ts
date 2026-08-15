@@ -103,6 +103,23 @@ export interface AppConfig {
   policyAbsoluteMaxLimit: number; // POLICY_ABSOLUTE_MAX_LIMIT — absolute per-entitlement authored-max ceiling `rule_max` can never exceed (FR-021)
   policyEvaluationRetentionSecs: number; // POLICY_EVALUATION_RETENTION_SECS — append-only policy_evaluation retention window (~90d) (FR-014)
   policyConflictPolicy: "highest_priority_wins"; // POLICY_CONFLICT_POLICY — conflict-resolution policy (highest-priority-wins one effect) (FR-006)
+  // Reseller & white-label tenancy (E018, FR-003/007/008/012; per {SAD:ADR-0015}). Deployment-wide DEFAULTS
+  // for the default hard sub-tenant quota a newly-onboarded reseller receives (FR-003/010), the offboarding
+  // grace window (the stable anchor `graceEndsAt = offboarding_started_at + this` — FR-012), the comma-
+  // separated non-white-labelable trust-signal set the branding resolver ALWAYS sources authoritatively and
+  // NEVER from `branding_profile` (FR-008), and the platform-default branding values that back the lowest
+  // precedence tier (sub-tenant override → reseller default → platform default — FR-007). The reseller module
+  // (`modules/reseller/config.ts`) reads the same SCREAMING_SNAKE keys LIVE. All defaulted + non-secret (this
+  // epic performs NO cryptography and holds no secret — presentation-only, Principle I).
+  resellerDefaultSubTenantQuota: number; // RESELLER_DEFAULT_SUBTENANT_QUOTA — default hard sub-tenant cap at onboarding (FR-003/010)
+  resellerOffboardingGraceSecs: number; // RESELLER_OFFBOARDING_GRACE_SECS — offboarding grace window (~30d); graceEndsAt anchor (FR-012)
+  resellerTrustSignals: string; // RESELLER_TRUST_SIGNALS — comma-separated non-white-labelable trust-signal set (FR-008)
+  resellerPlatformProductName: string; // RESELLER_PLATFORM_PRODUCT_NAME — platform-default product name (branding floor) (FR-007)
+  resellerPlatformColorPrimary: string; // RESELLER_PLATFORM_COLOR_PRIMARY — platform-default primary color (branding floor) (FR-007)
+  resellerPlatformColorSecondary: string; // RESELLER_PLATFORM_COLOR_SECONDARY — platform-default secondary color (branding floor) (FR-007)
+  resellerPlatformSupportUrl: string; // RESELLER_PLATFORM_SUPPORT_URL — platform-default support URL (branding floor) (FR-007)
+  resellerPlatformHelpUrl: string; // RESELLER_PLATFORM_HELP_URL — platform-default help URL (branding floor) (FR-007)
+  resellerPlatformLogoRef: string; // RESELLER_PLATFORM_LOGO_REF — platform-default logo reference (branding floor) (FR-007)
 }
 
 /** Thrown when required configuration is missing/invalid. Message lists each offending setting. */
@@ -203,6 +220,19 @@ const schema = z.object({
   policyAbsoluteMaxLimit: z.coerce.number().positive().default(1_000_000_000), // absolute authored-max ceiling (numeric)
   policyEvaluationRetentionSecs: z.coerce.number().int().positive().default(7_776_000), // 90 days
   policyConflictPolicy: z.enum(["highest_priority_wins"]).default("highest_priority_wins"),
+  // E018 reseller & white-label defaults — a sane default sub-tenant quota, a ~30d offboarding grace window,
+  // the fixed non-white-labelable trust-signal set (revocation/tamper/signing-identity/audit/legal), and the
+  // platform-default branding floor (product name + colors; support/help/logo empty by default). The reseller
+  // module reads the same SCREAMING_SNAKE keys LIVE. Non-secret; operators retune without a migration.
+  resellerDefaultSubTenantQuota: z.coerce.number().int().min(0).default(50),
+  resellerOffboardingGraceSecs: z.coerce.number().int().positive().default(2_592_000), // 30 days
+  resellerTrustSignals: z.string().min(1).default("revocation,tamper,signing_identity,audit,legal"),
+  resellerPlatformProductName: z.string().default("License Server"),
+  resellerPlatformColorPrimary: z.string().default("#1f2937"),
+  resellerPlatformColorSecondary: z.string().default("#3b82f6"),
+  resellerPlatformSupportUrl: z.string().default(""),
+  resellerPlatformHelpUrl: z.string().default(""),
+  resellerPlatformLogoRef: z.string().default(""),
 });
 
 /**
@@ -280,6 +310,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     policyAbsoluteMaxLimit: env.POLICY_ABSOLUTE_MAX_LIMIT,
     policyEvaluationRetentionSecs: env.POLICY_EVALUATION_RETENTION_SECS,
     policyConflictPolicy: env.POLICY_CONFLICT_POLICY,
+    resellerDefaultSubTenantQuota: env.RESELLER_DEFAULT_SUBTENANT_QUOTA,
+    resellerOffboardingGraceSecs: env.RESELLER_OFFBOARDING_GRACE_SECS,
+    resellerTrustSignals: env.RESELLER_TRUST_SIGNALS,
+    resellerPlatformProductName: env.RESELLER_PLATFORM_PRODUCT_NAME,
+    resellerPlatformColorPrimary: env.RESELLER_PLATFORM_COLOR_PRIMARY,
+    resellerPlatformColorSecondary: env.RESELLER_PLATFORM_COLOR_SECONDARY,
+    resellerPlatformSupportUrl: env.RESELLER_PLATFORM_SUPPORT_URL,
+    resellerPlatformHelpUrl: env.RESELLER_PLATFORM_HELP_URL,
+    resellerPlatformLogoRef: env.RESELLER_PLATFORM_LOGO_REF,
     // Secrets follow the <VAR>_FILE convention (file wins; unset → the documented default salt).
     leaseHolderKeySalt: readSecret(env, "LEASE_HOLDER_KEY_SALT") ?? "licensesrv-lease-salt",
     fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
@@ -377,6 +416,16 @@ export function configSummary(c: AppConfig): Record<string, unknown> {
     policyAbsoluteMaxLimit: c.policyAbsoluteMaxLimit,
     policyEvaluationRetentionSecs: c.policyEvaluationRetentionSecs,
     policyConflictPolicy: c.policyConflictPolicy,
+    // E018 reseller & white-label config (non-secret; deployment-wide defaults read live by the reseller module).
+    resellerDefaultSubTenantQuota: c.resellerDefaultSubTenantQuota,
+    resellerOffboardingGraceSecs: c.resellerOffboardingGraceSecs,
+    resellerTrustSignals: c.resellerTrustSignals,
+    resellerPlatformProductName: c.resellerPlatformProductName,
+    resellerPlatformColorPrimary: c.resellerPlatformColorPrimary,
+    resellerPlatformColorSecondary: c.resellerPlatformColorSecondary,
+    resellerPlatformSupportUrl: c.resellerPlatformSupportUrl || "(unset)",
+    resellerPlatformHelpUrl: c.resellerPlatformHelpUrl || "(unset)",
+    resellerPlatformLogoRef: c.resellerPlatformLogoRef || "(unset)",
     // Secrets are never summarised: presence-only, never the value.
     leaseHolderKeySalt: c.leaseHolderKeySalt ? "***" : "(unset)",
     fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",

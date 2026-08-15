@@ -674,3 +674,178 @@ export const policyApi = {
 };
 
 export type PolicyApi = typeof policyApi;
+
+// --- Reseller & white-label tenancy (E018) --------------------------------------------------------
+
+/** A reseller's lifecycle state (server `reseller.status`): reversible read-only cascade on suspend. */
+export type ResellerStatus = "active" | "suspended" | "offboarding";
+/** The 8 white-labelable branding fields (contract `BrandingFieldName`). Trust signals are NEVER here (FR-008). */
+export type BrandingFieldName =
+  | "logoUrl"
+  | "primaryColor"
+  | "secondaryColor"
+  | "productName"
+  | "supportUrl"
+  | "helpUrl"
+  | "emailSenderAddress"
+  | "customDomain";
+/** A partial set of branding field values (only set fields carry a value). */
+export type BrandingFields = Partial<Record<BrandingFieldName, string>>;
+/** A domain/email-sender ownership binding kind (custom Host domain vs from-address sender). */
+export type DomainBindingKind = "domain" | "email_sender";
+/** A binding's verification state machine (pending -> verified -> active). */
+export type DomainBindingStatus = "pending" | "verified" | "active";
+
+/** The 8 branding fields in canonical order — the UI walks EXACTLY these (mirrors server BRANDING_FIELD_NAMES). */
+export const BRANDING_FIELD_NAMES: readonly BrandingFieldName[] = [
+  "logoUrl",
+  "primaryColor",
+  "secondaryColor",
+  "productName",
+  "supportUrl",
+  "helpUrl",
+  "emailSenderAddress",
+  "customDomain",
+];
+
+/** One resolved applied-branding field (contract `ResolvedField`) — `locked` = "set by your provider", no hierarchy. */
+export interface ResolvedField {
+  field: BrandingFieldName;
+  value: string | null;
+  source: string;
+  locked: boolean;
+}
+
+/** The operator-plane reseller projection (contract `Reseller`) — identity + lifecycle + quota position. */
+export interface Reseller {
+  resellerId: string;
+  displayName: string;
+  status: ResellerStatus;
+  subTenantQuota: number;
+  subTenantCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** The deterministic, bounded reseller list + a `truncated` signal. */
+export interface ResellerList {
+  resellers: Reseller[];
+  truncated: boolean;
+}
+
+/** The offboard result — the (possibly still-`offboarding`) status, the unresolved count, and the grace deadline. */
+export interface OffboardResult {
+  resellerId: string;
+  status: ResellerStatus;
+  unresolvedSubTenantCount: number;
+  graceEndsAt: string;
+}
+
+/** A sub-tenant as a reseller/operator sees it — METADATA-ONLY (FR-017): no license/usage/activation data. */
+export interface SubTenant {
+  subTenantId: string;
+  displayName: string;
+  status: "active" | "suspended";
+  readOnly: boolean;
+  createdAt: string;
+  /** Present ONLY on the operator plane (the reseller hierarchy is never disclosed downward, FR-014). */
+  resellerId?: string | null;
+}
+
+/** The reseller's own sub-tenant list + its quota position (used vs the hard cap). */
+export interface SubTenantList {
+  subTenants: SubTenant[];
+  truncated: boolean;
+  subTenantQuota: number;
+  subTenantCount: number;
+}
+
+/** The reseller's OWN branding profile: its field values, its per-field lock set, and the resolved applied branding. */
+export interface ResellerBranding {
+  fields: BrandingFields;
+  locked: BrandingFieldName[];
+  resolved: ResolvedField[];
+  updatedAt: string;
+}
+
+/** A tenant's OWN branding: its overrides, the fields its provider LOCKED (non-editable), and the resolved branding. */
+export interface SubTenantBranding {
+  overrides: BrandingFields;
+  lockedFields: BrandingFieldName[];
+  resolved: ResolvedField[];
+  updatedAt: string;
+}
+
+/** A domain/email-sender binding (contract `DomainBinding`) — `challenge` is a PUBLIC DNS value, never a secret. */
+export interface DomainBinding {
+  bindingId: string;
+  kind: DomainBindingKind;
+  host: string;
+  status: DomainBindingStatus;
+  challenge: string;
+  verifiedAt: string | null;
+  activatedAt: string | null;
+  createdAt: string;
+}
+
+/** The onboard-a-reseller request — ONE create-or-select flow (create a new tenant OR promote an existing one). */
+export type OnboardResellerInput =
+  | { mode: "create_new"; displayName: string; firstAdminUserReference: string; subTenantQuota?: number | null }
+  | { mode: "promote_existing"; tenantId: string; firstAdminUserReference: string; subTenantQuota?: number | null };
+
+/** A sub-tenant move destination (operator-only) — to another reseller OR back to direct-platform. */
+export type MoveDestination =
+  | { type: "to_reseller"; destinationResellerId: string }
+  | { type: "to_direct_platform" };
+
+/**
+ * The reseller & white-label tenancy API surface (mirrors src/server/modules/reseller/routes.ts). THREE admin
+ * planes — OPERATOR (reseller lifecycle), RESELLER (own sub-tenants / branding / domains), and SUB-TENANT (own
+ * branding) — all console session + RBAC; every mutation rides the double-submit CSRF token automatically. The
+ * server enforces plane + RBAC + CSRF fail-closed regardless of what the SPA shows; an out-of-scope id is 404.
+ */
+export const resellerApi = {
+  // Operator plane — reseller lifecycle.
+  listResellers: (status?: ResellerStatus) =>
+    request<ResellerList>("GET", `/admin/operator/resellers${status ? `?status=${status}` : ""}`),
+  getReseller: (resellerId: string) => request<Reseller>("GET", `/admin/operator/resellers/${resellerId}`),
+  onboardReseller: (input: OnboardResellerInput) => request<Reseller>("POST", "/admin/operator/resellers", input),
+  updateQuota: (resellerId: string, subTenantQuota: number) =>
+    request<Reseller>("PATCH", `/admin/operator/resellers/${resellerId}/quota`, { subTenantQuota }),
+  suspendReseller: (resellerId: string) =>
+    request<Reseller>("POST", `/admin/operator/resellers/${resellerId}/suspend`),
+  reinstateReseller: (resellerId: string) =>
+    request<Reseller>("POST", `/admin/operator/resellers/${resellerId}/reinstate`),
+  offboardReseller: (resellerId: string) =>
+    request<OffboardResult>("POST", `/admin/operator/resellers/${resellerId}/offboard`),
+  moveSubTenant: (subTenantId: string, destination: MoveDestination) =>
+    request<SubTenant>("POST", `/admin/operator/sub-tenants/${subTenantId}/move`, { destination }),
+
+  // Reseller plane — own sub-tenants.
+  listSubTenants: () => request<SubTenantList>("GET", "/admin/reseller/sub-tenants"),
+  getSubTenant: (subTenantId: string) => request<SubTenant>("GET", `/admin/reseller/sub-tenants/${subTenantId}`),
+  provisionSubTenant: (input: { displayName: string; firstAdminUserReference: string }) =>
+    request<SubTenant>("POST", "/admin/reseller/sub-tenants", input),
+
+  // Reseller plane — own branding + per-field locks.
+  getResellerBranding: () => request<ResellerBranding>("GET", "/admin/reseller/branding"),
+  setResellerBranding: (input: { fields: BrandingFields; locked?: BrandingFieldName[] }) =>
+    request<ResellerBranding>("PUT", "/admin/reseller/branding", input),
+
+  // Reseller plane — domain / email-sender ownership verification (verify -> activate).
+  listDomains: () => request<{ bindings: DomainBinding[]; truncated: boolean }>("GET", "/admin/reseller/domains"),
+  getDomain: (bindingId: string) => request<DomainBinding>("GET", `/admin/reseller/domains/${bindingId}`),
+  initiateDomain: (input: { kind: DomainBindingKind; host: string }) =>
+    request<DomainBinding>("POST", "/admin/reseller/domains", input),
+  verifyDomain: (bindingId: string) =>
+    request<DomainBinding>("POST", `/admin/reseller/domains/${bindingId}/verify`),
+  activateDomain: (bindingId: string) =>
+    request<DomainBinding>("POST", `/admin/reseller/domains/${bindingId}/activate`),
+
+  // Sub-tenant plane — own branding overrides + resolved applied branding.
+  getBranding: () => request<SubTenantBranding>("GET", "/admin/branding"),
+  setBranding: (overrides: BrandingFields) =>
+    request<SubTenantBranding>("PUT", "/admin/branding", { overrides }),
+};
+
+export type ResellerApi = typeof resellerApi;

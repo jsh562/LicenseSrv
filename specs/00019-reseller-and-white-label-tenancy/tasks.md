@@ -40,10 +40,10 @@ description: "Task list for feature implementation: Reseller and White-label Ten
 
 ## Phase 1: Setup (Repository / Workspace Delta)
 
-- [ ] T001 [P] Extend coverage globs for src/server/modules/reseller/** (≥80% line+branch) in vitest.config.ts
-- [ ] T002 {FR-003,FR-007,FR-008,FR-012} Reseller config keys (default sub-tenant quota; offboarding notice/grace window; non-white-labelable trust-signal set; platform-default branding) in src/server/config/index.ts
-- [ ] T003 Module scaffold: registerReseller seam + ResellerError + app.reseller (subtree gate seam) in src/server/modules/reseller/index.ts → exports: registerReseller, ResellerError(code,status,details)
-- [ ] T004 Register registerReseller after registerPolicy (end of MODULES) in src/server/modules/index.ts ← T003:registerReseller
+- [X] T001 [P] Extend coverage globs for src/server/modules/reseller/** (≥80% line+branch) in vitest.config.ts
+- [X] T002 {FR-003,FR-007,FR-008,FR-012} Reseller config keys (default sub-tenant quota; offboarding notice/grace window; non-white-labelable trust-signal set; platform-default branding) in src/server/config/index.ts
+- [X] T003 Module scaffold: registerReseller seam + ResellerError + app.reseller (subtree gate seam) in src/server/modules/reseller/index.ts → exports: registerReseller, ResellerError(code,status,details)
+- [X] T004 Register registerReseller after registerPolicy (end of MODULES) in src/server/modules/index.ts ← T003:registerReseller
 
 ---
 
@@ -51,15 +51,15 @@ description: "Task list for feature implementation: Reseller and White-label Ten
 
 **The migration `0014` (T008, verified by T009), the module scaffold + seam (Phase 1), and the shared building blocks — `config.ts` (default quota / grace window / trust-signal set / platform-default branding resolver), `reseller-repo.ts` (reseller CRUD + status/quota + parent link + the privileged subtree READ), `gate.ts` (subtree-membership gate + scoped descent + downward-only 404), and `audit.ts` (the dual-identity projection) — block every delivery story (US1 administration, US2 branding, US3 isolation/audit, US4 lifecycle, US5 verification all compose them). Complete before any US phase. The unit tests (T005–T007) are TDD-first and precede their implementations; the migration integration test (T009) verifies the finalized DDL. The gate + migration tests carry the load-bearing isolation evidence (unset-GUC-0-rows, one-level CHECK, one-binding-per-host) HINT-001/002 require.**
 
-- [ ] T005 [P] Unit (TDD): config resolvers — default sub-tenant quota, offboarding grace window, trust-signal set, platform-default branding in src/server/modules/reseller/__tests__/config.unit.test.ts
-- [ ] T006 [P] Unit (TDD): subtree-membership gate + scoped-descent decision + downward-only 404 (no disclosure) logic (pure) in src/server/modules/reseller/__tests__/gate.unit.test.ts
-- [ ] T007 [P] Unit (TDD): dual-identity audit projection shape — tenant_id=target, actor=reseller-admin, actor_reseller_id=acting reseller (INV-8) in src/server/modules/reseller/__tests__/audit.unit.test.ts
-- [ ] T008 Migration 0014: tenant.parent_reseller_id self-ref FK + CHECK(<>id) + partial idx; reseller + branding_profile + domain_binding (forced RLS, grants, indexes, global one-binding-per-host partial-unique WHERE status IN verified|active); audit_log.actor_reseller_id in migrations/0014_reseller_branding.sql
-- [ ] T009 [P] Migration IT (TDD): unset-GUC→0-rows on all three new tables; one-level CHECK(<>id); one-binding-per-host partial-unique (many pending, ≤1 verified/active) in src/server/modules/reseller/__tests__/migration.integration.test.ts after:T008
-- [ ] T010 {FR-003,FR-008} Config resolver — default quota + grace window + trust-signal set + platform-default branding in src/server/modules/reseller/config.ts → exports: ResellerConfig after:T002
-- [ ] T011 Reseller repo: reseller CRUD + status/quota + parent_reseller_id link + subtree list (privileged seam, ownership-asserted) via withTenant/privileged in src/server/modules/reseller/reseller-repo.ts → exports: ResellerRepo after:T008
-- [ ] T012 {FR-002,FR-004,FR-005} Subtree-membership gate + scoped descent (assert ownership → operate under sub-tenant scope) + downward-only 404 no-disclosure in src/server/modules/reseller/gate.ts ← T011:ResellerRepo → exports: assertSubtreeMembership, withSubTenantScope after:T011
-- [ ] T013 {FR-009} Dual-identity audit projection (actor reseller-admin + target sub-tenant + actor_reseller_id) over append-only audit_log in src/server/modules/reseller/audit.ts → exports: writeResellerAudit after:T008
+- [X] T005 [P] Unit (TDD): config resolvers — default sub-tenant quota, offboarding grace window, trust-signal set, platform-default branding in src/server/modules/reseller/__tests__/config.unit.test.ts
+- [X] T006 [P] Unit (TDD): subtree-membership gate + scoped-descent decision + downward-only 404 (no disclosure) logic (pure) in src/server/modules/reseller/__tests__/gate.unit.test.ts
+- [X] T007 [P] Unit (TDD): dual-identity audit projection shape — tenant_id=target, actor=reseller-admin, actor_reseller_id=acting reseller (INV-8) in src/server/modules/reseller/__tests__/audit.unit.test.ts
+- [X] T008 Migration 0014: tenant.parent_reseller_id self-ref FK + CHECK(<>id) + partial idx; reseller + branding_profile + domain_binding (forced RLS, grants, indexes, global one-binding-per-host partial-unique WHERE status IN verified|active); audit_log.actor_reseller_id in migrations/0014_reseller_branding.sql
+- [X] T009 [P] Migration IT (TDD): unset-GUC→0-rows on all three new tables; one-level CHECK(<>id); one-binding-per-host partial-unique (many pending, ≤1 verified/active) in src/server/modules/reseller/__tests__/migration.integration.test.ts after:T008
+- [X] T010 {FR-003,FR-008} Config resolver — default quota + grace window + trust-signal set + platform-default branding in src/server/modules/reseller/config.ts → exports: ResellerConfig after:T002
+- [X] T011 Reseller repo: reseller CRUD + status/quota + parent_reseller_id link + subtree list (privileged seam, ownership-asserted) via withTenant/privileged in src/server/modules/reseller/reseller-repo.ts → exports: ResellerRepo after:T008
+- [X] T012 {FR-002,FR-004,FR-005} Subtree-membership gate + scoped descent (assert ownership → operate under sub-tenant scope) + downward-only 404 no-disclosure in src/server/modules/reseller/gate.ts ← T011:ResellerRepo → exports: assertSubtreeMembership, withSubTenantScope after:T011
+- [X] T013 {FR-009} Dual-identity audit projection (actor reseller-admin + target sub-tenant + actor_reseller_id) over append-only audit_log in src/server/modules/reseller/audit.ts → exports: writeResellerAudit after:T008
 
 ---
 
@@ -67,13 +67,13 @@ description: "Task list for feature implementation: Reseller and White-label Ten
 
 **Independent test**: seed a reseller with sub-tenants A and B plus an unrelated sibling reseller; the reseller-admin lists and administers only A and B (SC-001); a reference to the sibling's customer, a parent, or the platform resolves 404 with no existence disclosure (SC-002); provisioning within quota creates an immediately-administrable sub-tenant, and at the hard cap → 409 quota_exceeded (SC-008); an action reserved for the operator (e.g. move) attempted by a reseller-admin → 403 + security event (US1-AS4); no license/usage/activation data of any sub-tenant is ever returned (FR-017).
 
-- [ ] T014 [P] [US1] {FR-002,FR-004} IT (TDD): list/get own sub-tenants (metadata only); sibling/parent/platform id → 404 no disclosure; unset-GUC → 0 rows (SC-001/002) in src/server/modules/reseller/__tests__/subtenants.integration.test.ts
-- [ ] T015 [P] [US1] {FR-002,FR-003} IT (TDD): provision under hard quota; over-quota → 409 quota_exceeded; reseller-admin attempting an operator action → 403 + security event (SC-008, US1-AS4) in src/server/modules/reseller/__tests__/provision.integration.test.ts
-- [ ] T016 [P] [US1] {FR-017} IT (TDD): metadata-only — no license/usage/activation field in any sub-tenant response/list/repo projection (SC-001) in src/server/modules/reseller/__tests__/metadata-only.integration.test.ts
-- [ ] T017 [US1] {FR-002} [COMPLETES FR-002] Reseller plane + RBAC (reseller-admin = admin/owner of a reseller tenant) fail-closed + whole-subtree authority wired into routes in src/server/modules/reseller/routes.ts ← T012:assertSubtreeMembership after:T012
-- [ ] T018 [US1] {FR-004} [COMPLETES FR-004] Routes: GET list + GET detail own sub-tenants; out-of-subtree → 404 no disclosure + security event in src/server/modules/reseller/routes.ts ← T012:assertSubtreeMembership after:T017
-- [ ] T019 [US1] {FR-003} [COMPLETES FR-003] Provision sub-tenant under the hard quota (409 quota_exceeded) in src/server/modules/reseller/lifecycle.ts + routes.ts ← T011:ResellerRepo after:T018 → exports: provisionSubTenant
-- [ ] T020 [US1] {FR-017} [COMPLETES FR-017] Metadata-only projection (display name/status/branding-context only; no license/usage/activation) in src/server/modules/reseller/reseller-repo.ts + routes.ts after:T019
+- [X] T014 [P] [US1] {FR-002,FR-004} IT (TDD): list/get own sub-tenants (metadata only); sibling/parent/platform id → 404 no disclosure; unset-GUC → 0 rows (SC-001/002) in src/server/modules/reseller/__tests__/subtenants.integration.test.ts
+- [X] T015 [P] [US1] {FR-002,FR-003} IT (TDD): provision under hard quota; over-quota → 409 quota_exceeded; reseller-admin attempting an operator action → 403 + security event (SC-008, US1-AS4) in src/server/modules/reseller/__tests__/provision.integration.test.ts
+- [X] T016 [P] [US1] {FR-017} IT (TDD): metadata-only — no license/usage/activation field in any sub-tenant response/list/repo projection (SC-001) in src/server/modules/reseller/__tests__/metadata-only.integration.test.ts
+- [X] T017 [US1] {FR-002} [COMPLETES FR-002] Reseller plane + RBAC (reseller-admin = admin/owner of a reseller tenant) fail-closed + whole-subtree authority wired into routes in src/server/modules/reseller/routes.ts ← T012:assertSubtreeMembership after:T012
+- [X] T018 [US1] {FR-004} [COMPLETES FR-004] Routes: GET list + GET detail own sub-tenants; out-of-subtree → 404 no disclosure + security event in src/server/modules/reseller/routes.ts ← T012:assertSubtreeMembership after:T017
+- [X] T019 [US1] {FR-003} [COMPLETES FR-003] Provision sub-tenant under the hard quota (409 quota_exceeded) in src/server/modules/reseller/lifecycle.ts + routes.ts ← T011:ResellerRepo after:T018 → exports: provisionSubTenant
+- [X] T020 [US1] {FR-017} [COMPLETES FR-017] Metadata-only projection (display name/status/branding-context only; no license/usage/activation) in src/server/modules/reseller/reseller-repo.ts + routes.ts after:T019
 
 ---
 
@@ -81,14 +81,14 @@ description: "Task list for feature implementation: Reseller and White-label Ten
 
 **Independent test**: configure reseller branding with a locked field and one sub-tenant override; a customer sees the reseller brand by default (SC-003) and its override where set, while the locked field stays authoritative — a sub-tenant override of it is refused 409 field_locked and it is shown "set by your provider" without revealing the reseller (SC-004/012); each of the 8 fields resolves independently by precedence sub-tenant→reseller→platform (SC-004); a revocation/tamper/security notice, signing identity, audit record, or legal text is always shown authoritatively regardless of branding (SC-006).
 
-- [ ] T021 [P] [US2] {FR-006,FR-007,FR-008} Unit (TDD): per-field precedence (sub-tenant→reseller→platform) + reseller locks win + trust-signal exclusion from resolution in src/server/modules/reseller/__tests__/branding.unit.test.ts
-- [ ] T022 [P] [US2] {FR-006,FR-007} IT (TDD): reseller branding CRUD + per-field locks; sub-tenant override; locked-field override → 409 field_locked; resolved per field (SC-003/004) in src/server/modules/reseller/__tests__/branding.integration.test.ts
-- [ ] T023 [P] [US2] {FR-008,FR-014} IT (TDD): locked field shown "set by your provider" without disclosing the hierarchy; trust signals always authoritative (SC-006/012) in src/server/modules/reseller/__tests__/branding-hierarchy.integration.test.ts
-- [ ] T024 [US2] {FR-006} branding_profile CRUD + per-field locked flags + hierarchy-safe lock presentation in src/server/modules/reseller/branding.ts ← T010:ResellerConfig → exports: BrandingRepo, resolveBranding after:T013
-- [ ] T025 [US2] {FR-007} [COMPLETES FR-007] Per-field precedence resolver (each of the 8 fields independent; locks authoritative; active-binding gate for domain/email) in src/server/modules/reseller/branding.ts after:T024
-- [ ] T026 [US2] {FR-008} [COMPLETES FR-008] Trust-signal exclusion — resolver never sources revocation/signing/audit/legal from branding_profile in src/server/modules/reseller/branding.ts after:T025
-- [ ] T027 [US2] {FR-006} [COMPLETES FR-006] Routes: GET/PUT reseller branding (+locks) + GET/PUT sub-tenant branding (409 field_locked / not_verified) in src/server/modules/reseller/routes.ts ← T024:resolveBranding after:T026
-- [ ] T028 [US2] {FR-014} [COMPLETES FR-014] Sub-tenant experience unchanged bar applied branding; hierarchy hidden (no other tenant, no reseller disclosure) in src/server/modules/reseller/branding.ts + routes.ts after:T027
+- [X] T021 [P] [US2] {FR-006,FR-007,FR-008} Unit (TDD): per-field precedence (sub-tenant→reseller→platform) + reseller locks win + trust-signal exclusion from resolution in src/server/modules/reseller/__tests__/branding.unit.test.ts
+- [X] T022 [P] [US2] {FR-006,FR-007} IT (TDD): reseller branding CRUD + per-field locks; sub-tenant override; locked-field override → 409 field_locked; resolved per field (SC-003/004) in src/server/modules/reseller/__tests__/branding.integration.test.ts
+- [X] T023 [P] [US2] {FR-008,FR-014} IT (TDD): locked field shown "set by your provider" without disclosing the hierarchy; trust signals always authoritative (SC-006/012) in src/server/modules/reseller/__tests__/branding-hierarchy.integration.test.ts
+- [X] T024 [US2] {FR-006} branding_profile CRUD + per-field locked flags + hierarchy-safe lock presentation in src/server/modules/reseller/branding.ts ← T010:ResellerConfig → exports: BrandingRepo, resolveBranding after:T013
+- [X] T025 [US2] {FR-007} [COMPLETES FR-007] Per-field precedence resolver (each of the 8 fields independent; locks authoritative; active-binding gate for domain/email) in src/server/modules/reseller/branding.ts after:T024
+- [X] T026 [US2] {FR-008} [COMPLETES FR-008] Trust-signal exclusion — resolver never sources revocation/signing/audit/legal from branding_profile in src/server/modules/reseller/branding.ts after:T025
+- [X] T027 [US2] {FR-006} [COMPLETES FR-006] Routes: GET/PUT reseller branding (+locks) + GET/PUT sub-tenant branding (409 field_locked / not_verified) in src/server/modules/reseller/routes.ts ← T024:resolveBranding after:T026
+- [X] T028 [US2] {FR-014} [COMPLETES FR-014] Sub-tenant experience unchanged bar applied branding; hierarchy hidden (no other tenant, no reseller disclosure) in src/server/modules/reseller/branding.ts + routes.ts after:T027
 
 ---
 
@@ -96,10 +96,10 @@ description: "Task list for feature implementation: Reseller and White-label Ten
 
 **Independent test**: drive actions across two resellers and confirm no cross-subtree read/write is reachable at the data layer — an upward (parent/platform), lateral (sibling), or IDOR-by-id attempt returns 404 with no disclosure + a security event, and an unset tenant GUC yields zero rows (SC-007); every reseller action on a sub-tenant produces one append-only audit row carrying both the acting reseller-admin and the target sub-tenant, and no role — including owner and reseller-admin — can edit or delete it (SC-005).
 
-- [ ] T029 [P] [US3] {FR-005} IT (TDD): upward/lateral/IDOR escalation → 404 no disclosure + security event; unset-GUC → 0 rows at the data layer (SC-002/007) in src/server/modules/reseller/__tests__/isolation-escalation.integration.test.ts
-- [ ] T030 [P] [US3] {FR-009} IT (TDD): dual-identity audit on every reseller action (actor + actor_reseller_id + target); append-only, edit/delete refused for all roles (SC-005) in src/server/modules/reseller/__tests__/audit.integration.test.ts
-- [ ] T031 [US3] {FR-005} [COMPLETES FR-005] Enforce no upward/lateral escalation at the data-access layer (no RLS broadening; privileged seam + scoped descent) + security-event audit in src/server/modules/reseller/gate.ts after:T012
-- [ ] T032 [US3] {FR-009} [COMPLETES FR-009] Wire dual-identity append-only audit into every reseller mutation and every denied escalation in src/server/modules/reseller/audit.ts + routes.ts ← T013:writeResellerAudit after:T031
+- [X] T029 [P] [US3] {FR-005} IT (TDD): upward/lateral/IDOR escalation → 404 no disclosure + security event; unset-GUC → 0 rows at the data layer (SC-002/007) in src/server/modules/reseller/__tests__/isolation-escalation.integration.test.ts
+- [X] T030 [P] [US3] {FR-009} IT (TDD): dual-identity audit on every reseller action (actor + actor_reseller_id + target); append-only, edit/delete refused for all roles (SC-005) in src/server/modules/reseller/__tests__/audit.integration.test.ts
+- [X] T031 [US3] {FR-005} [COMPLETES FR-005] Enforce no upward/lateral escalation at the data-access layer (no RLS broadening; privileged seam + scoped descent) + security-event audit in src/server/modules/reseller/gate.ts after:T012
+- [X] T032 [US3] {FR-009} [COMPLETES FR-009] Wire dual-identity append-only audit into every reseller mutation and every denied escalation in src/server/modules/reseller/audit.ts + routes.ts ← T013:writeResellerAudit after:T031
 
 ---
 
@@ -107,18 +107,18 @@ description: "Task list for feature implementation: Reseller and White-label Ten
 
 **Independent test**: onboard a reseller by creating a new tenant OR promoting an existing one (a tenant already a reseller/sub-tenant → 409 onboarding_conflict), establishing the first reseller-admin and the platform-default quota; exceed the quota (refused); suspend it and confirm the read-only cascade (a sub-tenant mutation → 409 reseller_suspended) while issued licenses keep verifying offline, then reinstate (SC-009); attempt offboarding with unresolved sub-tenants (409 sub_tenants_unresolved) then resolve every sub-tenant by transfer/reassign (no orphans, each move audited on source + destination) (SC-010); confirm only the operator may move a sub-tenant and last-owner removal is refused (409 last_owner).
 
-- [ ] T033 [P] [US4] {FR-001,FR-010} IT (TDD): onboard create-new OR promote-existing + first admin + default quota; already-reseller/already-sub-tenant → 409 onboarding_conflict in src/server/modules/reseller/__tests__/onboard.integration.test.ts
-- [ ] T034 [P] [US4] {FR-011} IT (TDD): suspend → read-only cascade (409 reseller_suspended) + reinstate restores; issued licenses verify offline unchanged (SC-009) in src/server/modules/reseller/__tests__/suspend.integration.test.ts
-- [ ] T035 [P] [US4] {FR-012} IT (TDD): offboard blocked (409 sub_tenants_unresolved) until every sub-tenant resolved; grace window; resolution audited (SC-010) in src/server/modules/reseller/__tests__/offboard.integration.test.ts
-- [ ] T036 [P] [US4] {FR-015,FR-016} IT (TDD): operator-only move re-points parent + preserves overrides + re-resolves locks + dual audit; last-owner removal → 409 last_owner in src/server/modules/reseller/__tests__/move-lastowner.integration.test.ts
-- [ ] T037 [US4] {FR-001} [COMPLETES FR-001] Onboard create-or-promote (one-level rule) + first-admin hook in src/server/modules/reseller/lifecycle.ts + src/server/modules/admin/{routes.ts,users.ts} ← T011:ResellerRepo after:T032
-- [ ] T038 [US4] {FR-010} [COMPLETES FR-010] Onboarding establishes reseller + first reseller-admin + platform-default quota in src/server/modules/reseller/lifecycle.ts + routes.ts ← T010:ResellerConfig after:T037
-- [ ] T039 [US4] {FR-011} [COMPLETES FR-011] Suspend/reinstate + derived read-only cascade (409 reseller_suspended; no fan-out write) in src/server/modules/reseller/lifecycle.ts + gate.ts after:T038
-- [ ] T040 [US4] {FR-012} [COMPLETES FR-012] Offboard transfer-or-reassign (no orphans) + notice/grace window + audited; idempotent progress in src/server/modules/reseller/lifecycle.ts + routes.ts after:T039
-- [ ] T041 [US4] {FR-015} [COMPLETES FR-015] Operator-only move: re-point parent, keep overrides, re-resolve locks to destination, dual audit source+dest in src/server/modules/reseller/lifecycle.ts + branding.ts ← T024:resolveBranding after:T040
-- [ ] T042 [US4] {FR-016} [COMPLETES FR-016] Last-owner protection for reseller + sub-tenant tenants (409 last_owner) in src/server/modules/admin/users.ts after:T037
-- [ ] T051 [P] [US4] {FR-003} IT (TDD): operator quota-update — only the operator may raise/lower a reseller's quota (reseller-plane attempt → 403 security event); lowering below current sub-tenant count is refused; over-cap provisioning still blocked; operator reseller list/get deterministic + bounded in src/server/modules/reseller/__tests__/operator-reseller.integration.test.ts
-- [ ] T052 [US4] {FR-003} Operator-plane routes: PATCH /admin/operator/resellers/{id}/quota (operator-only + CSRF + audited) + GET list/detail resellers (deterministic, bounded, truncated) in src/server/modules/reseller/routes.ts after:T038
+- [X] T033 [P] [US4] {FR-001,FR-010} IT (TDD): onboard create-new OR promote-existing + first admin + default quota; already-reseller/already-sub-tenant → 409 onboarding_conflict in src/server/modules/reseller/__tests__/onboard.integration.test.ts
+- [X] T034 [P] [US4] {FR-011} IT (TDD): suspend → read-only cascade (409 reseller_suspended) + reinstate restores; issued licenses verify offline unchanged (SC-009) in src/server/modules/reseller/__tests__/suspend.integration.test.ts
+- [X] T035 [P] [US4] {FR-012} IT (TDD): offboard blocked (409 sub_tenants_unresolved) until every sub-tenant resolved; grace window; resolution audited (SC-010) in src/server/modules/reseller/__tests__/offboard.integration.test.ts
+- [X] T036 [P] [US4] {FR-015,FR-016} IT (TDD): operator-only move re-points parent + preserves overrides + re-resolves locks + dual audit; last-owner removal → 409 last_owner in src/server/modules/reseller/__tests__/move-lastowner.integration.test.ts
+- [X] T037 [US4] {FR-001} [COMPLETES FR-001] Onboard create-or-promote (one-level rule) + first-admin hook in src/server/modules/reseller/lifecycle.ts + src/server/modules/admin/{routes.ts,users.ts} ← T011:ResellerRepo after:T032
+- [X] T038 [US4] {FR-010} [COMPLETES FR-010] Onboarding establishes reseller + first reseller-admin + platform-default quota in src/server/modules/reseller/lifecycle.ts + routes.ts ← T010:ResellerConfig after:T037
+- [X] T039 [US4] {FR-011} [COMPLETES FR-011] Suspend/reinstate + derived read-only cascade (409 reseller_suspended; no fan-out write) in src/server/modules/reseller/lifecycle.ts + gate.ts after:T038
+- [X] T040 [US4] {FR-012} [COMPLETES FR-012] Offboard transfer-or-reassign (no orphans) + notice/grace window + audited; idempotent progress in src/server/modules/reseller/lifecycle.ts + routes.ts after:T039
+- [X] T041 [US4] {FR-015} [COMPLETES FR-015] Operator-only move: re-point parent, keep overrides, re-resolve locks to destination, dual audit source+dest in src/server/modules/reseller/lifecycle.ts + branding.ts ← T024:resolveBranding after:T040
+- [X] T042 [US4] {FR-016} [COMPLETES FR-016] Last-owner protection for reseller + sub-tenant tenants (409 last_owner) in src/server/modules/admin/users.ts after:T037
+- [X] T051 [P] [US4] {FR-003} IT (TDD): operator quota-update — only the operator may raise/lower a reseller's quota (reseller-plane attempt → 403 security event); lowering below current sub-tenant count is refused; over-cap provisioning still blocked; operator reseller list/get deterministic + bounded in src/server/modules/reseller/__tests__/operator-reseller.integration.test.ts
+- [X] T052 [US4] {FR-003} Operator-plane routes: PATCH /admin/operator/resellers/{id}/quota (operator-only + CSRF + audited) + GET list/detail resellers (deterministic, bounded, truncated) in src/server/modules/reseller/routes.ts after:T038
 
 ---
 
@@ -126,19 +126,19 @@ description: "Task list for feature implementation: Reseller and White-label Ten
 
 **Independent test**: initiate verification for a custom domain (DNS TXT/CNAME) and an email sender (SPF + DKIM/DMARC), attempt to activate before verification (409 not_verified), verify then activate (pending→verified→active), and confirm a verified domain resolves the correct tenant and applies its branding (SC-011); a host already bound (verified/active) to another tenant is refused on both verify and activate (409 binding_conflict) with no cross-tenant disclosure.
 
-- [ ] T043 [P] [US5] {FR-013} Unit (TDD): verification state machine (pending→verified→active) + method-per-type (domain TXT/CNAME; email SPF/DKIM/DMARC) + host normalization in src/server/modules/reseller/__tests__/verify.unit.test.ts
-- [ ] T044 [P] [US5] {FR-013} IT (TDD): initiate/verify/activate; verify-before-activate (409 not_verified); one-binding-per-host (409 binding_conflict) on verify AND activate (SC-011) in src/server/modules/reseller/__tests__/verify.integration.test.ts
-- [ ] T045 [US5] {FR-013} Domain (TXT/CNAME) + email (SPF/DKIM/DMARC) verification + state machine + one-binding-per-host (injected DNS result) in src/server/modules/reseller/verify.ts ← T011:ResellerRepo → exports: DomainVerifier after:T011
-- [ ] T046 [US5] {FR-013} [COMPLETES FR-013] Routes: initiate/list/get/verify/activate domain bindings; verify→activate; 409 binding_conflict/not_verified in src/server/modules/reseller/routes.ts ← T045:DomainVerifier after:T045
+- [X] T043 [P] [US5] {FR-013} Unit (TDD): verification state machine (pending→verified→active) + method-per-type (domain TXT/CNAME; email SPF/DKIM/DMARC) + host normalization in src/server/modules/reseller/__tests__/verify.unit.test.ts
+- [X] T044 [P] [US5] {FR-013} IT (TDD): initiate/verify/activate; verify-before-activate (409 not_verified); one-binding-per-host (409 binding_conflict) on verify AND activate (SC-011) in src/server/modules/reseller/__tests__/verify.integration.test.ts
+- [X] T045 [US5] {FR-013} Domain (TXT/CNAME) + email (SPF/DKIM/DMARC) verification + state machine + one-binding-per-host (injected DNS result) in src/server/modules/reseller/verify.ts ← T011:ResellerRepo → exports: DomainVerifier after:T011
+- [X] T046 [US5] {FR-013} [COMPLETES FR-013] Routes: initiate/list/get/verify/activate domain bindings; verify→activate; 409 binding_conflict/not_verified in src/server/modules/reseller/routes.ts ← T045:DomainVerifier after:T045
 
 ---
 
 ## Phase 8: Polish & Cross-Cutting Concerns
 
-- [ ] T047 Finalize double-submit CSRF + RBAC/plane 403 on every mutation across all three planes; audit each denial as a security event in src/server/modules/reseller/routes.ts after:T046
-- [ ] T048 Enforce ≥80% line+branch coverage of src/server/modules/reseller/** in vitest.config.ts after:T047
-- [ ] T049 [P] Reseller CI (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep; SHA-pinned actions) in .github/workflows/reseller.yml mirroring usage.yml
-- [ ] T050 [P] Reseller admin-ui pages: operator reseller mgmt + sub-tenant mgmt + branding editor (per-field + locks) + domain/email verify in src/admin-ui/src/pages/reseller/index.tsx after:T046
+- [X] T047 Finalize double-submit CSRF + RBAC/plane 403 on every mutation across all three planes; audit each denial as a security event in src/server/modules/reseller/routes.ts after:T046
+- [X] T048 Enforce ≥80% line+branch coverage of src/server/modules/reseller/** in vitest.config.ts after:T047
+- [X] T049 [P] Reseller CI (typecheck+lint, Testcontainers IT+coverage, npm audit, semgrep; SHA-pinned actions) in .github/workflows/reseller.yml mirroring usage.yml
+- [X] T050 [P] Reseller admin-ui pages: operator reseller mgmt + sub-tenant mgmt + branding editor (per-field + locks) + domain/email verify in src/admin-ui/src/pages/reseller/index.tsx after:T046
 
 ---
 
