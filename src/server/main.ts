@@ -11,6 +11,8 @@
 // `startTracing()` is fail-open and idempotent — a failed/absent Collector never crashes bootstrap.
 import "./observability/tracing.js";
 
+import { pathToFileURL } from "node:url";
+
 import type { FastifyInstance } from "fastify";
 import type pg from "pg";
 
@@ -359,8 +361,16 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker, rollupWorker, usageRetentionWorker, policyRetentionWorker };
 }
 
-// CLI entry: `node dist/server/main.js` (the image's serve command).
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`;
+// CLI entry: `node dist/server/main.js` (the image's serve command, and the native `start:native` path).
+//
+// Use `pathToFileURL` rather than hand-building a `file://` string. On POSIX the manual form happens to
+// work because argv[1] starts with `/` ("file://" + "/app/x.js" === "file:///app/x.js"), but on Windows
+// argv[1] is `S:\path\x.js`, so the manual form yields `file://S:/path/x.js` (two slashes) while
+// `import.meta.url` is `file:///S:/path/x.js` (three — the empty authority). They never match, `isMain`
+// stays false, and the process exits 0 WITHOUT STARTING THE SERVER and without logging anything.
+// `pathToFileURL` also handles UNC paths and percent-encodes characters that are legal in paths but not
+// in URLs (spaces, `#`, `?`), which a manual replace silently corrupts.
+const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   startServer().catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
