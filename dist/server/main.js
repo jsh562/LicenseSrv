@@ -10,6 +10,7 @@
 // first-position import is the belt-and-braces fallback so a bare `node dist/server/main.js` still traces.
 // `startTracing()` is fail-open and idempotent — a failed/absent Collector never crashes bootstrap.
 import "./observability/tracing.js";
+import { pathToFileURL } from "node:url";
 import { createApp } from "./app.js";
 import { configSummary, loadConfig } from "./config/index.js";
 import { applySecretFile } from "./config/secrets.js";
@@ -22,6 +23,8 @@ import { loadEnforcementConfig } from "./modules/enforcement/config.js";
 import { startCrlWorker } from "./modules/enforcement/crl-worker.js";
 import { loadLeaseConfig } from "./modules/lease/config.js";
 import { startReclaimWorker } from "./modules/lease/reclaim-worker.js";
+import { loadPolicyConfig } from "./modules/policy/config.js";
+import { startPolicyRetentionWorker } from "./modules/policy/retention-worker.js";
 import { loadUsageConfig } from "./modules/usage/config.js";
 import { startUsageRetentionWorker } from "./modules/usage/retention-worker.js";
 import { startRollupWorker } from "./modules/usage/rollup-worker.js";
@@ -246,6 +249,28 @@ export async function startServer(env = process.env) {
     catch (err) {
         app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "usage retention worker failed to start (fail-open)");
     }
+    // Policy-evaluation retention/prune worker (E017/US5, FR-014; AD-008, INV-8): a periodic OWNER-ROLE maintenance
+    // job that prunes append-only `policy_evaluation` audit rows once older than the config-sourced retention window
+    // (`policyEvaluationRetentionSecs`, ~90d), keeping the unified mode-marked (enforced|preview|dry_run) decision
+    // trail bounded. The app role has NO DELETE grant on `policy_evaluation`, so the prune runs RLS-bypassing on the
+    // schema-owner (privileged) connection, per-tenant scoped by an explicit tenant_id predicate over the
+    // policy_evaluation_prune BRIN(created_at) index, and attributed to a synthetic worker actor (FR-014). FAIL-OPEN
+    // and cancelable exactly like the workers above: the cadence timer is unref'd, a prune fault is caught + logged
+    // and NEVER crashes boot (or blocks issuance/authoring; it re-fires next sweep). Tied to app.close().
+    // [COMPLETES FR-014]
+    let policyRetentionWorker;
+    try {
+        const policyConfig = loadPolicyConfig(env);
+        policyRetentionWorker = startPolicyRetentionWorker(pool, {
+            retentionSecs: policyConfig.evaluationRetentionSecs,
+            logger: app.log,
+        });
+        app.log.info({}, "policy retention worker started");
+        app.addHook("onClose", async () => policyRetentionWorker?.stop());
+    }
+    catch (err) {
+        app.log.warn({ error: err instanceof Error ? err.message : String(err) }, "policy retention worker failed to start (fail-open)");
+    }
     const shutdown = async (signal) => {
         app.log.info({ signal }, "shutting down");
         try {
@@ -260,10 +285,18 @@ export async function startServer(env = process.env) {
     };
     process.on("SIGTERM", () => void shutdown("SIGTERM"));
     process.on("SIGINT", () => void shutdown("SIGINT"));
-    return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker, rollupWorker, usageRetentionWorker };
+    return { app, pool, config, metricsListener, canary, crlWorker, graceWorker, reconcileWorker, retentionWorker, reclaimWorker, rollupWorker, usageRetentionWorker, policyRetentionWorker };
 }
-// CLI entry: `node dist/server/main.js` (the image's serve command).
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}`;
+// CLI entry: `node dist/server/main.js` (the image's serve command, and the native `start:native` path).
+//
+// Use `pathToFileURL` rather than hand-building a `file://` string. On POSIX the manual form happens to
+// work because argv[1] starts with `/` ("file://" + "/app/x.js" === "file:///app/x.js"), but on Windows
+// argv[1] is `S:\path\x.js`, so the manual form yields `file://S:/path/x.js` (two slashes) while
+// `import.meta.url` is `file:///S:/path/x.js` (three — the empty authority). They never match, `isMain`
+// stays false, and the process exits 0 WITHOUT STARTING THE SERVER and without logging anything.
+// `pathToFileURL` also handles UNC paths and percent-encodes characters that are legal in paths but not
+// in URLs (spaces, `#`, `?`), which a manual replace silently corrupts.
+const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
     startServer().catch((err) => {
         const message = err instanceof Error ? err.message : String(err);

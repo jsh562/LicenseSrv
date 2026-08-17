@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { writeAudit } from "../../audit/index.js";
 import { withTenant } from "../../db/client.js";
-import { asDuplicateKey, assertMeteredShape, CatalogError, } from "./validation.js";
+import { asDuplicateKey, assertMeteredShape, assertRuleBounds, CatalogError, } from "./validation.js";
 function toEntitlement(r) {
     return {
         id: r.id,
@@ -17,11 +17,14 @@ function toEntitlement(r) {
         aggregation: r.aggregation,
         unit: r.unit,
         allowance: r.allowance === null ? null : Number(r.allowance),
+        ruleMax: r.rule_max === null ? null : Number(r.rule_max),
+        ruleEligible: r.rule_eligible,
+        ruleTiers: r.rule_tiers,
         createdAt: r.created_at.toISOString(),
         updatedAt: r.updated_at.toISOString(),
     };
 }
-const SELECT = "id, key, name, type, description, status, aggregation, unit, allowance, created_at, updated_at";
+const SELECT = "id, key, name, type, description, status, aggregation, unit, allowance, rule_max, rule_eligible, rule_tiers, created_at, updated_at";
 /** True if any plan_entitlement references this entitlement (→ key/type are locked). */
 export async function isReferenced(q, entitlementId) {
     const r = await q("SELECT 1 FROM plan_entitlement WHERE entitlement_id = $1 LIMIT 1", [entitlementId]);
@@ -156,6 +159,51 @@ export async function updateEntitlement(pool, tenantId, actor, id, input) {
             metered?.allowance ?? null,
         ]);
         await writeAudit(q, { actor, action: "catalog.entitlement.updated", target: id, before: existing, after: input });
+        return toEntitlement(r.rows[0]);
+    });
+}
+/**
+ * Set the authored per-entitlement rule bound (E017 FR-007/FR-021, AD-003, INV-4): the `rule_max` ceiling an
+ * adjust_limit effect may lift to, the `rule_eligible` gate for a toggle_boolean effect, and the `rule_tiers`
+ * options a select_tier effect may pick. Each supplied field is validated by `assertRuleBounds` — `rule_max` must
+ * be a non-negative number BOTH ≥ the entitlement's base plan value (a service-layer join: the base lives on
+ * `plan_entitlement.int_value`, the MAX across the plans that grant it, which a single-table DB CHECK cannot
+ * reach, HINT-003) AND ≤ the configured `absoluteMax` cap (FR-021) — so the ceiling can never be raised
+ * arbitrarily to defeat the bound. An out-of-range/ill-typed value is a 400 `validation_error`. An absent field
+ * keeps the entitlement's current value (partial update). Expand-only: only the three additive columns are
+ * touched; the boolean/integer_limit/metered columns are untouched. 404 if unknown. Audited.
+ */
+export async function setEntitlementRuleBounds(pool, tenantId, actor, id, input, absoluteMax) {
+    return withTenant(pool, tenantId, async (q) => {
+        const existing = await getEntitlementTx(q, id);
+        if (!existing)
+            throw new CatalogError("not_found", 404, "unknown entitlement");
+        // Service-layer "≥ base" bound: the base plan value lives on plan_entitlement.int_value (a single-table CHECK
+        // cannot join it, HINT-003). Use the MAX base across every plan that grants the entitlement so rule_max is a
+        // valid ceiling for all of them; null when no plan references it (integer_limit base only — bool base is null).
+        const baseRow = await q("SELECT MAX(int_value) AS base FROM plan_entitlement WHERE entitlement_id = $1", [id]);
+        const rawBase = baseRow.rows[0]?.base ?? null;
+        const basePlanValue = rawBase === null ? null : Number(rawBase);
+        // Merge the partial edit over the existing values, then validate the resolved bound as a whole.
+        const bounds = assertRuleBounds({
+            ruleMax: input.ruleMax !== undefined ? input.ruleMax : existing.ruleMax,
+            ruleEligible: input.ruleEligible !== undefined ? input.ruleEligible : existing.ruleEligible,
+            ruleTiers: input.ruleTiers !== undefined ? input.ruleTiers : existing.ruleTiers,
+        }, { basePlanValue, absoluteMax });
+        const r = await q(`UPDATE entitlement
+          SET rule_max = $2,
+              rule_eligible = $3,
+              rule_tiers = $4,
+              updated_at = now()
+        WHERE id = $1
+        RETURNING ${SELECT}`, [id, bounds.ruleMax, bounds.ruleEligible, bounds.ruleTiers === null ? null : JSON.stringify(bounds.ruleTiers)]);
+        await writeAudit(q, {
+            actor,
+            action: "catalog.entitlement.rule_bounds_set",
+            target: id,
+            before: { ruleMax: existing.ruleMax, ruleEligible: existing.ruleEligible, ruleTiers: existing.ruleTiers },
+            after: { ruleMax: bounds.ruleMax, ruleEligible: bounds.ruleEligible, ruleTiers: bounds.ruleTiers },
+        });
         return toEntitlement(r.rows[0]);
     });
 }

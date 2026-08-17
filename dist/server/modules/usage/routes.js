@@ -34,6 +34,19 @@ const usageQuerySchema = z
     raw: rawSchema,
 })
     .strict();
+// --- App self-read schema (runtime GET /v1/licenses/{licenseId}/usage) ------------------------------
+// The licensed app's self-read of its OWN bound license (FR-020). Deliberately has NO `raw` field: the app
+// plane is FLOOR-AT-ZERO ONLY — the true signed net stays admin/E014-internal (FR-013/020, SC-019). A `raw`
+// (or any other) query key is refused `validation_error` by the strict schema, so the raw net can never be
+// requested on this plane.
+const appUsageQuerySchema = z
+    .object({
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+    entitlementId: z.string().uuid().optional(),
+    bucket: z.enum(["hour", "day", "period"]).optional(),
+})
+    .strict();
 /** Does a license id resolve within the session tenant? (RLS-scoped existence check for the 404 gate, FR-017.) */
 async function licenseExists(q, licenseId) {
     const r = await q("SELECT 1 FROM license WHERE id = $1", [licenseId]);
@@ -124,6 +137,47 @@ export function registerUsageRoutes(app, deps, apiKeySecret) {
             // NOT rolled up here. A single bad event is a per-event rejection inside the summary, never a batch fail.
             const summary = await ingestBatch(deps, tenantId, "usage-api", events);
             return reply.code(200).send(summary);
+        });
+        // GET /v1/licenses/:licenseId/usage — the licensed app's SELF-READ of its own bound license's aggregate
+        // (FR-020, NEW-API). API-key + `usage.ingest` gated (same fail-closed control as ingest), rate-limited per
+        // key, tenant-scoped via RLS: a cross-tenant/cross-license id simply resolves to no rows → 404 (never a
+        // 403, never a cross-tenant leak, mirroring FR-017/SC-012). FLOOR-AT-ZERO ONLY: `queryUsage` is invoked
+        // with `raw: false` so the app receives `max(0, net)` per entitlement/window and NEVER the raw signed net
+        // (that stays admin/E014-internal, FR-013/020/SC-019). NO CSRF (header credential, not cookie).
+        scope.get("/v1/licenses/:licenseId/usage", rl, async (req, reply) => {
+            if (!(await requireIngestScope(pool, req, reply)))
+                return reply;
+            const tenantId = req.tenant.tenantId;
+            const licenseId = req.params.licenseId;
+            if (!UUID_RE.test(licenseId))
+                return err(reply, 404, "not_found", "no such license in this tenant", { licenseId });
+            const parsed = appUsageQuerySchema.safeParse(req.query ?? {});
+            if (!parsed.success) {
+                const field = parsed.error.issues[0]?.path.join(".") || undefined;
+                return validation(reply, parsed.error.issues[0]?.message ?? "invalid query", field ? { field } : undefined);
+            }
+            const { from: fromStr, to: toStr, entitlementId, bucket } = parsed.data;
+            const from = new Date(fromStr);
+            const to = new Date(toStr);
+            if (to.getTime() <= from.getTime())
+                return validation(reply, "to must be after from", { field: "to" });
+            // Window span bound (a bucket-count cap) — refuse an unbounded expensive aggregate BEFORE any read.
+            const hours = Math.ceil((to.getTime() - from.getTime()) / 3_600_000);
+            if (hours > config.queryMaxHours) {
+                return err(reply, 400, "window_too_large", `the query window exceeds the maximum of ${config.queryMaxHours} hours`, {
+                    maxHours: config.queryMaxHours,
+                    hours,
+                });
+            }
+            const result = await withTenant(pool, tenantId, async (q) => {
+                if (!(await licenseExists(q, licenseId)))
+                    return null;
+                // FLOOR-AT-ZERO ONLY on the app plane: raw is HARD-CODED false — the raw signed net is never exposed here.
+                return queryUsage(q, deps.repo, { licenseId, entitlementId, from, to, bucket, raw: false });
+            });
+            if (!result)
+                return err(reply, 404, "not_found", "no such license in this tenant", { licenseId });
+            return reply.code(200).send(result);
         });
     });
     // --- OPERATOR plane: GET /admin/licenses/:licenseId/usage (session + RBAC viewer) ------------------

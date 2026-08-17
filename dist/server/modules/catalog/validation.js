@@ -71,6 +71,52 @@ export function assertValueMatchesType(type, value) {
     }
     return { boolValue: null, intValue: value };
 }
+/**
+ * Validate the authored per-entitlement rule-bound attributes (E017 FR-007/FR-021, AD-003, INV-4) and return the
+ * typed columns. The bound the policy applier clamps to is authored HERE (not in the token): `rule_max` is the
+ * ceiling an `adjust_limit` effect may lift to; `rule_eligible` gates a `toggle_boolean`; `rule_tiers` enumerates
+ * the `select_tier` options. `rule_max` MUST be a finite, non-negative number that is BOTH ≥ the entitlement's
+ * base plan value (a service-layer join — the base lives on `plan_entitlement.int_value`, which a single-table DB
+ * CHECK cannot reach, HINT-003) AND ≤ the configured absolute per-entitlement cap (`policyAbsoluteMaxLimit`,
+ * FR-021) — so the ceiling can never be raised arbitrarily to defeat the bound. An out-of-range/ill-typed value
+ * is refused with the catalog's `validation_error` (400) shape. `basePlanValue` is the MAX base across the plans
+ * that grant the entitlement (null when none reference it → no lower bound beyond 0).
+ */
+export function assertRuleBounds(input, ctx) {
+    let ruleMax = null;
+    if (input.ruleMax !== undefined && input.ruleMax !== null) {
+        if (typeof input.ruleMax !== "number" || !Number.isFinite(input.ruleMax) || input.ruleMax < 0) {
+            throw new CatalogError("validation_error", 400, "rule_max must be a non-negative number when supplied");
+        }
+        if (input.ruleMax > ctx.absoluteMax) {
+            throw new CatalogError("validation_error", 400, `rule_max must not exceed the configured absolute per-entitlement cap of ${ctx.absoluteMax}`);
+        }
+        if (ctx.basePlanValue !== null && input.ruleMax < ctx.basePlanValue) {
+            throw new CatalogError("validation_error", 400, `rule_max must be greater than or equal to the base plan value of ${ctx.basePlanValue}`);
+        }
+        ruleMax = input.ruleMax;
+    }
+    let ruleEligible = false;
+    if (input.ruleEligible !== undefined && input.ruleEligible !== null) {
+        if (typeof input.ruleEligible !== "boolean") {
+            throw new CatalogError("validation_error", 400, "rule_eligible must be a boolean");
+        }
+        ruleEligible = input.ruleEligible;
+    }
+    let ruleTiers = null;
+    if (input.ruleTiers !== undefined && input.ruleTiers !== null) {
+        if (!Array.isArray(input.ruleTiers)) {
+            throw new CatalogError("validation_error", 400, "rule_tiers must be an array when supplied");
+        }
+        // A select_tier option is NUMERIC end-to-end (Principle I / SC-014): the plan-defined tiers must all be
+        // finite numbers so a selected tier flows through the signed snapshot's numeric branch.
+        if (!input.ruleTiers.every((t) => typeof t === "number" && Number.isFinite(t))) {
+            throw new CatalogError("validation_error", 400, "rule_tiers entries must be finite numbers");
+        }
+        ruleTiers = input.ruleTiers;
+    }
+    return { ruleMax, ruleEligible, ruleTiers };
+}
 /** Map a Postgres unique-violation (23505) to a typed duplicate-key CatalogError; rethrow otherwise. */
 export function asDuplicateKey(e, message) {
     if (typeof e === "object" && e !== null && e.code === "23505") {

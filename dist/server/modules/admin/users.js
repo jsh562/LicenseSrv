@@ -45,9 +45,43 @@ export async function createUser(pool, secret, tenantId, actor, input) {
     }
 }
 /**
+ * Establish a tenant's FIRST administrator as an OWNER (E018 FR-010/FR-016). Creates the owner
+ * `app_user` + `role='owner'` under the tenant's own scope, so a newly-onboarded reseller or a
+ * newly-provisioned sub-tenant is immediately operable by a named administrator AND the inherited
+ * last-owner protection ({@link updateUser}) has an owner to protect — extending that protection to
+ * reseller + sub-tenant tenants (FR-016). `userReference` is a PSEUDONYMOUS reference (never a
+ * name/email/PII, FR-017); it seeds the unique per-tenant `email_hash`. A duplicate reference in the
+ * tenant returns `{ ok:false, reason:"duplicate" }` (idempotent-safe for re-onboarding).
+ */
+export async function provisionFirstAdmin(pool, tenantId, actor, userReference) {
+    const id = randomUUID();
+    try {
+        await withTenant(pool, tenantId, async (q) => {
+            await q(`INSERT INTO app_user (id, tenant_id, email_hash, status)
+         VALUES ($1, current_setting('app.current_tenant')::uuid, $2, 'active')`, [id, userReference]);
+            await q(`INSERT INTO role (id, tenant_id, user_id, role, granted_by)
+         VALUES ($1, current_setting('app.current_tenant')::uuid, $2, 'owner', $3)`, [randomUUID(), id, actor]);
+            await writeAudit(q, {
+                actor,
+                action: "user.first_admin_provisioned",
+                target: id,
+                after: { role: "owner", userReference },
+            });
+        });
+        return { ok: true, id };
+    }
+    catch (e) {
+        if (isUniqueViolation(e))
+            return { ok: false, reason: "duplicate" };
+        throw e;
+    }
+}
+/**
  * Change a user's role and/or status. Refuses (409) to demote or deactivate the final active owner
- * (FR-008). The guard locks the active-owner set FOR UPDATE inside the same transaction, so a race
- * between two owner-removals cannot leave the tenant ownerless.
+ * (FR-008; E018 FR-016 for reseller + sub-tenant tenants — the guard is tenant-generic, so a reseller
+ * tenant and a sub-tenant tenant are protected identically once each has an owner via
+ * {@link provisionFirstAdmin}). The guard locks the active-owner set FOR UPDATE inside the same
+ * transaction, so a race between two owner-removals cannot leave the tenant ownerless.
  */
 export async function updateUser(pool, tenantId, actor, userId, input) {
     return withTenant(pool, tenantId, async (q) => {

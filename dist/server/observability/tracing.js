@@ -19,14 +19,37 @@
 //
 // Config is read from RAW ENV (not the validated `AppConfig`) because at preload time config has not been
 // loaded yet: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OBS_TRACE_SAMPLE_RATIO`, `OTEL_EXPORTER_OTLP_AUTH_TOKEN`.
+//
+// LAZY SDK LOADING (memory): the heavy OTel packages are NOT imported at module scope. Importing
+// `@opentelemetry/auto-instrumentations-node` alone pulls in ~42 `instrumentation-*` packages plus
+// `@grpc/grpc-js` and `protobufjs` — measured at ~37 MB RSS / ~15 MB V8 heap, roughly 43% of this
+// service's idle footprint. Because tracing is a NO-OP whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is empty
+// (the common case for self-hosted deployments), paying that cost unconditionally is pure waste. Instead
+// they load on FIRST USE via `lazy()` below, which is reached only after the endpoint check passes.
+//
+// The loader is `createRequire`, not `await import`, on purpose:
+//   * Every `@opentelemetry/*` package here is CJS (no `type: "module"`, `main` → `build/src/index.js`;
+//     the `module` field is a bundler-only hint Node ignores), so `require` yields the SAME module
+//     instance `import` would from Node's CJS cache — there is no dual-package hazard.
+//   * It is SYNCHRONOUS, so `startTracing()` keeps its `void` signature and the HINT-001 preload
+//     guarantee holds exactly as before: the SDK still patches pg/fastify/http at import time, before
+//     the app imports them. An `await import` would make this module's public API async for no gain.
+import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import { DiagConsoleLogger, DiagLogLevel, diag, SpanStatusCode, trace, } from "@opentelemetry/api";
-import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { defaultResource, resourceFromAttributes } from "@opentelemetry/resources";
-import { NodeSDK } from "@opentelemetry/sdk-node";
-import { BatchSpanProcessor, ParentBasedSampler, TraceIdRatioBasedSampler, } from "@opentelemetry/sdk-trace-base";
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
+// --- Lazy OTel SDK module loading ------------------------------------------------------------------
+const requireOtel = createRequire(import.meta.url);
+/** Memoize a synchronous `require` of an OTel package so repeated calls cost one cache lookup. */
+function lazy(specifier) {
+    let mod;
+    return () => (mod ??= requireOtel(specifier));
+}
+const autoInstrumentations = lazy("@opentelemetry/auto-instrumentations-node");
+const otlpHttp = lazy("@opentelemetry/exporter-trace-otlp-http");
+const resources = lazy("@opentelemetry/resources");
+const sdkNode = lazy("@opentelemetry/sdk-node");
+const sdkTraceBase = lazy("@opentelemetry/sdk-trace-base");
+const semconv = lazy("@opentelemetry/semantic-conventions");
 /** Logical service identity attached to every span/resource (matches the startup "license-api" name). */
 export const SERVICE_NAME = "license-api";
 /** Default parent-based trace sample ratio when `OBS_TRACE_SAMPLE_RATIO` is unset/invalid (OR-014). */
@@ -54,6 +77,7 @@ export function resolveSampleRatio(raw) {
  * while bounding hot-path overhead.
  */
 export function buildSampler(ratio) {
+    const { ParentBasedSampler, TraceIdRatioBasedSampler } = sdkTraceBase();
     return new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(ratio) });
 }
 // The ratio actually applied by the last `startTracing`, exposed for tests (T034 "export the sampled ratio").
@@ -131,7 +155,8 @@ export function buildInstrumentations() {
         "@opentelemetry/instrumentation-pg": { ...PG_INSTRUMENTATION_CONFIG },
         "@opentelemetry/instrumentation-fs": { enabled: false },
     };
-    return getNodeAutoInstrumentations(config);
+    // First call here is what actually pays the ~37 MB load cost — reached only when tracing is enabled.
+    return autoInstrumentations().getNodeAutoInstrumentations(config);
 }
 // --- Manual signer span (T035, OR-013/020) ---------------------------------------------------------
 /** Tracer name for the manual signer span (distinct from auto-instrumentation tracers). */
@@ -238,6 +263,14 @@ export function startTracing(env = process.env) {
         }
         // Surface SDK/exporter errors at ERROR level without ever throwing them into the process.
         diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
+        // Past the endpoint gate, tracing IS enabled — now (and only now) pull in the heavy SDK packages.
+        // These `require`s are inside the fail-open try/catch, so a missing/broken OTel install is logged and
+        // swallowed exactly like an exporter failure: the app still boots, just without tracing (OR-014).
+        const { OTLPTraceExporter } = otlpHttp();
+        const { defaultResource, resourceFromAttributes } = resources();
+        const { NodeSDK } = sdkNode();
+        const { BatchSpanProcessor } = sdkTraceBase();
+        const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = semconv();
         const authToken = (env.OTEL_EXPORTER_OTLP_AUTH_TOKEN ?? "").trim();
         // The OTLP exporter reads `OTEL_EXPORTER_OTLP_ENDPOINT` from env itself (appending the signal path);
         // we only add the optional bearer header. A down/slow Collector is handled by the BatchSpanProcessor

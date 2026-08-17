@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { requireRole } from "../../console/rbac-middleware.js";
 import { getEffectivePlanDefinition } from "./effective.js";
-import { archiveEntitlement, createEntitlement, getEntitlement, listEntitlements, updateEntitlement, } from "./entitlements.js";
+import { archiveEntitlement, createEntitlement, getEntitlement, listEntitlements, setEntitlementRuleBounds, updateEntitlement, } from "./entitlements.js";
 import { archivePlan, createPlan, getPlan, listPlans, updatePlan } from "./plans.js";
 import { archiveProduct, createProduct, getProduct, listProducts, updateProduct } from "./products.js";
 import { listPlanEntitlements, removePlanEntitlementValue, setPlanEntitlementValue } from "./values.js";
-import { catalogKeySchema, CatalogError, entitlementTypeSchema, statusFilterSchema } from "./validation.js";
+import { catalogKeySchema, CatalogError, meteredAggregationSchema, statusFilterSchema } from "./validation.js";
 function err(reply, status, code, message) {
     const body = { code, message };
     return reply.code(status).send(body);
@@ -40,20 +40,52 @@ const updatePlanSchema = z
     .refine((v) => v.name !== undefined || v.description !== undefined || v.maxActivations !== undefined, {
     message: "no changes supplied",
 });
+// The `type`/kind the HTTP layer admits: the E007 boolean/integer_limit PLUS the additive E016 `metered` kind
+// (FR-008). A metered create/edit carries the metered-only fields; `entitlements.ts:assertMeteredShape` is the
+// authoritative validator (counter-only aggregation, non-empty unit, non-negative allowance) — the route schema
+// only shape-guards so a malformed metered body is a 400 before it reaches the repository.
+const entitlementKindSchema = z.enum(["boolean", "integer_limit", "metered"]);
 const createEntitlementSchema = z.object({
     key: catalogKeySchema,
     name: z.string().min(1),
-    type: entitlementTypeSchema,
+    type: entitlementKindSchema,
     description: z.string().optional(),
+    // Metered-only (FR-008): present for `type: "metered"`; ignored for boolean/integer_limit. A gauge/peak
+    // aggregation is refused here (enum), a missing unit is refused downstream by assertMeteredShape (400).
+    aggregation: meteredAggregationSchema.optional(),
+    unit: z.string().min(1).optional(),
+    allowance: z.number().nonnegative().optional(),
 });
 const updateEntitlementSchema = z
     .object({
     name: z.string().min(1).optional(),
     description: z.string().nullable().optional(),
-    type: entitlementTypeSchema.optional(),
+    type: entitlementKindSchema.optional(),
+    // Metered-only edits (FR-009 freeze-on-usage is enforced in entitlements.ts once usage exists).
+    aggregation: meteredAggregationSchema.optional(),
+    unit: z.string().min(1).optional(),
+    allowance: z.number().nonnegative().nullable().optional(),
 })
-    .refine((v) => v.name !== undefined || v.description !== undefined || v.type !== undefined, {
-    message: "no changes supplied",
+    .refine((v) => v.name !== undefined ||
+    v.description !== undefined ||
+    v.type !== undefined ||
+    v.aggregation !== undefined ||
+    v.unit !== undefined ||
+    v.allowance !== undefined, { message: "no changes supplied" });
+// E017 authored-max governance (FR-021, AD-003, INV-4): the admin-only, CSRF-protected, audited surface that
+// sets/raises the per-entitlement rule bound the issuance-time policy applier clamps to — `rule_max` (the
+// adjust_limit ceiling), `rule_eligible` (the toggle_boolean gate), and `rule_tiers` (the select_tier options).
+// The route only shape-guards; `entitlements.ts:setEntitlementRuleBounds` (via `assertRuleBounds`) is the
+// authoritative validator — an out-of-range `rule_max` (< the base plan value or > the configured absolute cap)
+// is a 400 `validation_error` there, so the ceiling can never be raised arbitrarily to defeat the bound.
+const ruleBoundsSchema = z
+    .object({
+    ruleMax: z.number().nullable().optional(),
+    ruleEligible: z.boolean().optional(),
+    ruleTiers: z.array(z.unknown()).nullable().optional(),
+})
+    .refine((v) => v.ruleMax !== undefined || v.ruleEligible !== undefined || v.ruleTiers !== undefined, {
+    message: "no rule bounds supplied",
 });
 const setValueSchema = z.object({ value: z.union([z.boolean(), z.number()]) });
 const listQuerySchema = z.object({ status: statusFilterSchema });
@@ -67,6 +99,7 @@ export function registerCatalogRoutes(app, pool, config) {
     const viewer = { preHandler: requireRole(pool, "viewer") };
     const admin = { preHandler: requireRole(pool, "admin") };
     const cap = config.listCap;
+    const absoluteMax = config.policyAbsoluteMaxLimit;
     // --- Products -----------------------------------------------------------------------------------
     app.get("/admin/catalog/products", viewer, async (req, reply) => {
         const q = listQuerySchema.safeParse(req.query);
@@ -189,6 +222,20 @@ export function registerCatalogRoutes(app, pool, config) {
         if (!p.success)
             return V.validation(reply, "invalid entitlementId");
         return guard(reply, async () => reply.code(200).send(await archiveEntitlement(pool, req.admin.tenantId, req.admin.userId, p.data.entitlementId)));
+    });
+    // Set/raise the E017 authored rule bound (FR-021, SC-019): admin-only (requireRole "admin") + CSRF (both via
+    // the shared preHandler) + audited (setEntitlementRuleBounds writes `catalog.entitlement.rule_bounds_set`). A
+    // viewer is refused 403 by requireRole; `rule_max` < the base plan value or > the configured absolute cap is a
+    // 400 `validation_error` from `setEntitlementRuleBounds` (via assertRuleBounds), so the ceiling can never be
+    // raised arbitrarily to defeat the effect bound. Partial-update merge — an omitted field keeps its value.
+    app.put("/admin/catalog/entitlements/:entitlementId/rule-bounds", admin, async (req, reply) => {
+        const p = entitlementParams.safeParse(req.params);
+        if (!p.success)
+            return V.validation(reply, "invalid entitlementId");
+        const b = ruleBoundsSchema.safeParse(req.body);
+        if (!b.success)
+            return V.validation(reply, "invalid rule bounds payload");
+        return guard(reply, async () => reply.code(200).send(await setEntitlementRuleBounds(pool, req.admin.tenantId, req.admin.userId, p.data.entitlementId, b.data, absoluteMax)));
     });
     // --- Per-plan values ----------------------------------------------------------------------------
     app.get("/admin/catalog/plans/:planId/entitlements", viewer, async (req, reply) => {
