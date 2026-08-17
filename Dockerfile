@@ -22,6 +22,10 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# The signing/verifier core is a prebuilt wasm-pack package (JS + .wasm runtime assets, not TS), so `tsc`
+# never emits it into dist/. Copy it to the path the compiled `dist/server/modules/signing/token.js`
+# resolves (`../../../bindings/wasm/pkg`), or the API cannot load the signer at boot.
+COPY --from=build /app/src/bindings/wasm/pkg ./dist/bindings/wasm/pkg
 COPY migrations ./migrations
 COPY package.json ./
 # Drop privileges: the built-in non-root `node` user (uid 1000). No secrets or writable app state here.
