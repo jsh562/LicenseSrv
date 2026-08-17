@@ -48,6 +48,25 @@ All settings come from the environment; secrets use the `<VAR>_FILE` convention 
 baked into the image). See [docs/config-reference.md](docs/config-reference.md) for every variable and
 secret-hygiene guidance.
 
+## Run it without Docker
+
+The API is a plain Node process plus PostgreSQL, so it also runs natively on Windows, Linux, and macOS —
+useful when you don't want the container runtime's overhead (on Windows, Docker Desktop was measured holding
+~4.8 GB working set to run a ~120 MB workload).
+
+```sh
+npm ci
+npm run setup:native     # creates role + database, fills in secrets, writes .env.native
+npm run start:native     # builds, migrates, then serves on 127.0.0.1:8080
+```
+
+Both paths share the same `secrets/` files, so secrets are generated once. Full walkthrough, the
+`db:5432` → `localhost:5432` difference, measured memory figures, and troubleshooting:
+**[docs/native-setup.md](docs/native-setup.md)**.
+
+Note that `npm test` still requires a Docker daemon — the integration suites start Postgres via
+Testcontainers. The native path covers running the server, not testing it.
+
 ### Health probes
 
 | Probe | Path | Meaning |

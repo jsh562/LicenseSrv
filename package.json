@@ -8,6 +8,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "copy:wasm": "node scripts/copy-wasm.mjs",
+    "build:native": "npm run build && npm run copy:wasm",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src/server",
     "test": "vitest run",
@@ -15,7 +17,10 @@
     "test:docker": "vitest run src/server/__tests__/image.smoke.integration.test.ts",
     "migrate": "tsx src/server/db/migrate.ts",
     "migrate:dist": "node dist/server/db/migrate.js",
+    "migrate:native": "node --env-file=.env.native dist/server/db/migrate.js",
     "start": "node --import ./dist/server/observability/tracing.js dist/server/main.js",
+    "setup:native": "node -e \"const{platform}=require('node:os');const{spawnSync}=require('node:child_process');const win=platform()==='win32';const r=win?spawnSync('powershell',['-ExecutionPolicy','Bypass','-File','scripts/native/setup.ps1'],{stdio:'inherit'}):spawnSync('bash',['scripts/native/setup.sh'],{stdio:'inherit'});process.exit(r.status??1)\"",
+    "start:native": "node -e \"const{platform}=require('node:os');const{spawnSync}=require('node:child_process');const win=platform()==='win32';const r=win?spawnSync('powershell',['-ExecutionPolicy','Bypass','-File','scripts/native/start.ps1'],{stdio:'inherit'}):spawnSync('bash',['scripts/native/start.sh'],{stdio:'inherit'});process.exit(r.status??1)\"",
     "gen-custody": "tsx scripts/gen-custody.ts",
     "demo": "bash scripts/demo.sh",
     "demo-app": "bash scripts/build-wasm-web.sh && node scripts/prepare-demo-app.mjs && npm --prefix examples/license-demo-app install && npm --prefix examples/license-demo-app run dev"
