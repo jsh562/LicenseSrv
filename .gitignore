@@ -33,3 +33,9 @@ node_modules
 /secrets/
 /cookies.txt
 /examples/license-demo/.out/
+
+# Browser demo app (generated wasm build + snapshot; node deps/build)
+/examples/license-demo-app/src/wasm/
+/examples/license-demo-app/public/demo-bundle.json
+/examples/license-demo-app/node_modules/
+/examples/license-demo-app/dist/

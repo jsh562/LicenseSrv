@@ -122,7 +122,10 @@ async function main() {
   if (!goodToken?.startsWith("LIC1.")) throw new Error(`unexpected token: ${JSON.stringify(good).slice(0, 200)}`);
 
   mkdirSync(OUT, { recursive: true });
-  writeFileSync(resolve(OUT, "tokens.json"), JSON.stringify({ productId, goodToken, expiringToken, expiresAtUnix }, null, 2));
+  writeFileSync(
+    resolve(OUT, "tokens.json"),
+    JSON.stringify({ productId, planId, customerId, goodToken, expiringToken, expiresAtUnix }, null, 2),
+  );
 
   console.log("\n✓ Issued licenses:");
   console.log(`  good     : ${goodToken.slice(0, 32)}…  (perpetual, pro=true seats=5)`);

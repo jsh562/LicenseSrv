@@ -17,7 +17,8 @@
     "migrate:dist": "node dist/server/db/migrate.js",
     "start": "node --import ./dist/server/observability/tracing.js dist/server/main.js",
     "gen-custody": "tsx scripts/gen-custody.ts",
-    "demo": "bash scripts/demo.sh"
+    "demo": "bash scripts/demo.sh",
+    "demo-app": "bash scripts/build-wasm-web.sh && node scripts/prepare-demo-app.mjs && npm --prefix examples/license-demo-app install && npm --prefix examples/license-demo-app run dev"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
