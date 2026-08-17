@@ -16,24 +16,34 @@ import { SubTenants } from "./SubTenants";
 
 type SubView = "resellers" | "sub-tenants" | "branding" | "domains";
 
+const TABS: { id: SubView; label: string }[] = [
+  { id: "resellers", label: "Resellers" },
+  { id: "sub-tenants", label: "Sub-tenants" },
+  { id: "branding", label: "Branding" },
+  { id: "domains", label: "Domains" },
+];
+
+const TAB_BASE = "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors";
+const TAB_ON = "border-primary text-primary";
+const TAB_OFF = "border-transparent text-fg-muted hover:border-border hover:text-fg";
+
 export function Reseller({ sessionRole }: { sessionRole: Role }): JSX.Element {
   const [view, setView] = useState<SubView>("resellers");
 
   return (
-    <section aria-label="Reseller">
-      <nav aria-label="Reseller sections">
-        <button type="button" aria-current={view === "resellers"} onClick={() => setView("resellers")}>
-          Resellers
-        </button>
-        <button type="button" aria-current={view === "sub-tenants"} onClick={() => setView("sub-tenants")}>
-          Sub-tenants
-        </button>
-        <button type="button" aria-current={view === "branding"} onClick={() => setView("branding")}>
-          Branding
-        </button>
-        <button type="button" aria-current={view === "domains"} onClick={() => setView("domains")}>
-          Domains
-        </button>
+    <section aria-label="Reseller" className="space-y-4">
+      <nav aria-label="Reseller sections" className="flex gap-1 border-b border-border">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            aria-current={view === t.id}
+            onClick={() => setView(t.id)}
+            className={`${TAB_BASE} ${view === t.id ? TAB_ON : TAB_OFF}`}
+          >
+            {t.label}
+          </button>
+        ))}
       </nav>
       {view === "resellers" && <Resellers sessionRole={sessionRole} />}
       {view === "sub-tenants" && <SubTenants sessionRole={sessionRole} />}

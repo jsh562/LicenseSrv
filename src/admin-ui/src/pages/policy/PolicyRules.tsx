@@ -21,6 +21,12 @@ import {
   type Role,
 } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Badge, statusTone } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input, Select, Textarea } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
 
 /** A starter condition/effect so the author fields are never a blank slate (a simple always-true limit lift). */
 const SAMPLE_CONDITION = '{ "==": [1, 1] }';
@@ -167,131 +173,152 @@ export function PolicyRules({ sessionRole }: { sessionRole: Role }): JSX.Element
   }
 
   return (
-    <section aria-label="Policy Rules">
-      <h3>Policy rules</h3>
-      {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
+    <section aria-label="Policy Rules" className="space-y-4">
+      <PageHeader title="Policy rules" description="Author guarded when → then rules, manage their lifecycle, and dry-run them." />
+      {error && <p role="alert" className="error text-sm text-danger">{error}</p>}
+      {notice && <p role="status" className="text-sm text-success">{notice}</p>}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={create} aria-label="Author policy rule">
-          <input
-            aria-label="Target entitlement id"
-            placeholder="entitlement uuid"
-            value={targetEntitlementId}
-            onChange={(e) => setTargetEntitlementId(e.target.value)}
-            required
-          />
-          <input
-            aria-label="Priority"
-            type="number"
-            min={0}
-            placeholder="100"
-            value={priority}
-            onChange={(e) => setPriority(e.target.value)}
-          />
-          <select aria-label="Initial status" value={status} onChange={(e) => setStatus(e.target.value as PolicyRuleStatus)}>
-            <option value="preview">preview</option>
-            <option value="active">active</option>
-            <option value="disabled">disabled</option>
-          </select>
-          <textarea
-            aria-label="Condition JSON"
-            placeholder={SAMPLE_CONDITION}
-            value={condition}
-            onChange={(e) => setCondition(e.target.value)}
-          />
-          <textarea
-            aria-label="Effect JSON"
-            placeholder={SAMPLE_EFFECT}
-            value={effect}
-            onChange={(e) => setEffect(e.target.value)}
-          />
-          <button type="submit">Validate &amp; save rule</button>
-        </form>
+        <Card>
+          <form onSubmit={create} aria-label="Author policy rule" className="space-y-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <Input
+                aria-label="Target entitlement id"
+                placeholder="entitlement uuid"
+                value={targetEntitlementId}
+                onChange={(e) => setTargetEntitlementId(e.target.value)}
+                required
+                className="w-64"
+              />
+              <Input
+                aria-label="Priority"
+                type="number"
+                min={0}
+                placeholder="100"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+                className="w-28"
+              />
+              <Select
+                aria-label="Initial status"
+                value={status}
+                onChange={(e) => setStatus(e.target.value as PolicyRuleStatus)}
+                className="w-36"
+              >
+                <option value="preview">preview</option>
+                <option value="active">active</option>
+                <option value="disabled">disabled</option>
+              </Select>
+            </div>
+            <Textarea
+              aria-label="Condition JSON"
+              placeholder={SAMPLE_CONDITION}
+              value={condition}
+              onChange={(e) => setCondition(e.target.value)}
+              rows={3}
+            />
+            <Textarea
+              aria-label="Effect JSON"
+              placeholder={SAMPLE_EFFECT}
+              value={effect}
+              onChange={(e) => setEffect(e.target.value)}
+              rows={3}
+            />
+            <Button type="submit">Validate &amp; save rule</Button>
+          </form>
+        </Card>
       </RequireRole>
 
-      {truncated && <p role="status">Showing the first 1000 rules (list truncated).</p>}
+      {truncated && <p role="status" className="text-sm text-fg-muted">Showing the first 1000 rules (list truncated).</p>}
       {rules.length === 0 ? (
-        <p role="status">No policy rules yet.</p>
+        <p role="status" className="text-sm text-fg-muted">No policy rules yet.</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Rule</th><th>Entitlement</th><th>Priority</th><th>Effect</th><th>Status</th><th>Version</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table>
+          <THead>
+            <Tr>
+              <Th>Rule</Th><Th>Entitlement</Th><Th>Priority</Th><Th>Effect</Th><Th>Status</Th><Th>Version</Th><Th>Actions</Th>
+            </Tr>
+          </THead>
+          <TBody>
             {rules.map((r) => (
-              <tr key={r.ruleKey}>
-                <td>{r.ruleKey}</td>
-                <td>{r.targetEntitlementId}</td>
-                <td>{r.priority}</td>
-                <td>{r.effectKind ?? "—"}</td>
-                <td>{r.status}</td>
-                <td>{r.latestVersion}</td>
-                <td>
-                  <button type="button" onClick={() => void showHistory(r.ruleKey)}>History</button>
-                  <RequireRole role={sessionRole} min="admin">
-                    <button type="button" aria-label={`Preview ${r.ruleKey}`} onClick={() => void changeStatus(r, "preview")}>Preview</button>
-                    <button type="button" aria-label={`Activate ${r.ruleKey}`} onClick={() => void changeStatus(r, "active")}>Activate</button>
-                    <button type="button" aria-label={`Disable ${r.ruleKey}`} onClick={() => void changeStatus(r, "disabled")}>Disable</button>
-                  </RequireRole>
-                </td>
-              </tr>
+              <Tr key={r.ruleKey}>
+                <Td className="font-mono text-xs">{r.ruleKey}</Td>
+                <Td className="font-mono text-xs">{r.targetEntitlementId}</Td>
+                <Td>{r.priority}</Td>
+                <Td>{r.effectKind ?? "—"}</Td>
+                <Td><Badge tone={statusTone(r.status)}>{r.status}</Badge></Td>
+                <Td>{r.latestVersion}</Td>
+                <Td>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="secondary" size="sm" type="button" onClick={() => void showHistory(r.ruleKey)}>History</Button>
+                    <RequireRole role={sessionRole} min="admin">
+                      <Button variant="secondary" size="sm" type="button" aria-label={`Preview ${r.ruleKey}`} onClick={() => void changeStatus(r, "preview")}>Preview</Button>
+                      <Button variant="secondary" size="sm" type="button" aria-label={`Activate ${r.ruleKey}`} onClick={() => void changeStatus(r, "active")}>Activate</Button>
+                      <Button variant="danger" size="sm" type="button" aria-label={`Disable ${r.ruleKey}`} onClick={() => void changeStatus(r, "disabled")}>Disable</Button>
+                    </RequireRole>
+                  </div>
+                </Td>
+              </Tr>
             ))}
-          </tbody>
-        </table>
+          </TBody>
+        </Table>
       )}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={runDryRun} aria-label="Dry-run policy rule">
-          <h4>Dry-run</h4>
-          <input
-            aria-label="Dry-run rule key"
-            placeholder="rule uuid"
-            value={dryRunRuleKey}
-            onChange={(e) => setDryRunRuleKey(e.target.value)}
-          />
-          <input
-            aria-label="Dry-run license id"
-            placeholder="license uuid"
-            value={dryRunLicenseId}
-            onChange={(e) => setDryRunLicenseId(e.target.value)}
-          />
-          <button type="submit">Simulate</button>
-        </form>
+        <Card>
+          <form onSubmit={runDryRun} aria-label="Dry-run policy rule" className="space-y-3">
+            <h4 className="text-sm font-semibold">Dry-run</h4>
+            <div className="flex flex-wrap items-end gap-3">
+              <Input
+                aria-label="Dry-run rule key"
+                placeholder="rule uuid"
+                value={dryRunRuleKey}
+                onChange={(e) => setDryRunRuleKey(e.target.value)}
+                className="w-64"
+              />
+              <Input
+                aria-label="Dry-run license id"
+                placeholder="license uuid"
+                value={dryRunLicenseId}
+                onChange={(e) => setDryRunLicenseId(e.target.value)}
+                className="w-64"
+              />
+              <Button type="submit">Simulate</Button>
+            </div>
+          </form>
+        </Card>
       </RequireRole>
 
       {dryRunResult && (
-        <div role="region" aria-label="Dry-run result">
+        <Card role="region" aria-label="Dry-run result" className="space-y-1 text-sm">
           <p>{`Would-be ${dryRunResult.decision.target}: ${String(dryRunResult.decision.baseValue)} → ${String(dryRunResult.decision.resolvedValue)} (source: ${dryRunResult.decision.source}${dryRunResult.decision.clamped ? ", clamped" : ""})`}</p>
           <p>{dryRunResult.firedRule ? `Fired rule ${dryRunResult.firedRule.ruleKey} v${dryRunResult.firedRule.version}` : "No rule fired (base decision stands)."}</p>
           {dryRunResult.consideredNotApplied.length > 0 && (
             <p>{`Considered, not applied: ${dryRunResult.consideredNotApplied.map((c) => `${c.ruleKey} v${c.version}`).join(", ")}`}</p>
           )}
-        </div>
+        </Card>
       )}
 
       {detail && (
-        <div role="region" aria-label="Version history">
-          <h4>{`History for ${detail.ruleKey} (latest v${detail.latestVersion}, ${detail.status})`}</h4>
-          <table>
-            <thead>
-              <tr><th>Version</th><th>Priority</th><th>Status</th><th>Author</th><th>Created</th></tr>
-            </thead>
-            <tbody>
+        <Card role="region" aria-label="Version history" className="space-y-3">
+          <h4 className="text-sm font-semibold">{`History for ${detail.ruleKey} (latest v${detail.latestVersion}, ${detail.status})`}</h4>
+          <Table>
+            <THead>
+              <Tr><Th>Version</Th><Th>Priority</Th><Th>Status</Th><Th>Author</Th><Th>Created</Th></Tr>
+            </THead>
+            <TBody>
               {detail.versions.map((v) => (
-                <tr key={v.version}>
-                  <td>{v.version}</td>
-                  <td>{v.priority}</td>
-                  <td>{v.status}</td>
-                  <td>{v.author}</td>
-                  <td>{v.createdAt}</td>
-                </tr>
+                <Tr key={v.version}>
+                  <Td>{v.version}</Td>
+                  <Td>{v.priority}</Td>
+                  <Td><Badge tone={statusTone(v.status)}>{v.status}</Badge></Td>
+                  <Td>{v.author}</Td>
+                  <Td className="text-xs text-fg-muted">{v.createdAt}</Td>
+                </Tr>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TBody>
+          </Table>
+        </Card>
       )}
     </section>
   );

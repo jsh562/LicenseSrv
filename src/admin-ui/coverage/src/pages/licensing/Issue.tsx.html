@@ -23,9 +23,9 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">95.91% </span>
+                <span class="strong">96.07% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>94/98</span>
+                <span class='fraction'>98/102</span>
             </div>
         
             
@@ -44,9 +44,9 @@
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">95.91% </span>
+                <span class="strong">96.07% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>94/98</span>
+                <span class='fraction'>98/102</span>
             </div>
         
             
@@ -193,7 +193,14 @@
 <a name='L128'></a><a href='#L128'>128</a>
 <a name='L129'></a><a href='#L129'>129</a>
 <a name='L130'></a><a href='#L130'>130</a>
-<a name='L131'></a><a href='#L131'>131</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<a name='L131'></a><a href='#L131'>131</a>
+<a name='L132'></a><a href='#L132'>132</a>
+<a name='L133'></a><a href='#L133'>133</a>
+<a name='L134'></a><a href='#L134'>134</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -277,7 +284,7 @@
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
@@ -286,7 +293,6 @@
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
@@ -295,7 +301,6 @@
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
@@ -304,7 +309,7 @@
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
 <span class="cline-any cline-yes">26x</span>
@@ -315,7 +320,8 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -340,6 +346,10 @@ import {
   type Role,
 } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Field, Input, Select, Textarea } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
 &nbsp;
 function issueError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -400,55 +410,54 @@ export function Issue({ sessionRole }: { sessionRole: Role }): JSX.Element {
   }
 &nbsp;
   return (
-    &lt;section aria-label="Issue license"&gt;
-      &lt;h3&gt;Issue a license&lt;/h3&gt;
-      {error &amp;&amp; &lt;p role="alert" className="error"&gt;{error}&lt;/p&gt;}
+    &lt;section aria-label="Issue license" className="space-y-4"&gt;
+      &lt;PageHeader title="Issue a license" /&gt;
+      {error &amp;&amp; &lt;p role="alert" className="error text-sm text-danger"&gt;{error}&lt;/p&gt;}
 &nbsp;
       &lt;RequireRole role={sessionRole} min="admin"&gt;
-        &lt;form onSubmit={issue} aria-label="New license"&gt;
-          &lt;label&gt;
-            Product
-            &lt;select aria-label="Product" value={productId} onChange={(e) =&gt; setProductId(e.target.value)} required&gt;
-              &lt;option value=""&gt;Select a product…&lt;/option&gt;
-              {products.map((p) =&gt; (
-                &lt;option key={p.id} value={p.id}&gt;{p.name}&lt;/option&gt;
-              ))}
-            &lt;/select&gt;
-          &lt;/label&gt;
-          &lt;label&gt;
-            Plan
-            &lt;select aria-label="Plan" value={planId} onChange={(e) =&gt; setPlanId(e.target.value)} required disabled={!productId}&gt;
-              &lt;option value=""&gt;Select a plan…&lt;/option&gt;
-              {plans.map((p) =&gt; (
-                &lt;option key={p.id} value={p.id}&gt;{p.name}&lt;/option&gt;
-              ))}
-            &lt;/select&gt;
-          &lt;/label&gt;
-          &lt;label&gt;
-            Customer
-            &lt;select aria-label="Customer" value={customerId} onChange={(e) =&gt; setCustomerId(e.target.value)} required&gt;
-              &lt;option value=""&gt;Select a customer…&lt;/option&gt;
-              {customers.map((c) =&gt; (
-                &lt;option key={c.id} value={c.id}&gt;{c.ref}&lt;/option&gt;
-              ))}
-            &lt;/select&gt;
-          &lt;/label&gt;
-          &lt;label&gt;
-            Expires (blank = perpetual)
-            &lt;input aria-label="Expiry" type="date" value={expiresAt} onChange={<span class="fstat-no" title="function not covered" >(e) =&gt; setExpiresAt(e.target.value)} /</span>&gt;
-          &lt;/label&gt;
-          &lt;button type="submit"&gt;Issue license&lt;/button&gt;
-        &lt;/form&gt;
+        &lt;Card&gt;
+          &lt;form onSubmit={issue} aria-label="New license" className="space-y-3"&gt;
+            &lt;Field label="Product"&gt;
+              &lt;Select aria-label="Product" value={productId} onChange={(e) =&gt; setProductId(e.target.value)} required&gt;
+                &lt;option value=""&gt;Select a product…&lt;/option&gt;
+                {products.map((p) =&gt; (
+                  &lt;option key={p.id} value={p.id}&gt;{p.name}&lt;/option&gt;
+                ))}
+              &lt;/Select&gt;
+            &lt;/Field&gt;
+            &lt;Field label="Plan"&gt;
+              &lt;Select aria-label="Plan" value={planId} onChange={(e) =&gt; setPlanId(e.target.value)} required disabled={!productId}&gt;
+                &lt;option value=""&gt;Select a plan…&lt;/option&gt;
+                {plans.map((p) =&gt; (
+                  &lt;option key={p.id} value={p.id}&gt;{p.name}&lt;/option&gt;
+                ))}
+              &lt;/Select&gt;
+            &lt;/Field&gt;
+            &lt;Field label="Customer"&gt;
+              &lt;Select aria-label="Customer" value={customerId} onChange={(e) =&gt; setCustomerId(e.target.value)} required&gt;
+                &lt;option value=""&gt;Select a customer…&lt;/option&gt;
+                {customers.map((c) =&gt; (
+                  &lt;option key={c.id} value={c.id}&gt;{c.ref}&lt;/option&gt;
+                ))}
+              &lt;/Select&gt;
+            &lt;/Field&gt;
+            &lt;Field label="Expires (blank = perpetual)"&gt;
+              &lt;Input aria-label="Expiry" type="date" value={expiresAt} onChange={<span class="fstat-no" title="function not covered" >(e) =&gt; setExpiresAt(e.target.value)} /</span>&gt;
+            &lt;/Field&gt;
+            &lt;Button type="submit"&gt;Issue license&lt;/Button&gt;
+          &lt;/form&gt;
+        &lt;/Card&gt;
       &lt;/RequireRole&gt;
 &nbsp;
       {issued &amp;&amp; (
-        &lt;div role="status" aria-label="Issued license"&gt;
-          &lt;p&gt;Issued license &lt;code&gt;{issued.id}&lt;/code&gt; ({issued.<span class="branch-0 cbranch-no" title="branch not covered" >expiresAt ? `expires ${issued.expiresAt}` : "</span>perpetual"}).&lt;/p&gt;
-          &lt;label&gt;
-            License key
-            &lt;textarea aria-label="License key" readOnly rows={4} value={issued.licenseKey} /&gt;
-          &lt;/label&gt;
-        &lt;/div&gt;
+        &lt;Card&gt;
+          &lt;div role="status" aria-label="Issued license" className="space-y-2"&gt;
+            &lt;p&gt;Issued license &lt;code&gt;{issued.id}&lt;/code&gt; ({issued.<span class="branch-0 cbranch-no" title="branch not covered" >expiresAt ? `expires ${issued.expiresAt}` : "</span>perpetual"}).&lt;/p&gt;
+            &lt;Field label="License key"&gt;
+              &lt;Textarea aria-label="License key" readOnly rows={4} value={issued.licenseKey} /&gt;
+            &lt;/Field&gt;
+          &lt;/div&gt;
+        &lt;/Card&gt;
       )}
     &lt;/section&gt;
   );
@@ -460,7 +469,7 @@ export function Issue({ sessionRole }: { sessionRole: Role }): JSX.Element {
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-07-16T02:29:57.738Z
+                at 2026-08-17T04:09:41.072Z
             </div>
         <script src="../../../prettify.js"></script>
         <script>

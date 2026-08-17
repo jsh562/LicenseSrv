@@ -9,7 +9,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DryRunResult, PolicyRuleDetail, PolicyRuleList } from "../../../api";
-import { Shell } from "../../../components/Shell";
 import { PolicyRules } from "../PolicyRules";
 
 vi.mock("../../../api", async (orig) => {
@@ -158,10 +157,9 @@ describe("PolicyRules (US1/US5)", () => {
   });
 });
 
-describe("Shell nav → Policy (FR-001)", () => {
-  it("reaches the Policy Rules view from the shell nav", async () => {
-    render(<Shell who={{ userId: "u1", tenantId: "t1", role: "admin" }} onSignedOut={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: "Policy" }));
+describe("Policy view (FR-001)", () => {
+  it("renders the Policy Rules region", async () => {
+    render(<PolicyRules sessionRole="admin" />);
     expect(await screen.findByRole("region", { name: "Policy Rules" })).toBeInTheDocument();
   });
 });

@@ -8,6 +8,12 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import { ApiError, billingApi, type BillingConnection, type BillingProvider, type PlanMap, type Role } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Badge, statusTone } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input, Select } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
 
 const PROVIDERS: BillingProvider[] = ["stripe", "paddle", "generic"];
 
@@ -96,68 +102,80 @@ export function Billing({ sessionRole }: { sessionRole: Role }): JSX.Element {
   }
 
   return (
-    <section aria-label="Billing">
-      <h3>Billing connections</h3>
-      {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
+    <section aria-label="Billing" className="space-y-4">
+      <PageHeader
+        title="Billing connections"
+        description="Connect a provider, map a plan, and rotate the write-only signing secret."
+        actions={
+          <RequireRole role={sessionRole} min="admin">
+            <Button variant="secondary" type="button" onClick={() => void reconcile()}>Reconcile now</Button>
+          </RequireRole>
+        }
+      />
+      {error && <p role="alert" className="error text-sm text-danger">{error}</p>}
+      {notice && <p role="status" className="text-sm text-success">{notice}</p>}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={create} aria-label="Connect provider">
-          <select aria-label="Provider" value={provider} onChange={(e) => setProvider(e.target.value as BillingProvider)}>
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-          {/* Write-only: a password field, never rendered back, cleared on submit. */}
-          <input
-            aria-label="Signing secret"
-            type="password"
-            placeholder="whsec_… (write-only)"
-            value={signingSecret}
-            onChange={(e) => setSigningSecret(e.target.value)}
-            required
-          />
-          <input
-            aria-label="Default grace seconds"
-            type="number"
-            min={1}
-            placeholder="1209600"
-            value={defaultGraceSeconds}
-            onChange={(e) => setDefaultGraceSeconds(e.target.value)}
-          />
-          <input aria-label="Plan key" placeholder="price_pro_monthly (optional)" value={planKey} onChange={(e) => setPlanKey(e.target.value)} />
-          <input aria-label="Product id" placeholder="product uuid (optional)" value={productId} onChange={(e) => setProductId(e.target.value)} />
-          <input aria-label="Plan id" placeholder="plan uuid (optional)" value={planId} onChange={(e) => setPlanId(e.target.value)} />
-          <button type="submit">Connect provider</button>
-        </form>
-
-        <button type="button" onClick={() => void reconcile()}>Reconcile now</button>
+        <Card>
+          <form onSubmit={create} aria-label="Connect provider" className="flex flex-wrap items-end gap-3">
+            <Select aria-label="Provider" value={provider} onChange={(e) => setProvider(e.target.value as BillingProvider)} className="w-36">
+              {PROVIDERS.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </Select>
+            {/* Write-only: a password field, never rendered back, cleared on submit. */}
+            <Input
+              aria-label="Signing secret"
+              type="password"
+              placeholder="whsec_… (write-only)"
+              value={signingSecret}
+              onChange={(e) => setSigningSecret(e.target.value)}
+              required
+              className="w-56"
+            />
+            <Input
+              aria-label="Default grace seconds"
+              type="number"
+              min={1}
+              placeholder="1209600"
+              value={defaultGraceSeconds}
+              onChange={(e) => setDefaultGraceSeconds(e.target.value)}
+              className="w-40"
+            />
+            <Input aria-label="Plan key" placeholder="price_pro_monthly (optional)" value={planKey} onChange={(e) => setPlanKey(e.target.value)} className="w-56" />
+            <Input aria-label="Product id" placeholder="product uuid (optional)" value={productId} onChange={(e) => setProductId(e.target.value)} className="w-56" />
+            <Input aria-label="Plan id" placeholder="plan uuid (optional)" value={planId} onChange={(e) => setPlanId(e.target.value)} className="w-56" />
+            <Button type="submit">Connect provider</Button>
+          </form>
+        </Card>
       </RequireRole>
 
-      <table>
-        <thead>
-          <tr><th>Provider</th><th>Status</th><th>Grace (s)</th><th>Plan map</th><th>Secret rotated</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
+      <Table>
+        <THead>
+          <Tr><Th>Provider</Th><Th>Status</Th><Th>Grace (s)</Th><Th>Plan map</Th><Th>Secret rotated</Th><Th>Actions</Th></Tr>
+        </THead>
+        <TBody>
           {connections.map((c) => (
-            <tr key={c.id}>
-              <td>{c.provider}</td>
-              <td>{c.status}</td>
-              <td>{c.defaultGraceSeconds}</td>
-              <td>{Object.keys(c.planMap).join(", ") || "—"}</td>
-              <td>{c.secretRotatedAt ?? "never"}</td>
-              <td>
+            <Tr key={c.id}>
+              <Td>{c.provider}</Td>
+              <Td><Badge tone={statusTone(c.status)}>{c.status}</Badge></Td>
+              <Td>{c.defaultGraceSeconds}</Td>
+              <Td>{Object.keys(c.planMap).join(", ") || "—"}</Td>
+              <Td className="text-xs text-fg-muted">{c.secretRotatedAt ?? "never"}</Td>
+              <Td>
                 <RequireRole role={sessionRole} min="admin">
-                  <button type="button" onClick={() => void rotate(c.id)}>Rotate secret</button>
-                  <button type="button" onClick={() => void toggleStatus(c)}>
-                    {c.status === "active" ? "Disable" : "Enable"}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="secondary" size="sm" type="button" onClick={() => void rotate(c.id)}>Rotate secret</Button>
+                    <Button variant="secondary" size="sm" type="button" onClick={() => void toggleStatus(c)}>
+                      {c.status === "active" ? "Disable" : "Enable"}
+                    </Button>
+                  </div>
                 </RequireRole>
-              </td>
-            </tr>
+              </Td>
+            </Tr>
           ))}
-        </tbody>
-      </table>
+        </TBody>
+      </Table>
     </section>
   );
 }

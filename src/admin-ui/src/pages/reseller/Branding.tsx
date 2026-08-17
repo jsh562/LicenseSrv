@@ -20,6 +20,11 @@ import {
   type Role,
 } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input, Select } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
 
 type Mode = "reseller" | "self";
 
@@ -118,79 +123,82 @@ export function Branding({ sessionRole }: { sessionRole: Role }): JSX.Element {
   }
 
   return (
-    <section aria-label="Branding">
-      <h3>White-label branding</h3>
-      <label>
-        Edit as{" "}
-        <select aria-label="Branding mode" value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
+    <section aria-label="Branding" className="space-y-4">
+      <PageHeader title="White-label branding" />
+      <label className="inline-flex items-center gap-2 text-sm font-medium">
+        Edit as
+        <Select aria-label="Branding mode" value={mode} onChange={(e) => setMode(e.target.value as Mode)} className="w-64">
           <option value="reseller">Reseller defaults &amp; locks</option>
           <option value="self">My branding</option>
-        </select>
+        </Select>
       </label>
-      {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
+      {error && <p role="alert" className="error text-sm text-danger">{error}</p>}
+      {notice && <p role="status" className="text-sm text-success">{notice}</p>}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={save} aria-label="Edit branding">
-          <table>
-            <thead>
-              <tr>
-                <th>Field</th>
-                <th>Value</th>
-                {mode === "reseller" && <th>Lock</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {BRANDING_FIELD_NAMES.map((name) => {
-                const isProviderLocked = mode === "self" && providerLocked.has(name);
-                return (
-                  <tr key={name}>
-                    <td>{name}</td>
-                    <td>
-                      <input
-                        aria-label={`${name} value`}
-                        value={fields[name] ?? ""}
-                        disabled={isProviderLocked}
-                        placeholder={isProviderLocked ? "set by your provider" : ""}
-                        onChange={(e) => setField(name, e.target.value)}
-                      />
-                    </td>
-                    {mode === "reseller" && (
-                      <td>
-                        <input
-                          type="checkbox"
-                          aria-label={`Lock ${name}`}
-                          checked={locked.has(name)}
-                          onChange={(e) => toggleLock(name, e.target.checked)}
+        <Card>
+          <form onSubmit={save} aria-label="Edit branding" className="space-y-3">
+            <Table>
+              <THead>
+                <Tr>
+                  <Th>Field</Th>
+                  <Th>Value</Th>
+                  {mode === "reseller" && <Th>Lock</Th>}
+                </Tr>
+              </THead>
+              <TBody>
+                {BRANDING_FIELD_NAMES.map((name) => {
+                  const isProviderLocked = mode === "self" && providerLocked.has(name);
+                  return (
+                    <Tr key={name}>
+                      <Td className="font-medium">{name}</Td>
+                      <Td>
+                        <Input
+                          aria-label={`${name} value`}
+                          value={fields[name] ?? ""}
+                          disabled={isProviderLocked}
+                          placeholder={isProviderLocked ? "set by your provider" : ""}
+                          onChange={(e) => setField(name, e.target.value)}
                         />
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <button type="submit">Save branding</button>
-        </form>
+                      </Td>
+                      {mode === "reseller" && (
+                        <Td>
+                          <input
+                            type="checkbox"
+                            aria-label={`Lock ${name}`}
+                            checked={locked.has(name)}
+                            onChange={(e) => toggleLock(name, e.target.checked)}
+                            className="h-4 w-4 accent-primary"
+                          />
+                        </Td>
+                      )}
+                    </Tr>
+                  );
+                })}
+              </TBody>
+            </Table>
+            <Button type="submit">Save branding</Button>
+          </form>
+        </Card>
       </RequireRole>
 
-      <div role="region" aria-label="Resolved branding">
-        <h4>Applied (resolved) branding</h4>
-        <table>
-          <thead>
-            <tr><th>Field</th><th>Value</th><th>Source</th><th>Locked</th></tr>
-          </thead>
-          <tbody>
+      <div role="region" aria-label="Resolved branding" className="space-y-2">
+        <h4 className="font-medium">Applied (resolved) branding</h4>
+        <Table>
+          <THead>
+            <Tr><Th>Field</Th><Th>Value</Th><Th>Source</Th><Th>Locked</Th></Tr>
+          </THead>
+          <TBody>
             {resolved.map((r) => (
-              <tr key={r.field}>
-                <td>{r.field}</td>
-                <td>{r.value ?? "—"}</td>
-                <td>{r.source}</td>
-                <td>{r.locked ? "set by your provider" : "—"}</td>
-              </tr>
+              <Tr key={r.field}>
+                <Td className="font-medium">{r.field}</Td>
+                <Td>{r.value ?? "—"}</Td>
+                <Td>{r.source}</Td>
+                <Td>{r.locked ? "set by your provider" : "—"}</Td>
+              </Tr>
             ))}
-          </tbody>
-        </table>
+          </TBody>
+        </Table>
       </div>
     </section>
   );

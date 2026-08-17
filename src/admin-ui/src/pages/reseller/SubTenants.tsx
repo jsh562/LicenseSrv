@@ -4,10 +4,17 @@
 // the HARD quota (409 quota_exceeded at the cap). Provisioning is admin-only (hidden from a viewer by
 // RequireRole) and rides the double-submit CSRF token; the server enforces the reseller plane + subtree gate +
 // RBAC + CSRF fail-closed, and an out-of-subtree id resolves 404 with no existence disclosure. No secret is shown.
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 
-import { ApiError, resellerApi, type Role, type SubTenant } from "../../api";
+import { ApiError, resellerApi, type Role } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Badge, statusTone } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
+import { useAsync } from "../../hooks/useAsync";
 
 /** Map a provision ApiError to a human message, keeping the hard-quota 409 explainable inline. */
 function provisionErrorMessage(err: unknown): string {
@@ -29,25 +36,15 @@ function provisionErrorMessage(err: unknown): string {
 }
 
 export function SubTenants({ sessionRole }: { sessionRole: Role }): JSX.Element {
-  const [subTenants, setSubTenants] = useState<SubTenant[]>([]);
-  const [truncated, setTruncated] = useState(false);
-  const [quota, setQuota] = useState<{ used: number; cap: number } | null>(null);
+  const { data, reload, error: loadError } = useAsync(() => resellerApi.listSubTenants(), []);
+  const subTenants = data?.subTenants ?? [];
+  const truncated = data?.truncated ?? false;
+  const quota = data ? { used: data.subTenantCount, cap: data.subTenantQuota } : null;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const [displayName, setDisplayName] = useState("");
   const [firstAdmin, setFirstAdmin] = useState("");
-
-  const refresh = useCallback(async () => {
-    const res = await resellerApi.listSubTenants();
-    setSubTenants(res.subTenants);
-    setTruncated(res.truncated);
-    setQuota({ used: res.subTenantCount, cap: res.subTenantQuota });
-  }, []);
-
-  useEffect(() => {
-    void refresh().catch(() => setError("Could not load sub-tenants."));
-  }, [refresh]);
 
   async function provision(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -62,7 +59,7 @@ export function SubTenants({ sessionRole }: { sessionRole: Role }): JSX.Element 
       setNotice(`Sub-tenant ${created.displayName} provisioned.`);
       setDisplayName("");
       setFirstAdmin("");
-      await refresh();
+      await reload();
     } catch (err) {
       setError(provisionErrorMessage(err));
     }
@@ -71,51 +68,59 @@ export function SubTenants({ sessionRole }: { sessionRole: Role }): JSX.Element 
   const atCap = quota !== null && quota.used >= quota.cap;
 
   return (
-    <section aria-label="Sub-tenants">
-      <h3>My sub-tenants</h3>
+    <section aria-label="Sub-tenants" className="space-y-4">
+      <PageHeader title="My sub-tenants" />
       {quota && (
-        <p role="status">{`Using ${quota.used} of ${quota.cap} sub-tenants${atCap ? " (at hard quota)" : ""}.`}</p>
+        <p role="status" className="text-sm text-fg-muted">{`Using ${quota.used} of ${quota.cap} sub-tenants${atCap ? " (at hard quota)" : ""}.`}</p>
       )}
-      {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
+      {Boolean(error || loadError) && (
+        <p role="alert" className="error text-sm text-danger">
+          {error ?? "Could not load sub-tenants."}
+        </p>
+      )}
+      {notice && <p role="status" className="text-sm text-success">{notice}</p>}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={provision} aria-label="Provision sub-tenant">
-          <input
-            aria-label="Sub-tenant display name"
-            placeholder="customer display name"
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-          />
-          <input
-            aria-label="Sub-tenant first admin reference"
-            placeholder="first admin reference"
-            value={firstAdmin}
-            onChange={(e) => setFirstAdmin(e.target.value)}
-          />
-          <button type="submit" disabled={atCap}>Provision sub-tenant</button>
-        </form>
+        <Card>
+          <form onSubmit={provision} aria-label="Provision sub-tenant" className="flex flex-wrap items-end gap-3">
+            <Input
+              aria-label="Sub-tenant display name"
+              placeholder="customer display name"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              className="w-56"
+            />
+            <Input
+              aria-label="Sub-tenant first admin reference"
+              placeholder="first admin reference"
+              value={firstAdmin}
+              onChange={(e) => setFirstAdmin(e.target.value)}
+              className="w-56"
+            />
+            <Button type="submit" disabled={atCap}>Provision sub-tenant</Button>
+          </form>
+        </Card>
       </RequireRole>
 
-      {truncated && <p role="status">Showing the first 1000 sub-tenants (list truncated).</p>}
+      {truncated && <p role="status" className="text-sm text-fg-muted">Showing the first 1000 sub-tenants (list truncated).</p>}
       {subTenants.length === 0 ? (
-        <p role="status">No sub-tenants yet.</p>
+        <p role="status" className="text-sm text-fg-muted">No sub-tenants yet.</p>
       ) : (
-        <table>
-          <thead>
-            <tr><th>Sub-tenant</th><th>Status</th><th>Access</th><th>Created</th></tr>
-          </thead>
-          <tbody>
+        <Table>
+          <THead>
+            <Tr><Th>Sub-tenant</Th><Th>Status</Th><Th>Access</Th><Th>Created</Th></Tr>
+          </THead>
+          <TBody>
             {subTenants.map((s) => (
-              <tr key={s.subTenantId}>
-                <td>{s.displayName}</td>
-                <td>{s.status}</td>
-                <td>{s.readOnly ? "read-only" : "read-write"}</td>
-                <td>{s.createdAt}</td>
-              </tr>
+              <Tr key={s.subTenantId}>
+                <Td>{s.displayName}</Td>
+                <Td><Badge tone={statusTone(s.status)}>{s.status}</Badge></Td>
+                <Td>{s.readOnly ? "read-only" : "read-write"}</Td>
+                <Td>{s.createdAt}</Td>
+              </Tr>
             ))}
-          </tbody>
-        </table>
+          </TBody>
+        </Table>
       )}
     </section>
   );

@@ -4,6 +4,9 @@
 import { useState, type FormEvent } from "react";
 
 import { adminApi, ApiError, type Principal } from "../api";
+import { Button } from "../components/ui/Button";
+import { Card } from "../components/ui/Card";
+import { Field, Input } from "../components/ui/Field";
 
 export function Login({ onSignedIn }: { onSignedIn: (who: Principal) => void }): JSX.Element {
   const [tenantSlug, setTenantSlug] = useState("");
@@ -32,50 +35,54 @@ export function Login({ onSignedIn }: { onSignedIn: (who: Principal) => void }):
   }
 
   return (
-    <main className="login">
-      <h1>Admin Console</h1>
-      <form onSubmit={submit} aria-label="Sign in">
-        <label>
-          Workspace
-          <input
-            name="tenantSlug"
-            value={tenantSlug}
-            onChange={(e) => setTenantSlug(e.target.value)}
-            autoComplete="organization"
-            required
-          />
-        </label>
-        <label>
-          Email
-          <input
-            name="email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="username"
-            required
-          />
-        </label>
-        <label>
-          Password
-          <input
-            name="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-            required
-          />
-        </label>
-        {error && (
-          <p role="alert" className="error">
-            {error}
-          </p>
-        )}
-        <button type="submit" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
+    <main className="login grid min-h-full place-items-center p-6">
+      <Card className="w-full max-w-sm p-6">
+        <div className="mb-6 flex items-center gap-2">
+          <span className="grid h-8 w-8 place-items-center rounded-md bg-primary text-base font-bold text-primary-fg">
+            L
+          </span>
+          <h1 className="text-lg font-semibold tracking-tight">Admin Console</h1>
+        </div>
+        <form onSubmit={submit} aria-label="Sign in" className="space-y-4">
+          <Field label="Workspace">
+            <Input
+              name="tenantSlug"
+              value={tenantSlug}
+              onChange={(e) => setTenantSlug(e.target.value)}
+              autoComplete="organization"
+              required
+            />
+          </Field>
+          <Field label="Email">
+            <Input
+              name="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+              required
+            />
+          </Field>
+          <Field label="Password">
+            <Input
+              name="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </Field>
+          {error && (
+            <p role="alert" className="error text-sm text-danger">
+              {error}
+            </p>
+          )}
+          <Button type="submit" className="w-full" loading={busy}>
+            {busy ? "Signing in…" : "Sign in"}
+          </Button>
+        </form>
+      </Card>
     </main>
   );
 }

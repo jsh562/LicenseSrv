@@ -28,3 +28,8 @@ Thumbs.db
 .idea/
 .vscode/
 node_modules
+
+# Local dev secrets & demo artifacts (never commit)
+/secrets/
+/cookies.txt
+/examples/license-demo/.out/

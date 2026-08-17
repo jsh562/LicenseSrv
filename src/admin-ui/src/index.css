@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Semantic design tokens (RGB channels for Tailwind's <alpha-value>). Light default; .dark override. */
+:root {
+  --bg: 248 250 252;
+  --surface: 255 255 255;
+  --surface-muted: 241 245 249;
+  --border: 226 232 240;
+  --ring: 99 102 241;
+  --fg: 15 23 42;
+  --fg-muted: 100 116 139;
+  --primary: 79 70 229;
+  --primary-fg: 255 255 255;
+  --success: 22 163 74;
+  --warning: 202 138 4;
+  --danger: 220 38 38;
+  --info: 2 132 199;
+  --muted: 100 116 139;
+}
+
+.dark {
+  --bg: 2 6 23;
+  --surface: 15 23 42;
+  --surface-muted: 30 41 59;
+  --border: 51 65 85;
+  --ring: 129 140 248;
+  --fg: 241 245 249;
+  --fg-muted: 148 163 184;
+  --primary: 99 102 241;
+  --primary-fg: 255 255 255;
+  --success: 34 197 94;
+  --warning: 234 179 8;
+  --danger: 248 113 113;
+  --info: 56 189 248;
+  --muted: 148 163 184;
+}
+
+@layer base {
+  html, body, #root {
+    @apply h-full;
+  }
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+  }
+  a {
+    @apply text-primary hover:underline;
+  }
+  /* Sensible focus ring for keyboard users across all interactive elements. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-bg;
+  }
+}

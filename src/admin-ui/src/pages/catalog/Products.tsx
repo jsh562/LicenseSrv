@@ -1,23 +1,22 @@
 // Products view (US1, FR-015). Lists products (all statuses), lets an admin create and archive, and
 // drills into a product's plans. Admin-only actions are hidden from viewers by RequireRole.
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 
 import { ApiError, catalogApi, type Product, type Role } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Badge, statusTone } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
+import { useAsync } from "../../hooks/useAsync";
 
 export function Products({ sessionRole, onOpen }: { sessionRole: Role; onOpen: (p: Product) => void }): JSX.Element {
-  const [products, setProducts] = useState<Product[]>([]);
+  const { data: products = [], reload, error: loadError } = useAsync(() => catalogApi.listProducts("all"), []);
   const [key, setKey] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    setProducts(await catalogApi.listProducts("all"));
-  }, []);
-
-  useEffect(() => {
-    void refresh().catch(() => setError("Could not load products."));
-  }, [refresh]);
 
   async function create(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -26,7 +25,7 @@ export function Products({ sessionRole, onOpen }: { sessionRole: Role; onOpen: (
       await catalogApi.createProduct({ key: key.trim(), name: name.trim() });
       setKey("");
       setName("");
-      await refresh();
+      await reload();
     } catch (err) {
       setError(err instanceof ApiError && err.status === 409 ? "That product key already exists." : "Create failed.");
     }
@@ -36,47 +35,55 @@ export function Products({ sessionRole, onOpen }: { sessionRole: Role; onOpen: (
     setError(null);
     try {
       await catalogApi.archiveProduct(id);
-      await refresh();
+      await reload();
     } catch {
       setError("Archive failed.");
     }
   }
 
   return (
-    <section aria-label="Products">
-      <h3>Products</h3>
-      {error && <p role="alert" className="error">{error}</p>}
+    <section aria-label="Products" className="space-y-4">
+      <PageHeader title="Products" />
+      {Boolean(error || loadError) && (
+        <p role="alert" className="error text-sm text-danger">
+          {error ?? "Could not load products."}
+        </p>
+      )}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={create} aria-label="Create product">
-          <input aria-label="Product key" placeholder="acme-cad" value={key} onChange={(e) => setKey(e.target.value)} required />
-          <input aria-label="Product name" placeholder="Acme CAD" value={name} onChange={(e) => setName(e.target.value)} required />
-          <button type="submit">Add product</button>
-        </form>
+        <Card>
+          <form onSubmit={create} aria-label="Create product" className="flex flex-wrap items-end gap-3">
+            <Input aria-label="Product key" placeholder="acme-cad" value={key} onChange={(e) => setKey(e.target.value)} required className="w-48" />
+            <Input aria-label="Product name" placeholder="Acme CAD" value={name} onChange={(e) => setName(e.target.value)} required className="w-48" />
+            <Button type="submit">Add product</Button>
+          </form>
+        </Card>
       </RequireRole>
 
-      <table>
-        <thead>
-          <tr><th>Key</th><th>Name</th><th>Status</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
+      <Table>
+        <THead>
+          <Tr><Th>Key</Th><Th>Name</Th><Th>Status</Th><Th>Actions</Th></Tr>
+        </THead>
+        <TBody>
           {products.map((p) => (
-            <tr key={p.id}>
-              <td>{p.key}</td>
-              <td>{p.name}</td>
-              <td>{p.status}</td>
-              <td>
-                <button type="button" onClick={() => onOpen(p)}>Plans</button>
-                <RequireRole role={sessionRole} min="admin">
-                  {p.status === "active" && (
-                    <button type="button" onClick={() => void archive(p.id)}>Archive</button>
-                  )}
-                </RequireRole>
-              </td>
-            </tr>
+            <Tr key={p.id}>
+              <Td className="font-mono text-xs">{p.key}</Td>
+              <Td>{p.name}</Td>
+              <Td><Badge tone={statusTone(p.status)}>{p.status}</Badge></Td>
+              <Td>
+                <div className="flex items-center gap-2">
+                  <Button variant="secondary" size="sm" type="button" onClick={() => onOpen(p)}>Plans</Button>
+                  <RequireRole role={sessionRole} min="admin">
+                    {p.status === "active" && (
+                      <Button variant="danger" size="sm" type="button" onClick={() => void archive(p.id)}>Archive</Button>
+                    )}
+                  </RequireRole>
+                </div>
+              </Td>
+            </Tr>
           ))}
-        </tbody>
-      </table>
+        </TBody>
+      </Table>
     </section>
   );
 }

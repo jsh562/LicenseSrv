@@ -15,7 +15,9 @@
     "test:docker": "vitest run src/server/__tests__/image.smoke.integration.test.ts",
     "migrate": "tsx src/server/db/migrate.ts",
     "migrate:dist": "node dist/server/db/migrate.js",
-    "start": "node --import ./dist/server/observability/tracing.js dist/server/main.js"
+    "start": "node --import ./dist/server/observability/tracing.js dist/server/main.js",
+    "gen-custody": "tsx scripts/gen-custody.ts",
+    "demo": "bash scripts/demo.sh"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

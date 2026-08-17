@@ -15,9 +15,9 @@ import type {
   ResellerList,
   SubTenantList,
 } from "../../../api";
-import { Shell } from "../../../components/Shell";
 import { Branding } from "../Branding";
 import { Domains } from "../Domains";
+import { Reseller } from "..";
 import { Resellers } from "../Resellers";
 import { SubTenants } from "../SubTenants";
 
@@ -252,10 +252,229 @@ describe("Domains (US5)", () => {
   });
 });
 
-describe("Shell nav → Reseller (FR-001)", () => {
-  it("reaches the Reseller view from the shell nav", async () => {
-    render(<Shell who={{ userId: "u1", tenantId: "t1", role: "admin" }} onSignedOut={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: "Reseller" }));
+describe("Resellers operator handlers (US4, cushion)", () => {
+  it("changes the hard quota via the prompt and reloads", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("25");
+    api.updateQuota.mockResolvedValue({ ...resellerList.resellers[0]!, subTenantQuota: 25 });
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.click(screen.getByLabelText("Set quota Acme Partners"));
+    await waitFor(() => expect(api.updateQuota).toHaveBeenCalledWith("r-1", 25));
+    expect(await screen.findByRole("status")).toHaveTextContent(/Quota for Acme Partners is now 25/);
+    promptSpy.mockRestore();
+  });
+
+  it("rejects a non-integer quota inline without calling the API", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("-3");
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.click(screen.getByLabelText("Set quota Acme Partners"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/non-negative integer/i);
+    expect(api.updateQuota).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+  });
+
+  it("aborts the quota change when the prompt is cancelled", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.click(screen.getByLabelText("Set quota Acme Partners"));
+    await waitFor(() => expect(api.updateQuota).not.toHaveBeenCalled());
+    promptSpy.mockRestore();
+  });
+
+  it("reinstates a reseller", async () => {
+    api.reinstateReseller.mockResolvedValue({ ...resellerList.resellers[0]!, status: "active" });
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.click(screen.getByLabelText("Reinstate Acme Partners"));
+    await waitFor(() => expect(api.reinstateReseller).toHaveBeenCalledWith("r-1"));
+    expect(await screen.findByRole("status")).toHaveTextContent(/reinstated/i);
+  });
+
+  it("offboards cleanly when there are no unresolved sub-tenants", async () => {
+    api.offboardReseller.mockResolvedValue({
+      resellerId: "r-1",
+      status: "offboarding",
+      unresolvedSubTenantCount: 0,
+      graceEndsAt: "2026-09-01",
+    });
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.click(screen.getByLabelText("Offboard Acme Partners"));
+    await waitFor(() => expect(api.offboardReseller).toHaveBeenCalledWith("r-1"));
+    expect(await screen.findByRole("status")).toHaveTextContent(/grace ends 2026-09-01/);
+  });
+
+  it("reports blocked offboard when sub-tenants remain unresolved", async () => {
+    api.offboardReseller.mockResolvedValue({
+      resellerId: "r-1",
+      status: "active",
+      unresolvedSubTenantCount: 3,
+      graceEndsAt: "2026-09-01",
+    });
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.click(screen.getByLabelText("Offboard Acme Partners"));
+    expect(await screen.findByRole("status")).toHaveTextContent(/Offboard blocked: 3 sub-tenant/);
+  });
+
+  it("moves a sub-tenant to a destination reseller", async () => {
+    api.moveSubTenant.mockResolvedValue({
+      subTenantId: "s-9",
+      displayName: "Moved Co",
+      status: "active",
+      readOnly: false,
+      createdAt: "2026-08-12T00:00:00Z",
+      resellerId: "r-2",
+    });
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.type(screen.getByLabelText("Move sub-tenant id"), "s-9");
+    await userEvent.type(screen.getByLabelText("Destination reseller id"), "r-2");
+    await userEvent.click(screen.getByRole("button", { name: /^move$/i }));
+    await waitFor(() =>
+      expect(api.moveSubTenant).toHaveBeenCalledWith("s-9", { type: "to_reseller", destinationResellerId: "r-2" }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(/moved to reseller r-2/);
+  });
+
+  it("moves a sub-tenant back to direct-platform when no destination is given", async () => {
+    api.moveSubTenant.mockResolvedValue({
+      subTenantId: "s-9",
+      displayName: "Moved Co",
+      status: "active",
+      readOnly: false,
+      createdAt: "2026-08-12T00:00:00Z",
+      resellerId: null,
+    });
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.type(screen.getByLabelText("Move sub-tenant id"), "s-9");
+    await userEvent.click(screen.getByRole("button", { name: /^move$/i }));
+    await waitFor(() =>
+      expect(api.moveSubTenant).toHaveBeenCalledWith("s-9", { type: "to_direct_platform" }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(/moved to direct-platform/);
+  });
+
+  it("filters the reseller list by status", async () => {
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.selectOptions(screen.getByLabelText("Filter reseller status"), "suspended");
+    await waitFor(() => expect(api.listResellers).toHaveBeenCalledWith("suspended"));
+  });
+
+  it("renders the truncation notice when the list is truncated", async () => {
+    api.listResellers.mockResolvedValue({ ...resellerList, truncated: true });
+    render(<Resellers sessionRole="admin" />);
+    expect(await screen.findByText(/list truncated/i)).toBeInTheDocument();
+  });
+
+  it("promotes an existing tenant via the onboard mode switch", async () => {
+    render(<Resellers sessionRole="admin" />);
+    await screen.findByText("Acme Partners");
+    await userEvent.selectOptions(screen.getByLabelText("Onboard mode"), "promote_existing");
+    await userEvent.type(screen.getByLabelText("Tenant id"), "t-99");
+    await userEvent.type(screen.getByLabelText("First admin reference"), "admin@promo");
+    await userEvent.click(screen.getByRole("button", { name: /onboard reseller/i }));
+    await waitFor(() =>
+      expect(api.onboardReseller).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "promote_existing", tenantId: "t-99" }),
+      ),
+    );
+  });
+});
+
+describe("Branding editor handlers (US2, cushion)", () => {
+  it("edits a field value and toggles a lock, then saves the reseller branding", async () => {
+    render(<Branding sessionRole="admin" />);
+    await screen.findByRole("form", { name: "Edit branding" });
+    await userEvent.type(screen.getByLabelText("logoUrl value"), "https://cdn.acme/logo.png");
+    await userEvent.click(screen.getByLabelText("Lock logoUrl"));
+    await userEvent.click(screen.getByRole("button", { name: /save branding/i }));
+    await waitFor(() =>
+      expect(api.setResellerBranding).toHaveBeenCalledWith(
+        expect.objectContaining({ locked: expect.arrayContaining(["logoUrl"]) }),
+      ),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(/Reseller branding \+ locks saved/);
+  });
+
+  it("clears a field back out when emptied", async () => {
+    render(<Branding sessionRole="admin" />);
+    await screen.findByRole("form", { name: "Edit branding" });
+    const input = screen.getByLabelText("logoUrl value");
+    await userEvent.type(input, "x");
+    await userEvent.clear(input);
+    await userEvent.click(screen.getByRole("button", { name: /save branding/i }));
+    await waitFor(() => expect(api.setResellerBranding).toHaveBeenCalled());
+  });
+
+  it("saves the self-plane branding overrides", async () => {
+    render(<Branding sessionRole="admin" />);
+    await screen.findByRole("form", { name: "Edit branding" });
+    await userEvent.selectOptions(screen.getByLabelText("Branding mode"), "self");
+    await waitFor(() => expect(api.getBranding).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole("button", { name: /save branding/i }));
+    await waitFor(() => expect(api.setBranding).toHaveBeenCalled());
+    expect(await screen.findByRole("status")).toHaveTextContent(/Branding overrides saved/);
+  });
+
+  it("surfaces a load failure inline", async () => {
+    const { ApiError } = await vi.importActual<typeof import("../../../api")>("../../../api");
+    api.getResellerBranding.mockRejectedValueOnce(new ApiError(403, "forbidden", "no"));
+    render(<Branding sessionRole="admin" />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/requires the admin role/i);
+  });
+});
+
+describe("Domains verification handlers (US5, cushion)", () => {
+  it("activates a verified binding", async () => {
+    const verifiedBinding: DomainBinding = { ...pendingBinding, status: "verified", verifiedAt: "2026-08-12T01:00:00Z" };
+    api.listDomains.mockResolvedValue({ bindings: [verifiedBinding], truncated: false });
+    api.activateDomain.mockResolvedValue({ ...verifiedBinding, status: "active", activatedAt: "2026-08-12T02:00:00Z" });
+    render(<Domains sessionRole="admin" />);
+    await screen.findByText("app.acme.test");
+    await userEvent.click(screen.getByLabelText("Activate app.acme.test"));
+    await waitFor(() => expect(api.activateDomain).toHaveBeenCalledWith("b-1"));
+    expect(await screen.findByRole("status")).toHaveTextContent(/is now active/);
+  });
+
+  it("initiates an email_sender binding via the kind switch", async () => {
+    render(<Domains sessionRole="admin" />);
+    await screen.findByText("app.acme.test");
+    await userEvent.selectOptions(screen.getByLabelText("Binding kind"), "email_sender");
+    await userEvent.type(screen.getByLabelText("Host"), "mail.acme.test");
+    await userEvent.click(screen.getByRole("button", { name: /initiate verification/i }));
+    await waitFor(() =>
+      expect(api.initiateDomain).toHaveBeenCalledWith({ kind: "email_sender", host: "mail.acme.test" }),
+    );
+  });
+
+  it("shows the empty state when there are no bindings", async () => {
+    api.listDomains.mockResolvedValue({ bindings: [], truncated: false });
+    render(<Domains sessionRole="admin" />);
+    expect(await screen.findByText(/No domain bindings yet/i)).toBeInTheDocument();
+  });
+});
+
+describe("Reseller container (FR-001)", () => {
+  it("renders the Reseller region with its default view", async () => {
+    render(<Reseller sessionRole="admin" />);
     expect(await screen.findByRole("region", { name: "Reseller" })).toBeInTheDocument();
+  });
+
+  it("switches between all four sub-views via the sub-nav", async () => {
+    render(<Reseller sessionRole="admin" />);
+    await screen.findByRole("region", { name: "Reseller" });
+    await userEvent.click(screen.getByRole("button", { name: "Sub-tenants" }));
+    expect(await screen.findByRole("region", { name: "Sub-tenants" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Branding" }));
+    expect(await screen.findByRole("region", { name: "Branding" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Domains" }));
+    expect(await screen.findByRole("region", { name: "Domains" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Resellers" }));
+    expect(await screen.findByRole("region", { name: "Resellers" })).toBeInTheDocument();
   });
 });

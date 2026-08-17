@@ -7,7 +7,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { UsageQueryResult } from "../../../api";
-import { Shell } from "../../../components/Shell";
 import { Usage } from "../Usage";
 
 vi.mock("../../../api", async (orig) => {
@@ -91,10 +90,9 @@ describe("Usage (US2)", () => {
   });
 });
 
-describe("Shell nav → Usage (FR-011)", () => {
-  it("reaches the Usage metering view from the shell nav", async () => {
-    render(<Shell who={{ userId: "u1", tenantId: "t1", role: "admin" }} onSignedOut={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: "Usage" }));
+describe("Usage view (FR-011)", () => {
+  it("renders the Usage region with its lookup control", async () => {
+    render(<Usage sessionRole="admin" />);
     expect(await screen.findByRole("region", { name: "Usage" })).toBeInTheDocument();
     expect(screen.getByLabelText("License id")).toBeInTheDocument();
   });

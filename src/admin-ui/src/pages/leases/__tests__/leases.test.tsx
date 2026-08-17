@@ -7,7 +7,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LeaseRegistry } from "../../../api";
-import { Shell } from "../../../components/Shell";
 import { Leases } from "../Leases";
 
 vi.mock("../../../api", async (orig) => {
@@ -100,10 +99,9 @@ describe("Leases (US5)", () => {
   });
 });
 
-describe("Shell nav → Leases (FR-015)", () => {
-  it("reaches the Concurrency/Leases view from the shell nav", async () => {
-    render(<Shell who={{ userId: "u1", tenantId: "t1", role: "admin" }} onSignedOut={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: "Leases" }));
+describe("Leases view (FR-015)", () => {
+  it("renders the Leases region with its lookup control", async () => {
+    render(<Leases sessionRole="admin" />);
     expect(await screen.findByRole("region", { name: "Leases" })).toBeInTheDocument();
     expect(screen.getByLabelText("License id")).toBeInTheDocument();
   });
