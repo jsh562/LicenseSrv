@@ -19,6 +19,22 @@
 //
 // Config is read from RAW ENV (not the validated `AppConfig`) because at preload time config has not been
 // loaded yet: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OBS_TRACE_SAMPLE_RATIO`, `OTEL_EXPORTER_OTLP_AUTH_TOKEN`.
+//
+// LAZY SDK LOADING (memory): the heavy OTel packages are NOT imported at module scope. Importing
+// `@opentelemetry/auto-instrumentations-node` alone pulls in ~42 `instrumentation-*` packages plus
+// `@grpc/grpc-js` and `protobufjs` — measured at ~37 MB RSS / ~15 MB V8 heap, roughly 43% of this
+// service's idle footprint. Because tracing is a NO-OP whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is empty
+// (the common case for self-hosted deployments), paying that cost unconditionally is pure waste. Instead
+// they load on FIRST USE via `lazy()` below, which is reached only after the endpoint check passes.
+//
+// The loader is `createRequire`, not `await import`, on purpose:
+//   * Every `@opentelemetry/*` package here is CJS (no `type: "module"`, `main` → `build/src/index.js`;
+//     the `module` field is a bundler-only hint Node ignores), so `require` yields the SAME module
+//     instance `import` would from Node's CJS cache — there is no dual-package hazard.
+//   * It is SYNCHRONOUS, so `startTracing()` keeps its `void` signature and the HINT-001 preload
+//     guarantee holds exactly as before: the SDK still patches pg/fastify/http at import time, before
+//     the app imports them. An `await import` would make this module's public API async for no gain.
+import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 
 import {
@@ -31,20 +47,40 @@ import {
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
-import { getNodeAutoInstrumentations, type InstrumentationConfigMap } from "@opentelemetry/auto-instrumentations-node";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import { defaultResource, resourceFromAttributes } from "@opentelemetry/resources";
-import { NodeSDK } from "@opentelemetry/sdk-node";
-import {
-  BatchSpanProcessor,
-  ParentBasedSampler,
-  type ReadableSpan,
-  type Sampler,
-  type Span,
-  type SpanProcessor,
-  TraceIdRatioBasedSampler,
-} from "@opentelemetry/sdk-trace-base";
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
+// TYPE-ONLY imports below — fully erased by tsc, so they cost nothing at runtime. The corresponding
+// runtime values come from the lazy accessors in the next block.
+import type { InstrumentationConfigMap } from "@opentelemetry/auto-instrumentations-node";
+import type { NodeSDK } from "@opentelemetry/sdk-node";
+import type { ReadableSpan, Sampler, Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+
+// --- Lazy OTel SDK module loading ------------------------------------------------------------------
+
+const requireOtel = createRequire(import.meta.url);
+
+/** Memoize a synchronous `require` of an OTel package so repeated calls cost one cache lookup. */
+function lazy<T>(specifier: string): () => T {
+  let mod: T | undefined;
+  return () => (mod ??= requireOtel(specifier) as T);
+}
+
+const autoInstrumentations = lazy<typeof import("@opentelemetry/auto-instrumentations-node")>(
+  "@opentelemetry/auto-instrumentations-node",
+);
+const otlpHttp = lazy<typeof import("@opentelemetry/exporter-trace-otlp-http")>(
+  "@opentelemetry/exporter-trace-otlp-http",
+);
+const resources = lazy<typeof import("@opentelemetry/resources")>("@opentelemetry/resources");
+const sdkNode = lazy<typeof import("@opentelemetry/sdk-node")>("@opentelemetry/sdk-node");
+const sdkTraceBase = lazy<typeof import("@opentelemetry/sdk-trace-base")>("@opentelemetry/sdk-trace-base");
+const semconv = lazy<typeof import("@opentelemetry/semantic-conventions")>("@opentelemetry/semantic-conventions");
+
+/**
+ * The auto-instrumentation set {@link buildInstrumentations} returns. Spelled via `typeof import(...)`
+ * rather than a value import so the package stays unloaded until first use (same reason as `lazy` above).
+ */
+type AutoInstrumentationSet = ReturnType<
+  (typeof import("@opentelemetry/auto-instrumentations-node"))["getNodeAutoInstrumentations"]
+>;
 
 /** Logical service identity attached to every span/resource (matches the startup "license-api" name). */
 export const SERVICE_NAME = "license-api";
@@ -73,6 +109,7 @@ export function resolveSampleRatio(raw: string | undefined): number {
  * while bounding hot-path overhead.
  */
 export function buildSampler(ratio: number): Sampler {
+  const { ParentBasedSampler, TraceIdRatioBasedSampler } = sdkTraceBase();
   return new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(ratio) });
 }
 
@@ -152,12 +189,13 @@ export class RedactingSpanProcessor implements SpanProcessor {
  * statement/parameter capture off ({@link PG_INSTRUMENTATION_CONFIG}); the noisy `fs` instrumentation is
  * disabled to keep overhead and span volume bounded on the hot path.
  */
-export function buildInstrumentations(): ReturnType<typeof getNodeAutoInstrumentations> {
+export function buildInstrumentations(): AutoInstrumentationSet {
   const config: InstrumentationConfigMap = {
     "@opentelemetry/instrumentation-pg": { ...PG_INSTRUMENTATION_CONFIG },
     "@opentelemetry/instrumentation-fs": { enabled: false },
   };
-  return getNodeAutoInstrumentations(config);
+  // First call here is what actually pays the ~37 MB load cost — reached only when tracing is enabled.
+  return autoInstrumentations().getNodeAutoInstrumentations(config);
 }
 
 // --- Manual signer span (T035, OR-013/020) ---------------------------------------------------------
@@ -286,6 +324,15 @@ export function startTracing(env: NodeJS.ProcessEnv = process.env): void {
 
     // Surface SDK/exporter errors at ERROR level without ever throwing them into the process.
     diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
+
+    // Past the endpoint gate, tracing IS enabled — now (and only now) pull in the heavy SDK packages.
+    // These `require`s are inside the fail-open try/catch, so a missing/broken OTel install is logged and
+    // swallowed exactly like an exporter failure: the app still boots, just without tracing (OR-014).
+    const { OTLPTraceExporter } = otlpHttp();
+    const { defaultResource, resourceFromAttributes } = resources();
+    const { NodeSDK } = sdkNode();
+    const { BatchSpanProcessor } = sdkTraceBase();
+    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = semconv();
 
     const authToken = (env.OTEL_EXPORTER_OTLP_AUTH_TOKEN ?? "").trim();
     // The OTLP exporter reads `OTEL_EXPORTER_OTLP_ENDPOINT` from env itself (appending the signal path);
