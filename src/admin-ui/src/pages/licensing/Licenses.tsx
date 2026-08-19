@@ -95,7 +95,7 @@ export function Licenses({ sessionRole }: { sessionRole: Role }): JSX.Element {
 
   return (
     <section aria-label="Licenses" className="space-y-4">
-      <PageHeader title="Licenses" />
+      <PageHeader title="Licenses" description="Every issued license and its lifecycle — suspend, reinstate, revoke, transfer, and drill into activations." />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load licenses."}

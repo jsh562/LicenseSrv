@@ -43,7 +43,7 @@ export function Products({ sessionRole, onOpen }: { sessionRole: Role; onOpen: (
 
   return (
     <section aria-label="Products" className="space-y-4">
-      <PageHeader title="Products" />
+      <PageHeader title="Products" description="The applications you license. Each product holds its own plans and its own signing key." />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load products."}

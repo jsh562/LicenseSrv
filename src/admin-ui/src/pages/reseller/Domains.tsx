@@ -80,7 +80,7 @@ export function Domains({ sessionRole }: { sessionRole: Role }): JSX.Element {
 
   return (
     <section aria-label="Domains" className="space-y-4">
-      <PageHeader title="Custom domains & email senders" />
+      <PageHeader title="Custom domains & email senders" description="Verify and activate the domains and email senders used for white-labeled communications (DNS + SPF/DKIM/DMARC)." />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load domain bindings."}

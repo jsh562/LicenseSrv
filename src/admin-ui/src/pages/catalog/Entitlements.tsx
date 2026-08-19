@@ -70,7 +70,7 @@ export function Entitlements({ sessionRole }: { sessionRole: Role }): JSX.Elemen
 
   return (
     <section aria-label="Entitlements" className="space-y-4">
-      <PageHeader title="Entitlements" />
+      <PageHeader title="Entitlements" description="The named capabilities a product can grant — boolean flags, integer limits, or metered consumption. Plans give them values." />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load entitlements."}

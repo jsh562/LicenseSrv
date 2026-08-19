@@ -58,7 +58,7 @@ export function ApiKeys({ sessionRole }: { sessionRole: Role }): JSX.Element {
 
   return (
     <section aria-label="API keys" className="space-y-4">
-      <PageHeader title="API Keys" description="Credentials that authenticate machine access to this workspace." />
+      <PageHeader title="API Keys" description="Machine credentials your software uses to call the API — scoped, not people. (Users, by contrast, are humans who sign in.)" />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load API keys."}

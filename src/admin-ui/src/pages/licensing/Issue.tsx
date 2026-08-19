@@ -80,7 +80,7 @@ export function Issue({ sessionRole }: { sessionRole: Role }): JSX.Element {
 
   return (
     <section aria-label="Issue license" className="space-y-4">
-      <PageHeader title="Issue a license" />
+      <PageHeader title="Issue a license" description="Mint a signed license for a customer: pick product, plan, and customer. The result is a LIC1 token that verifies offline." />
       {error && <p role="alert" className="error text-sm text-danger">{error}</p>}
 
       <RequireRole role={sessionRole} min="admin">

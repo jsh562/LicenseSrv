@@ -121,7 +121,8 @@ cd src/admin-ui && npm install && npm run dev   # open the printed URL, sign in
 ```
 
 From the console you can define products/plans/entitlements, issue and manage licenses, and browse the
-audit log (catalog, licensing, usage, policy, reseller, users, API keys).
+audit log. **What each console section does** — and the difference between Users, API keys, and the
+per-product signing ("trusted") key — is in [docs/admin-console.md](docs/admin-console.md).
 
 ## Verified releases (E011)
 

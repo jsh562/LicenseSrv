@@ -69,7 +69,7 @@ export function SubTenants({ sessionRole }: { sessionRole: Role }): JSX.Element 
 
   return (
     <section aria-label="Sub-tenants" className="space-y-4">
-      <PageHeader title="My sub-tenants" />
+      <PageHeader title="My sub-tenants" description="The customer workspaces you provision as a reseller, up to your quota. Administration is downward-only." />
       {quota && (
         <p role="status" className="text-sm text-fg-muted">{`Using ${quota.used} of ${quota.cap} sub-tenants${atCap ? " (at hard quota)" : ""}.`}</p>
       )}

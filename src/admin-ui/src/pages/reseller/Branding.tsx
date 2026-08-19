@@ -124,7 +124,7 @@ export function Branding({ sessionRole }: { sessionRole: Role }): JSX.Element {
 
   return (
     <section aria-label="Branding" className="space-y-4">
-      <PageHeader title="White-label branding" />
+      <PageHeader title="White-label branding" description="Presentation only — names, colors, logos for sub-tenants. It never alters license contents or trust/security signals." />
       <label className="inline-flex items-center gap-2 text-sm font-medium">
         Edit as
         <Select aria-label="Branding mode" value={mode} onChange={(e) => setMode(e.target.value as Mode)} className="w-64">

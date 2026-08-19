@@ -53,7 +53,7 @@ export function PlanValues({ plan, sessionRole, onBack }: { plan: Plan; sessionR
   return (
     <section aria-label="Plan entitlements" className="space-y-4">
       <Button variant="ghost" size="sm" type="button" onClick={onBack}>← Plans</Button>
-      <PageHeader title={`Entitlement values — ${plan.name}`} />
+      <PageHeader title={`Entitlement values — ${plan.name}`} description="What this plan grants: the on/off flags and numeric limits baked into every license issued on it." />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load plan entitlements."}

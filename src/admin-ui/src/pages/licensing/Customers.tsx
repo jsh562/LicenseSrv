@@ -50,7 +50,7 @@ export function Customers({ sessionRole }: { sessionRole: Role }): JSX.Element {
 
   return (
     <section aria-label="Customers" className="space-y-4">
-      <PageHeader title="Customers" />
+      <PageHeader title="Customers" description="The end-users you license to. A customer is who a license is issued for — the cid inside the token, not a login." />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load customers."}

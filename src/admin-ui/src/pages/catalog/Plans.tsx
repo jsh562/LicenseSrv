@@ -56,7 +56,7 @@ export function Plans({
   return (
     <section aria-label="Plans" className="space-y-4">
       <Button variant="ghost" size="sm" type="button" onClick={onBack}>← Products</Button>
-      <PageHeader title={`Plans — ${product.name}`} />
+      <PageHeader title={`Plans — ${product.name}`} description="The sellable packages within this product. A plan assigns concrete values to the product's entitlements." />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load plans."}

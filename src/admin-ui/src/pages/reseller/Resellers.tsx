@@ -170,7 +170,7 @@ export function Resellers({ sessionRole }: { sessionRole: Role }): JSX.Element {
 
   return (
     <section aria-label="Resellers" className="space-y-4">
-      <PageHeader title="Resellers (operator)" />
+      <PageHeader title="Resellers (operator)" description="Platform-operator view: onboard partners, set their sub-tenant quota, suspend/reinstate/offboard, and move sub-tenants." />
       {Boolean(error || loadError) && (
         <p role="alert" className="error text-sm text-danger">
           {error ?? "Could not load resellers."}
