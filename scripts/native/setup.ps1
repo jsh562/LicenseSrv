@@ -137,19 +137,38 @@ if (Test-Path $EnvFile) {
   Write-Ok "$EnvFile exists - leaving it alone (delete it to regenerate)"
 } else {
   if (-not (Test-Path .env.native.example)) { Die ".env.native.example is missing - cannot generate $EnvFile." }
-  # Substitute only the DATABASE_URL line; every other setting keeps the example's documented default.
+
+  # Pick ports that are actually usable right now rather than assuming the defaults are free - a running
+  # `docker compose` stack commonly holds 8080. start.ps1 re-checks these immediately before serving, since
+  # this file may be generated long before the server is first run.
+  $apiPort = & node scripts/native/find-port.mjs 8080
+  if ($LASTEXITCODE -ne 0) { Die 'could not find a free API port' }
+  $metricsPort = & node scripts/native/find-port.mjs 9464
+  if ($LASTEXITCODE -ne 0) { Die 'could not find a free metrics port' }
+  if ($apiPort -ne '8080')     { Write-Ok "port 8080 is in use - API will use $apiPort" }
+  if ($metricsPort -ne '9464') { Write-Ok "port 9464 is in use - metrics will use $metricsPort" }
+
+  # Substitute only the lines we resolve; every other setting keeps the example's documented default.
   $url = "postgres://${DbRole}:${DbPassword}@${PgHost}:${PgPort}/${DbName}"
   $lines = Get-Content .env.native.example | ForEach-Object {
-    if ($_ -match '^DATABASE_URL=') { "DATABASE_URL=$url" } else { $_ }
+    if     ($_ -match '^DATABASE_URL=')     { "DATABASE_URL=$url" }
+    elseif ($_ -match '^PORT=')             { "PORT=$apiPort" }
+    elseif ($_ -match '^OBS_METRICS_PORT=') { "OBS_METRICS_PORT=$metricsPort" }
+    else                                    { $_ }
   }
   # LF endings and no BOM: Node's --env-file parser is tolerant, but keeping both env files byte-identical
   # in shape across platforms avoids surprises when the same repo is used from WSL and Windows.
   [System.IO.File]::WriteAllText((Join-Path $PWD $EnvFile), (($lines -join "`n") + "`n"))
-  Write-Ok "$EnvFile written (gitignored)"
+  Write-Ok "$EnvFile written (gitignored) - API on $apiPort, metrics on $metricsPort"
 }
 
 Write-Host ''
 Write-Ok 'Setup complete.'
-Write-Info 'Next:  npm run start:native      (builds, migrates, then serves on 127.0.0.1:8080)'
+$finalPort = '8080'
+if (Test-Path $EnvFile) {
+  $m = Select-String -Path $EnvFile -Pattern '^PORT=(\d+)' | Select-Object -First 1
+  if ($m) { $finalPort = $m.Matches[0].Groups[1].Value }
+}
+Write-Info "Next:  npm run start:native      (builds, migrates, then serves on 127.0.0.1:$finalPort)"
 Write-Info 'Optional, lower Postgres memory: see scripts/native/postgres-tuning.conf'
 Write-Host ''

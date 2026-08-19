@@ -103,16 +103,31 @@ if [ -f "$ENV_FILE" ]; then
   ok "$ENV_FILE exists — leaving it alone (delete it to regenerate)"
 else
   [ -f .env.native.example ] || die ".env.native.example is missing — cannot generate $ENV_FILE."
-  # Substitute only the DATABASE_URL line; every other setting keeps the example's documented default.
+  # Pick ports that are actually usable right now rather than assuming the defaults are free — a running
+  # `docker compose` stack commonly holds 8080. start.sh re-checks these immediately before serving, since
+  # this file may be generated long before the server is first run.
+  API_PORT="$(node scripts/native/find-port.mjs 8080)" || die "could not find a free API port"
+  METRICS_PORT="$(node scripts/native/find-port.mjs 9464)" || die "could not find a free metrics port"
+  [ "$API_PORT" = "8080" ]     || ok "port 8080 is in use — API will use $API_PORT"
+  [ "$METRICS_PORT" = "9464" ] || ok "port 9464 is in use — metrics will use $METRICS_PORT"
+
+  # Substitute only the lines we resolve; every other setting keeps the example's documented default.
   URL="postgres://$DB_ROLE:$DB_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME"
-  awk -v url="$URL" '/^DATABASE_URL=/ { print "DATABASE_URL=" url; next } { print }' \
-    .env.native.example > "$ENV_FILE"
+  awk -v url="$URL" -v port="$API_PORT" -v mport="$METRICS_PORT" '
+    /^DATABASE_URL=/     { print "DATABASE_URL=" url;       next }
+    /^PORT=/             { print "PORT=" port;              next }
+    /^OBS_METRICS_PORT=/ { print "OBS_METRICS_PORT=" mport; next }
+    { print }
+  ' .env.native.example > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
-  ok "$ENV_FILE written (gitignored)"
+  ok "$ENV_FILE written (gitignored) — API on $API_PORT, metrics on $METRICS_PORT"
 fi
 
 printf '\n'
 ok "Setup complete."
-info "Next:  npm run start:native      (builds, migrates, then serves on 127.0.0.1:8080)"
+# Read the port back from the file rather than reusing $API_PORT: that variable is only set on the
+# branch that generates the file, so an already-existing .env.native would report a stale value.
+FINAL_PORT="$(awk -F= '/^PORT=/ { print $2; exit }' "$ENV_FILE" 2>/dev/null || true)"
+info "Next:  npm run start:native      (builds, migrates, then serves on 127.0.0.1:${FINAL_PORT:-8080})"
 info "Optional, lower Postgres memory: see scripts/native/postgres-tuning.conf"
 printf '\n'

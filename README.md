@@ -60,6 +60,9 @@ npm run setup:native     # creates role + database, fills in secrets, writes .en
 npm run start:native     # builds, migrates, then serves on 127.0.0.1:8080
 ```
 
+If 8080 is already in use (a running `docker compose` stack, typically), the native server relocates to the
+next free port automatically, writes it to `.env.native`, and prints it — the admin-ui dev proxy follows.
+
 Both paths share the same `secrets/` files, so secrets are generated once. Full walkthrough, the
 `db:5432` → `localhost:5432` difference, measured memory figures, and troubleshooting:
 **[docs/native-setup.md](docs/native-setup.md)**.

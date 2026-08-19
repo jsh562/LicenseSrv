@@ -39,6 +39,9 @@ npm run start:native     # builds, migrates, then serves on 127.0.0.1:8080
 `setup:native` and `start:native` dispatch to the PowerShell or Bash implementation based on
 `process.platform`, so the same npm command works on every OS.
 
+If 8080 is already taken — a running `docker compose` stack is the usual reason — the port is relocated
+automatically and the actual one is printed on startup. See [Ports](#ports); substitute it below.
+
 Check it:
 
 ```sh
@@ -55,7 +58,8 @@ Both checks should read `up`. If `signer` is `down`, see [Troubleshooting](#trou
    the Docker and native paths stay in sync.
 3. Runs `scripts/gen-custody.ts` to produce `secrets/custodian_shares`, which unlocks the signer.
 4. Creates the `licensesrv` role and the `licensesrv` database it owns.
-5. Writes `.env.native` from `.env.native.example` with `DATABASE_URL` filled in.
+5. Writes `.env.native` from `.env.native.example` with `DATABASE_URL` filled in, and with `PORT` /
+   `OBS_METRICS_PORT` set to ports that are actually free — see [Ports](#ports).
 
 Every step is idempotent — re-running is safe. It never regenerates `secrets/custodian_shares`, because the
 signing master key is envelope-encrypted under it and replacing it would orphan every provisioned signing
@@ -146,7 +150,37 @@ and `.dockerignore` excludes `dist/` — but the native path executes `dist/` di
 silently serve old code.
 
 The admin console SPA is unchanged: `cd src/admin-ui && npm install && npm run dev`. Its Vite dev server
-proxies `/admin` to `http://localhost:8080`, which the native server serves just as the container did.
+proxies `/admin` to the API, reading the port from `.env.native` so it follows a relocation
+automatically (falling back to 8080 when that file is absent). See [Ports](#ports).
+
+## Ports
+
+Ports are chosen automatically; you do not have to free 8080 before running natively.
+
+`setup:native` picks the first usable port at or above 8080 for the API (and 9464 for metrics) and records
+them in `.env.native`. `start:native` re-checks immediately before serving, because setup may have run long
+beforehand and a `docker compose up` since then could have taken the port. On a collision it relocates,
+**writes the new value back to `.env.native`**, and announces it:
+
+```
+[!] port 8080 is in use - relocated to 8081 (saved to .env.native)
+[OK] starting API on http://127.0.0.1:8081 - Ctrl+C to stop
+```
+
+Persisting the choice is what keeps everything else in agreement: `migrate:native` reads the same file, and
+the admin-ui dev proxy in [`src/admin-ui/vite.config.ts`](../src/admin-ui/vite.config.ts) reads `PORT` from
+it too, so the console follows the API automatically instead of failing with an opaque proxy error. With no
+`.env.native` present it falls back to 8080, leaving the Docker-only workflow untouched.
+
+This means the native server and the compose stack can run side by side — useful for comparing them
+directly.
+
+A port pinned by hand in `.env.native` is still overridden if it turns out to be occupied. Relocating with a
+warning beats refusing to start.
+
+**The server binary itself does not do this.** Auto-relocation lives in the native wrapper scripts only. In a
+container the port is deliberate — compose publishes `8080:8080` and the healthcheck probes
+`127.0.0.1:8080` — so a conflict there must fail loudly rather than silently move and break the healthcheck.
 
 ## Troubleshooting
 
@@ -169,8 +203,8 @@ want `build:native` rather than `build`. Fix: `npm run copy:wasm`.
 drifted apart. Re-running `npm run setup:native` resets the role's password to match `secrets/db_password`,
 but it will **not** rewrite an existing `.env.native` — delete that file first, then re-run.
 
-**Port 8080 already in use.** The compose stack is probably still up. Either `docker compose down`, or set a
-different `PORT` in `.env.native`.
+**Port 8080 already in use.** Handled automatically — see [Ports](#ports) below. You should not need to do
+anything.
 
 **Windows: `running scripts is disabled on this system`.** The npm scripts already pass
 `-ExecutionPolicy Bypass`. If you invoke a `.ps1` directly, do the same:
