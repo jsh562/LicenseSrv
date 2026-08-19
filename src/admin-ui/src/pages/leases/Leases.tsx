@@ -8,6 +8,12 @@ import { useCallback, useState, type FormEvent } from "react";
 
 import { ApiError, leaseApi, type LeaseRegistry, type Role } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Badge, statusTone } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
 
 export function Leases({ sessionRole }: { sessionRole: Role }): JSX.Element {
   const [licenseId, setLicenseId] = useState("");
@@ -52,49 +58,52 @@ export function Leases({ sessionRole }: { sessionRole: Role }): JSX.Element {
   const cap = registry ? (registry.maxConcurrent ?? 0) + registry.overageAllowance : 0;
 
   return (
-    <section aria-label="Leases">
-      <h3>Concurrency / Leases</h3>
-      <form onSubmit={onSubmit} aria-label="Open license leases">
-        <input
-          aria-label="License id"
-          placeholder="license uuid"
-          value={licenseId}
-          onChange={(e) => setLicenseId(e.target.value)}
-        />
-        <button type="submit">Load leases</button>
-      </form>
+    <section aria-label="Leases" className="space-y-4">
+      <PageHeader title="Concurrency / Leases" description="Inspect a license's live and recently-ended floating seats." />
+      <Card>
+        <form onSubmit={onSubmit} aria-label="Open license leases" className="flex flex-wrap items-end gap-3">
+          <Input
+            aria-label="License id"
+            placeholder="license uuid"
+            value={licenseId}
+            onChange={(e) => setLicenseId(e.target.value)}
+            className="w-64"
+          />
+          <Button type="submit">Load leases</Button>
+        </form>
+      </Card>
 
-      {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
+      {error && <p role="alert" className="error text-sm text-danger">{error}</p>}
+      {notice && <p role="status" className="text-sm text-success">{notice}</p>}
 
       {registry && (
         <>
-          <p>{`Concurrency used ${registry.concurrencyUsed} / ${cap} (cap ${registry.maxConcurrent ?? "—"}${registry.overageAllowance ? ` + overage ${registry.overageAllowance}` : ""}), scope ${registry.scope}`}</p>
-          {registry.truncated && <p role="status">Showing the most recent 1000 leases (list truncated).</p>}
-          <table>
-            <thead>
-              <tr><th>Holder</th><th>Scope</th><th>Status</th><th>Acquired</th><th>Last renewed</th><th>Expires</th><th>Actions</th></tr>
-            </thead>
-            <tbody>
+          <p className="text-sm text-fg-muted">{`Concurrency used ${registry.concurrencyUsed} / ${cap} (cap ${registry.maxConcurrent ?? "—"}${registry.overageAllowance ? ` + overage ${registry.overageAllowance}` : ""}), scope ${registry.scope}`}</p>
+          {registry.truncated && <p role="status" className="text-sm text-fg-muted">Showing the most recent 1000 leases (list truncated).</p>}
+          <Table>
+            <THead>
+              <Tr><Th>Holder</Th><Th>Scope</Th><Th>Status</Th><Th>Acquired</Th><Th>Last renewed</Th><Th>Expires</Th><Th>Actions</Th></Tr>
+            </THead>
+            <TBody>
               {registry.leases.map((l) => (
-                <tr key={l.id}>
-                  <td>{l.holderKey}</td>
-                  <td>{l.scope}</td>
-                  <td>{l.status}</td>
-                  <td>{l.acquiredAt}</td>
-                  <td>{l.lastRenewedAt}</td>
-                  <td>{l.expiresAt}</td>
-                  <td>
+                <Tr key={l.id}>
+                  <Td className="font-mono text-xs">{l.holderKey}</Td>
+                  <Td>{l.scope}</Td>
+                  <Td><Badge tone={statusTone(l.status)}>{l.status}</Badge></Td>
+                  <Td className="text-xs text-fg-muted">{l.acquiredAt}</Td>
+                  <Td className="text-xs text-fg-muted">{l.lastRenewedAt}</Td>
+                  <Td className="text-xs text-fg-muted">{l.expiresAt}</Td>
+                  <Td>
                     <RequireRole role={sessionRole} min="admin">
                       {l.status === "live" && (
-                        <button type="button" onClick={() => void forceRelease(l.id)}>Force-release</button>
+                        <Button variant="danger" size="sm" type="button" onClick={() => void forceRelease(l.id)}>Force-release</Button>
                       )}
                     </RequireRole>
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         </>
       )}
     </section>

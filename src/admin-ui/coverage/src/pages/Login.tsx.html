@@ -25,7 +25,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>68/68</span>
+                <span class='fraction'>74/74</span>
             </div>
         
             
@@ -46,7 +46,7 @@
             <div class='fl pad1y space-right2'>
                 <span class="strong">100% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>68/68</span>
+                <span class='fraction'>74/74</span>
             </div>
         
             
@@ -144,7 +144,17 @@
 <a name='L79'></a><a href='#L79'>79</a>
 <a name='L80'></a><a href='#L80'>80</a>
 <a name='L81'></a><a href='#L81'>81</a>
-<a name='L82'></a><a href='#L82'>82</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<a name='L82'></a><a href='#L82'>82</a>
+<a name='L83'></a><a href='#L83'>83</a>
+<a name='L84'></a><a href='#L84'>84</a>
+<a name='L85'></a><a href='#L85'>85</a>
+<a name='L86'></a><a href='#L86'>86</a>
+<a name='L87'></a><a href='#L87'>87</a>
+<a name='L88'></a><a href='#L88'>88</a>
+<a name='L89'></a><a href='#L89'>89</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -192,7 +202,6 @@
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
@@ -203,7 +212,11 @@
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">56x</span>
+<span class="cline-any cline-yes">56x</span>
+<span class="cline-any cline-yes">56x</span>
+<span class="cline-any cline-yes">56x</span>
+<span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
@@ -218,6 +231,7 @@
 <span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
 <span class="cline-any cline-yes">56x</span>
@@ -231,6 +245,9 @@
 import { useState, type FormEvent } from "react";
 &nbsp;
 import { adminApi, ApiError, type Principal } from "../api";
+import { Button } from "../components/ui/Button";
+import { Card } from "../components/ui/Card";
+import { Field, Input } from "../components/ui/Field";
 &nbsp;
 export function Login({ onSignedIn }: { onSignedIn: (who: Principal) =&gt; void }): JSX.Element {
   const [tenantSlug, setTenantSlug] = useState("");
@@ -259,50 +276,54 @@ export function Login({ onSignedIn }: { onSignedIn: (who: Principal) =&gt; void 
   }
 &nbsp;
   return (
-    &lt;main className="login"&gt;
-      &lt;h1&gt;Admin Console&lt;/h1&gt;
-      &lt;form onSubmit={submit} aria-label="Sign in"&gt;
-        &lt;label&gt;
-          Workspace
-          &lt;input
-            name="tenantSlug"
-            value={tenantSlug}
-            onChange={(e) =&gt; setTenantSlug(e.target.value)}
-            autoComplete="organization"
-            required
-          /&gt;
-        &lt;/label&gt;
-        &lt;label&gt;
-          Email
-          &lt;input
-            name="email"
-            type="email"
-            value={email}
-            onChange={(e) =&gt; setEmail(e.target.value)}
-            autoComplete="username"
-            required
-          /&gt;
-        &lt;/label&gt;
-        &lt;label&gt;
-          Password
-          &lt;input
-            name="password"
-            type="password"
-            value={password}
-            onChange={(e) =&gt; setPassword(e.target.value)}
-            autoComplete="current-password"
-            required
-          /&gt;
-        &lt;/label&gt;
-        {error &amp;&amp; (
-          &lt;p role="alert" className="error"&gt;
-            {error}
-          &lt;/p&gt;
-        )}
-        &lt;button type="submit" disabled={busy}&gt;
-          {busy ? "Signing in…" : "Sign in"}
-        &lt;/button&gt;
-      &lt;/form&gt;
+    &lt;main className="login grid min-h-full place-items-center p-6"&gt;
+      &lt;Card className="w-full max-w-sm p-6"&gt;
+        &lt;div className="mb-6 flex items-center gap-2"&gt;
+          &lt;span className="grid h-8 w-8 place-items-center rounded-md bg-primary text-base font-bold text-primary-fg"&gt;
+            L
+          &lt;/span&gt;
+          &lt;h1 className="text-lg font-semibold tracking-tight"&gt;Admin Console&lt;/h1&gt;
+        &lt;/div&gt;
+        &lt;form onSubmit={submit} aria-label="Sign in" className="space-y-4"&gt;
+          &lt;Field label="Workspace"&gt;
+            &lt;Input
+              name="tenantSlug"
+              value={tenantSlug}
+              onChange={(e) =&gt; setTenantSlug(e.target.value)}
+              autoComplete="organization"
+              required
+            /&gt;
+          &lt;/Field&gt;
+          &lt;Field label="Email"&gt;
+            &lt;Input
+              name="email"
+              type="email"
+              value={email}
+              onChange={(e) =&gt; setEmail(e.target.value)}
+              autoComplete="username"
+              required
+            /&gt;
+          &lt;/Field&gt;
+          &lt;Field label="Password"&gt;
+            &lt;Input
+              name="password"
+              type="password"
+              value={password}
+              onChange={(e) =&gt; setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+            /&gt;
+          &lt;/Field&gt;
+          {error &amp;&amp; (
+            &lt;p role="alert" className="error text-sm text-danger"&gt;
+              {error}
+            &lt;/p&gt;
+          )}
+          &lt;Button type="submit" className="w-full" loading={busy}&gt;
+            {busy ? "Signing in…" : "Sign in"}
+          &lt;/Button&gt;
+        &lt;/form&gt;
+      &lt;/Card&gt;
     &lt;/main&gt;
   );
 }
@@ -313,7 +334,7 @@ export function Login({ onSignedIn }: { onSignedIn: (who: Principal) =&gt; void 
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-07-16T02:29:57.738Z
+                at 2026-08-17T06:18:00.354Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

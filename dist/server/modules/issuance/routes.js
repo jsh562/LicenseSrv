@@ -68,7 +68,10 @@ export function registerIssuanceRoutes(app, pool, deps) {
         if (!b.success)
             return validation(reply, "invalid issue payload");
         return guard(reply, async () => {
-            const license = await issueLicense(pool, deps.signer, req.admin.tenantId, req.admin.userId, b.data);
+            // E017 (FR-008): thread the issuance-path policy seam (published by registerPolicy, which runs later in the
+            // module list but is decorated before requests) so the effective definition is rule-adjusted BEFORE signing.
+            const policy = app.policy ? { evaluate: app.policy.evaluate } : undefined;
+            const license = await issueLicense(pool, deps.signer, req.admin.tenantId, req.admin.userId, b.data, undefined, policy);
             return reply.code(201).header("Location", `/admin/licenses/${license.id}`).send(license);
         });
     });

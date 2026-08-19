@@ -1,34 +1,27 @@
 // Plan values view (US4, FR-015). The no-code core: attach entitlements to a plan and set each value
 // (boolean on/off, or a non-negative integer limit), edit in place, and remove. A value that does not
 // match the entitlement's type surfaces a field-level error (the server's 400). Admin-gated.
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 
-import {
-  ApiError,
-  catalogApi,
-  type Entitlement,
-  type Plan,
-  type PlanEntitlementValue,
-  type Role,
-} from "../../api";
+import { ApiError, catalogApi, type Plan, type Role } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input, Select } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
+import { useAsync } from "../../hooks/useAsync";
 
 export function PlanValues({ plan, sessionRole, onBack }: { plan: Plan; sessionRole: Role; onBack: () => void }): JSX.Element {
-  const [values, setValues] = useState<PlanEntitlementValue[]>([]);
-  const [entitlements, setEntitlements] = useState<Entitlement[]>([]);
+  const { data, reload, error: loadError } = useAsync(async () => {
+    const [vals, ents] = await Promise.all([catalogApi.listPlanEntitlements(plan.id), catalogApi.listEntitlements("active")]);
+    return { vals, ents };
+  }, [plan.id]);
+  const values = data?.vals ?? [];
+  const entitlements = data?.ents ?? [];
   const [selected, setSelected] = useState("");
   const [raw, setRaw] = useState("");
   const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    const [vals, ents] = await Promise.all([catalogApi.listPlanEntitlements(plan.id), catalogApi.listEntitlements("active")]);
-    setValues(vals);
-    setEntitlements(ents);
-  }, [plan.id]);
-
-  useEffect(() => {
-    void refresh().catch(() => setError("Could not load plan entitlements."));
-  }, [refresh]);
 
   const chosen = entitlements.find((e) => e.id === selected);
 
@@ -41,7 +34,7 @@ export function PlanValues({ plan, sessionRole, onBack }: { plan: Plan; sessionR
     try {
       await catalogApi.setPlanValue(plan.id, chosen.id, value);
       setRaw("");
-      await refresh();
+      await reload();
     } catch (err) {
       setError(err instanceof ApiError && err.status === 400 ? "That value doesn't match the entitlement's type." : "Save failed.");
     }
@@ -51,57 +44,63 @@ export function PlanValues({ plan, sessionRole, onBack }: { plan: Plan; sessionR
     setError(null);
     try {
       await catalogApi.removePlanValue(plan.id, entitlementId);
-      await refresh();
+      await reload();
     } catch {
       setError("Remove failed.");
     }
   }
 
   return (
-    <section aria-label="Plan entitlements">
-      <button type="button" onClick={onBack}>← Plans</button>
-      <h3>Entitlement values — {plan.name}</h3>
-      {error && <p role="alert" className="error">{error}</p>}
+    <section aria-label="Plan entitlements" className="space-y-4">
+      <Button variant="ghost" size="sm" type="button" onClick={onBack}>← Plans</Button>
+      <PageHeader title={`Entitlement values — ${plan.name}`} description="What this plan grants: the on/off flags and numeric limits baked into every license issued on it." />
+      {Boolean(error || loadError) && (
+        <p role="alert" className="error text-sm text-danger">
+          {error ?? "Could not load plan entitlements."}
+        </p>
+      )}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={set} aria-label="Set entitlement value">
-          <select aria-label="Entitlement" value={selected} onChange={(e) => setSelected(e.target.value)} required>
-            <option value="">Choose an entitlement…</option>
-            {entitlements.map((e) => (
-              <option key={e.id} value={e.id}>{e.key} ({e.type})</option>
-            ))}
-          </select>
-          {chosen?.type === "boolean" ? (
-            <select aria-label="Boolean value" value={raw} onChange={(e) => setRaw(e.target.value)}>
-              <option value="true">on</option>
-              <option value="false">off</option>
-            </select>
-          ) : (
-            <input aria-label="Limit value" type="text" placeholder="50" value={raw} onChange={(e) => setRaw(e.target.value)} />
-          )}
-          <button type="submit" disabled={!chosen}>Set value</button>
-        </form>
+        <Card>
+          <form onSubmit={set} aria-label="Set entitlement value" className="flex flex-wrap items-end gap-3">
+            <Select aria-label="Entitlement" value={selected} onChange={(e) => setSelected(e.target.value)} required className="w-64">
+              <option value="">Choose an entitlement…</option>
+              {entitlements.map((e) => (
+                <option key={e.id} value={e.id}>{e.key} ({e.type})</option>
+              ))}
+            </Select>
+            {chosen?.type === "boolean" ? (
+              <Select aria-label="Boolean value" value={raw} onChange={(e) => setRaw(e.target.value)} className="w-28">
+                <option value="true">on</option>
+                <option value="false">off</option>
+              </Select>
+            ) : (
+              <Input aria-label="Limit value" type="text" placeholder="50" value={raw} onChange={(e) => setRaw(e.target.value)} className="w-28" />
+            )}
+            <Button type="submit" disabled={!chosen}>Set value</Button>
+          </form>
+        </Card>
       </RequireRole>
 
-      <table>
-        <thead>
-          <tr><th>Entitlement</th><th>Type</th><th>Value</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
+      <Table>
+        <THead>
+          <Tr><Th>Entitlement</Th><Th>Type</Th><Th>Value</Th><Th>Actions</Th></Tr>
+        </THead>
+        <TBody>
           {values.map((v) => (
-            <tr key={v.entitlementId}>
-              <td>{v.key}</td>
-              <td>{v.type}</td>
-              <td>{String(v.value)}</td>
-              <td>
+            <Tr key={v.entitlementId}>
+              <Td className="font-mono text-xs">{v.key}</Td>
+              <Td>{v.type}</Td>
+              <Td>{String(v.value)}</Td>
+              <Td>
                 <RequireRole role={sessionRole} min="admin">
-                  <button type="button" onClick={() => void remove(v.entitlementId)}>Remove</button>
+                  <Button variant="danger" size="sm" type="button" onClick={() => void remove(v.entitlementId)}>Remove</Button>
                 </RequireRole>
-              </td>
-            </tr>
+              </Td>
+            </Tr>
           ))}
-        </tbody>
-      </table>
+        </TBody>
+      </Table>
     </section>
   );
 }

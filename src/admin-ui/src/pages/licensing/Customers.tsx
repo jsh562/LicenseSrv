@@ -1,25 +1,24 @@
 // Customers view (US5, FR-011/019). Lists the pseudonymous customer registry, lets an admin register a
 // customer (duplicate ref → inline 409) and erase one (GDPR: anonymize-if-licensed else hard-delete).
 // Admin-only actions are hidden from viewers by RequireRole (the server still enforces RBAC).
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 
-import { ApiError, licensingApi, type Customer, type Role } from "../../api";
+import { ApiError, licensingApi, type Role } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Badge, statusTone } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
+import { useAsync } from "../../hooks/useAsync";
 
 export function Customers({ sessionRole }: { sessionRole: Role }): JSX.Element {
-  const [customers, setCustomers] = useState<Customer[]>([]);
+  const { data: customers = [], reload, error: loadError } = useAsync(() => licensingApi.listCustomers(), []);
   const [ref, setRef] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    setCustomers(await licensingApi.listCustomers());
-  }, []);
-
-  useEffect(() => {
-    void refresh().catch(() => setError("Could not load customers."));
-  }, [refresh]);
 
   async function create(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -33,7 +32,7 @@ export function Customers({ sessionRole }: { sessionRole: Role }): JSX.Element {
       setRef("");
       setName("");
       setEmail("");
-      await refresh();
+      await reload();
     } catch (err) {
       setError(err instanceof ApiError && err.status === 409 ? "That customer ref already exists." : "Register failed.");
     }
@@ -43,48 +42,84 @@ export function Customers({ sessionRole }: { sessionRole: Role }): JSX.Element {
     setError(null);
     try {
       await licensingApi.eraseCustomer(id);
-      await refresh();
+      await reload();
     } catch {
       setError("Erase failed.");
     }
   }
 
   return (
-    <section aria-label="Customers">
-      <h3>Customers</h3>
-      {error && <p role="alert" className="error">{error}</p>}
+    <section aria-label="Customers" className="space-y-4">
+      <PageHeader title="Customers" description="The end-users you license to. A customer is who a license is issued for — the cid inside the token, not a login." />
+      {Boolean(error || loadError) && (
+        <p role="alert" className="error text-sm text-danger">
+          {error ?? "Could not load customers."}
+        </p>
+      )}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={create} aria-label="Register customer">
-          <input aria-label="Customer ref" placeholder="acct-4821" value={ref} onChange={(e) => setRef(e.target.value)} required />
-          <input aria-label="Customer name" placeholder="Jane Doe (optional)" value={name} onChange={(e) => setName(e.target.value)} />
-          <input aria-label="Customer email" type="email" placeholder="jane@example.com (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <button type="submit">Register customer</button>
-        </form>
+        <Card>
+          <form onSubmit={create} aria-label="Register customer" className="flex flex-wrap items-end gap-3">
+            <Input
+              aria-label="Customer ref"
+              placeholder="acct-4821"
+              value={ref}
+              onChange={(e) => setRef(e.target.value)}
+              required
+              className="w-48"
+            />
+            <Input
+              aria-label="Customer name"
+              placeholder="Jane Doe (optional)"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-48"
+            />
+            <Input
+              aria-label="Customer email"
+              type="email"
+              placeholder="jane@example.com (optional)"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-56"
+            />
+            <Button type="submit">Register customer</Button>
+          </form>
+        </Card>
       </RequireRole>
 
-      <table>
-        <thead>
-          <tr><th>Ref</th><th>Name</th><th>Email</th><th>Status</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
+      <Table>
+        <THead>
+          <Tr>
+            <Th>Ref</Th>
+            <Th>Name</Th>
+            <Th>Email</Th>
+            <Th>Status</Th>
+            <Th>Actions</Th>
+          </Tr>
+        </THead>
+        <TBody>
           {customers.map((c) => (
-            <tr key={c.id}>
-              <td>{c.ref}</td>
-              <td>{c.name ?? "—"}</td>
-              <td>{c.email ?? "—"}</td>
-              <td>{c.status}</td>
-              <td>
+            <Tr key={c.id}>
+              <Td>{c.ref}</Td>
+              <Td>{c.name ?? "—"}</Td>
+              <Td>{c.email ?? "—"}</Td>
+              <Td>
+                <Badge tone={statusTone(c.status)}>{c.status}</Badge>
+              </Td>
+              <Td>
                 <RequireRole role={sessionRole} min="admin">
                   {c.status === "active" && (
-                    <button type="button" onClick={() => void erase(c.id)}>Erase</button>
+                    <Button variant="danger" size="sm" type="button" onClick={() => void erase(c.id)}>
+                      Erase
+                    </Button>
                   )}
                 </RequireRole>
-              </td>
-            </tr>
+              </Td>
+            </Tr>
           ))}
-        </tbody>
-      </table>
+        </TBody>
+      </Table>
     </section>
   );
 }

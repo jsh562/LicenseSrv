@@ -5,10 +5,17 @@
 // tenant is refused 409 binding_conflict on both verify and activate WITHOUT disclosing the holder. Initiate /
 // verify / activate are admin-only (hidden from a viewer by RequireRole) and ride the double-submit CSRF token;
 // the challenge is a public DNS value, never a secret.
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 
 import { ApiError, resellerApi, type DomainBinding, type DomainBindingKind, type Role } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Badge, statusTone } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input, Select } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
+import { useAsync } from "../../hooks/useAsync";
 
 /** Map a verification ApiError to a human message, keeping the verify/conflict 409 codes explainable inline. */
 function verifyErrorMessage(err: unknown): string {
@@ -32,23 +39,14 @@ function verifyErrorMessage(err: unknown): string {
 }
 
 export function Domains({ sessionRole }: { sessionRole: Role }): JSX.Element {
-  const [bindings, setBindings] = useState<DomainBinding[]>([]);
-  const [truncated, setTruncated] = useState(false);
+  const { data, reload, error: loadError } = useAsync(() => resellerApi.listDomains(), []);
+  const bindings = data?.bindings ?? [];
+  const truncated = data?.truncated ?? false;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const [kind, setKind] = useState<DomainBindingKind>("domain");
   const [host, setHost] = useState("");
-
-  const refresh = useCallback(async () => {
-    const res = await resellerApi.listDomains();
-    setBindings(res.bindings);
-    setTruncated(res.truncated);
-  }, []);
-
-  useEffect(() => {
-    void refresh().catch(() => setError("Could not load domain bindings."));
-  }, [refresh]);
 
   async function initiate(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -59,7 +57,7 @@ export function Domains({ sessionRole }: { sessionRole: Role }): JSX.Element {
       const b = await resellerApi.initiateDomain({ kind, host: host.trim() });
       setNotice(`Publish DNS challenge for ${b.host}: ${b.challenge}`);
       setHost("");
-      await refresh();
+      await reload();
     } catch (err) {
       setError(verifyErrorMessage(err));
     }
@@ -74,59 +72,68 @@ export function Domains({ sessionRole }: { sessionRole: Role }): JSX.Element {
           ? await resellerApi.verifyDomain(b.bindingId)
           : await resellerApi.activateDomain(b.bindingId);
       setNotice(`${updated.host} is now ${updated.status}.`);
-      await refresh();
+      await reload();
     } catch (err) {
       setError(verifyErrorMessage(err));
     }
   }
 
   return (
-    <section aria-label="Domains">
-      <h3>Custom domains &amp; email senders</h3>
-      {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
+    <section aria-label="Domains" className="space-y-4">
+      <PageHeader title="Custom domains & email senders" description="Verify and activate the domains and email senders used for white-labeled communications (DNS + SPF/DKIM/DMARC)." />
+      {Boolean(error || loadError) && (
+        <p role="alert" className="error text-sm text-danger">
+          {error ?? "Could not load domain bindings."}
+        </p>
+      )}
+      {notice && <p role="status" className="text-sm text-success">{notice}</p>}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={initiate} aria-label="Initiate verification">
-          <select aria-label="Binding kind" value={kind} onChange={(e) => setKind(e.target.value as DomainBindingKind)}>
-            <option value="domain">custom domain (DNS TXT/CNAME)</option>
-            <option value="email_sender">email sender (SPF/DKIM/DMARC)</option>
-          </select>
-          <input
-            aria-label="Host"
-            placeholder="app.example.com or example.com"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <button type="submit">Initiate verification</button>
-        </form>
+        <Card>
+          <form onSubmit={initiate} aria-label="Initiate verification" className="flex flex-wrap items-end gap-3">
+            <Select aria-label="Binding kind" value={kind} onChange={(e) => setKind(e.target.value as DomainBindingKind)} className="w-72">
+              <option value="domain">custom domain (DNS TXT/CNAME)</option>
+              <option value="email_sender">email sender (SPF/DKIM/DMARC)</option>
+            </Select>
+            <Input
+              aria-label="Host"
+              placeholder="app.example.com or example.com"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              className="w-64"
+            />
+            <Button type="submit">Initiate verification</Button>
+          </form>
+        </Card>
       </RequireRole>
 
-      {truncated && <p role="status">Showing the first 1000 bindings (list truncated).</p>}
+      {truncated && <p role="status" className="text-sm text-fg-muted">Showing the first 1000 bindings (list truncated).</p>}
       {bindings.length === 0 ? (
-        <p role="status">No domain bindings yet.</p>
+        <p role="status" className="text-sm text-fg-muted">No domain bindings yet.</p>
       ) : (
-        <table>
-          <thead>
-            <tr><th>Host</th><th>Kind</th><th>Status</th><th>Challenge</th><th>Actions</th></tr>
-          </thead>
-          <tbody>
+        <Table>
+          <THead>
+            <Tr><Th>Host</Th><Th>Kind</Th><Th>Status</Th><Th>Challenge</Th><Th>Actions</Th></Tr>
+          </THead>
+          <TBody>
             {bindings.map((b) => (
-              <tr key={b.bindingId}>
-                <td>{b.host}</td>
-                <td>{b.kind}</td>
-                <td>{b.status}</td>
-                <td><code>{b.challenge}</code></td>
-                <td>
+              <Tr key={b.bindingId}>
+                <Td>{b.host}</Td>
+                <Td>{b.kind}</Td>
+                <Td><Badge tone={statusTone(b.status)}>{b.status}</Badge></Td>
+                <Td><code className="font-mono text-xs">{b.challenge}</code></Td>
+                <Td>
                   <RequireRole role={sessionRole} min="admin">
-                    <button type="button" aria-label={`Verify ${b.host}`} disabled={b.status !== "pending"} onClick={() => void act(b, "verify")}>Verify</button>
-                    <button type="button" aria-label={`Activate ${b.host}`} disabled={b.status !== "verified"} onClick={() => void act(b, "activate")}>Activate</button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button variant="secondary" size="sm" type="button" aria-label={`Verify ${b.host}`} disabled={b.status !== "pending"} onClick={() => void act(b, "verify")}>Verify</Button>
+                      <Button variant="secondary" size="sm" type="button" aria-label={`Activate ${b.host}`} disabled={b.status !== "verified"} onClick={() => void act(b, "activate")}>Activate</Button>
+                    </div>
                   </RequireRole>
-                </td>
-              </tr>
+                </Td>
+              </Tr>
             ))}
-          </tbody>
-        </table>
+          </TBody>
+        </Table>
       )}
     </section>
   );

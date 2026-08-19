@@ -43,7 +43,7 @@ export function mapLicenseRow(row) {
  * every existing caller/test is unaffected. The effective-plan read and the signer call stay outside the tx
  * (a read of catalog rows the tx never mutates; the signer must not hold a DB transaction open).
  */
-export async function issueLicense(pool, signer, tenantId, actor, input, q) {
+export async function issueLicense(pool, signer, tenantId, actor, input, q, policy) {
     const eff = await getEffectivePlanDefinition(pool, tenantId, input.planId);
     if (!eff)
         throw new IssuanceError("not_found", 404, "unknown plan");
@@ -67,7 +67,41 @@ export async function issueLicense(pool, signer, tenantId, actor, input, q) {
     const licenseId = randomUUID();
     const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAtUnix = input.expiresAt ? Math.floor(new Date(input.expiresAt).getTime() / 1000) : null;
-    const entMap = toEntitlementMap(eff.entitlements);
+    // E017 POLICY HOOK (FR-008, HINT-002): post-process the effective entitlement definition through the policy
+    // engine BEFORE the snapshot is signed. Highest-priority-wins ONE bounded effect per entitlement, deterministic
+    // (the injected decision timestamp = issuedAt), fail-closed. The engine performs NO cryptography and never
+    // touches the signer, the LIC1 token bytes, or the E001 verifier core (Principle I) — it only resolves the
+    // pre-sign entitlement values. When no policy is wired, or no active rule fires, the base decision stands and
+    // the token is byte-identical to a pre-E017 issuance (SC-014). The audit rows are appended AFTER the license is
+    // committed (the policy_evaluation license FK), so an audit-write fault can never roll back the license.
+    let policyResult;
+    if (policy) {
+        policyResult = await policy.evaluate({
+            tenantId,
+            licenseId,
+            planId: input.planId,
+            mode: "enforced",
+            decisionTimestamp: issuedAt * 1000,
+            entitlements: eff.entitlements,
+            licenseContext: {
+                plan: eff.planKey,
+                product: eff.productKey,
+                planId: input.planId,
+                productId: eff.productId,
+                customerRef: input.customerId,
+                status: "active",
+                seats: eff.maxActivations,
+            },
+            planContext: { code: eff.planKey },
+        });
+    }
+    const effectiveEntitlements = policyResult
+        ? eff.entitlements.map((e) => {
+            const adjusted = policyResult.decisions[e.key];
+            return typeof adjusted === "number" || typeof adjusted === "boolean" ? { ...e, value: adjusted } : e;
+        })
+        : eff.entitlements;
+    const entMap = toEntitlementMap(effectiveEntitlements);
     const claims = buildClaims({
         licenseId,
         productId: eff.productId,
@@ -119,6 +153,13 @@ export async function issueLicense(pool, signer, tenantId, actor, input, q) {
         return toLicense(r.rows[0]);
     };
     const license = q ? await doInsert(q) : await withTenant(pool, tenantId, doInsert);
+    // Append the mode-marked policy_evaluation audit rows AFTER the license is committed (the license FK, INV-8).
+    // A DEDICATED transaction isolates the append so a persistence fault rolls back ONLY the audit, never the
+    // license, and the swallowed failure goes to operational logging — issuance is never blocked (FR-010/FR-014).
+    // Skipped on the tx-composable seam (`q` provided): the license is not yet committed in the caller's tx.
+    if (policyResult && !q && policyResult.evaluations.length > 0) {
+        await withTenant(pool, tenantId, (qq) => policyResult.writeAudit(qq)).catch(() => undefined);
+    }
     return { ...license, licenseKey: token };
 }
 /** List licenses (bounded), optionally filtered by status / customer / plan. */

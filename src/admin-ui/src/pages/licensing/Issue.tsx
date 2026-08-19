@@ -15,6 +15,10 @@ import {
   type Role,
 } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Field, Input, Select, Textarea } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 function issueError(err: unknown): string {
   if (err instanceof ApiError) {
@@ -75,55 +79,54 @@ export function Issue({ sessionRole }: { sessionRole: Role }): JSX.Element {
   }
 
   return (
-    <section aria-label="Issue license">
-      <h3>Issue a license</h3>
-      {error && <p role="alert" className="error">{error}</p>}
+    <section aria-label="Issue license" className="space-y-4">
+      <PageHeader title="Issue a license" description="Mint a signed license for a customer: pick product, plan, and customer. The result is a LIC1 token that verifies offline." />
+      {error && <p role="alert" className="error text-sm text-danger">{error}</p>}
 
       <RequireRole role={sessionRole} min="admin">
-        <form onSubmit={issue} aria-label="New license">
-          <label>
-            Product
-            <select aria-label="Product" value={productId} onChange={(e) => setProductId(e.target.value)} required>
-              <option value="">Select a product…</option>
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Plan
-            <select aria-label="Plan" value={planId} onChange={(e) => setPlanId(e.target.value)} required disabled={!productId}>
-              <option value="">Select a plan…</option>
-              {plans.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Customer
-            <select aria-label="Customer" value={customerId} onChange={(e) => setCustomerId(e.target.value)} required>
-              <option value="">Select a customer…</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>{c.ref}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Expires (blank = perpetual)
-            <input aria-label="Expiry" type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
-          </label>
-          <button type="submit">Issue license</button>
-        </form>
+        <Card>
+          <form onSubmit={issue} aria-label="New license" className="space-y-3">
+            <Field label="Product">
+              <Select aria-label="Product" value={productId} onChange={(e) => setProductId(e.target.value)} required>
+                <option value="">Select a product…</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Plan">
+              <Select aria-label="Plan" value={planId} onChange={(e) => setPlanId(e.target.value)} required disabled={!productId}>
+                <option value="">Select a plan…</option>
+                {plans.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Customer">
+              <Select aria-label="Customer" value={customerId} onChange={(e) => setCustomerId(e.target.value)} required>
+                <option value="">Select a customer…</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>{c.ref}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Expires (blank = perpetual)">
+              <Input aria-label="Expiry" type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+            </Field>
+            <Button type="submit">Issue license</Button>
+          </form>
+        </Card>
       </RequireRole>
 
       {issued && (
-        <div role="status" aria-label="Issued license">
-          <p>Issued license <code>{issued.id}</code> ({issued.expiresAt ? `expires ${issued.expiresAt}` : "perpetual"}).</p>
-          <label>
-            License key
-            <textarea aria-label="License key" readOnly rows={4} value={issued.licenseKey} />
-          </label>
-        </div>
+        <Card>
+          <div role="status" aria-label="Issued license" className="space-y-2">
+            <p>Issued license <code>{issued.id}</code> ({issued.expiresAt ? `expires ${issued.expiresAt}` : "perpetual"}).</p>
+            <Field label="License key">
+              <Textarea aria-label="License key" readOnly rows={4} value={issued.licenseKey} />
+            </Field>
+          </div>
+        </Card>
       )}
     </section>
   );

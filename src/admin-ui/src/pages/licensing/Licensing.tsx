@@ -4,6 +4,7 @@
 import { useState } from "react";
 
 import type { Role } from "../../api";
+import { Button } from "../../components/ui/Button";
 import { Customers } from "./Customers";
 import { Issue } from "./Issue";
 import { Licenses } from "./Licenses";
@@ -14,17 +15,35 @@ export function Licensing({ sessionRole }: { sessionRole: Role }): JSX.Element {
   const [pane, setPane] = useState<Pane>("licenses");
 
   return (
-    <section aria-label="Licensing">
-      <nav aria-label="Licensing sections">
-        <button type="button" aria-current={pane === "issue"} onClick={() => setPane("issue")}>
+    <section aria-label="Licensing" className="space-y-4">
+      <nav aria-label="Licensing sections" className="flex items-center gap-2 border-b border-border pb-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={pane === "issue" ? "secondary" : "ghost"}
+          aria-current={pane === "issue"}
+          onClick={() => setPane("issue")}
+        >
           Issue
-        </button>
-        <button type="button" aria-current={pane === "licenses"} onClick={() => setPane("licenses")}>
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={pane === "licenses" ? "secondary" : "ghost"}
+          aria-current={pane === "licenses"}
+          onClick={() => setPane("licenses")}
+        >
           Licenses
-        </button>
-        <button type="button" aria-current={pane === "customers"} onClick={() => setPane("customers")}>
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={pane === "customers" ? "secondary" : "ghost"}
+          aria-current={pane === "customers"}
+          onClick={() => setPane("customers")}
+        >
           Customers
-        </button>
+        </Button>
       </nav>
 
       {pane === "issue" && <Issue sessionRole={sessionRole} />}

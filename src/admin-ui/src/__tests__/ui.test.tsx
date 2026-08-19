@@ -5,9 +5,12 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+
 import { ApiError, type ApiKeyMeta, type AuditEntry, type UserRow } from "../api";
+import { AppLayout } from "../components/AppLayout";
 import { RequireRole, roleAtLeast } from "../components/RequireRole";
-import { Shell } from "../components/Shell";
+import { SessionContext } from "../session";
 import { ApiKeys } from "../pages/ApiKeys";
 import { Audit } from "../pages/Audit";
 import { Login } from "../pages/Login";
@@ -95,25 +98,41 @@ describe("Login (US1)", () => {
   });
 });
 
-describe("Shell nav (FR-015)", () => {
+describe("Console nav (FR-015)", () => {
+  function renderNav(): ReturnType<typeof vi.fn> {
+    const setWho = vi.fn();
+    render(
+      <SessionContext.Provider value={{ who: { userId: "u1", tenantId: "t1", role: "owner" }, setWho }}>
+        <MemoryRouter initialEntries={["/users"]}>
+          <Routes>
+            <Route path="/" element={<AppLayout />}>
+              <Route path="users" element={<Users sessionRole="owner" />} />
+              <Route path="api-keys" element={<ApiKeys sessionRole="owner" />} />
+              <Route path="audit" element={<Audit />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    );
+    return setWho;
+  }
+
   it("switches between users, api-keys, and audit views", async () => {
-    render(<Shell who={{ userId: "u1", tenantId: "t1", role: "owner" }} onSignedOut={vi.fn()} />);
-    // Default: users.
+    renderNav();
     expect(await screen.findByRole("region", { name: "Users" })).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "API Keys" }));
+    await userEvent.click(screen.getByRole("link", { name: "API Keys" }));
     expect(await screen.findByRole("region", { name: "API keys" })).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Audit" }));
+    await userEvent.click(screen.getByRole("link", { name: "Audit" }));
     expect(await screen.findByRole("region", { name: "Audit log" })).toBeInTheDocument();
   });
 
-  it("signs out via the API and notifies upward", async () => {
+  it("signs out via the API and clears the session", async () => {
     api.logout.mockResolvedValue(undefined);
-    const onSignedOut = vi.fn();
-    render(<Shell who={{ userId: "u1", tenantId: "t1", role: "owner" }} onSignedOut={onSignedOut} />);
+    const setWho = renderNav();
     await userEvent.click(screen.getByRole("button", { name: /sign out/i }));
-    await waitFor(() => expect(onSignedOut).toHaveBeenCalled());
+    await waitFor(() => expect(setWho).toHaveBeenCalledWith(null));
     expect(api.logout).toHaveBeenCalled();
   });
 });

@@ -10,6 +10,16 @@
 services:
   db:
     image: postgres:16-alpine
+    # Right-sized for a self-host / dev-scale dataset rather than Postgres' stock defaults
+    # (shared_buffers=128MB, max_connections=100, work_mem=4MB). max_connections stays comfortably above
+    # the API's DB_POOL_MAX (default 10) plus the one-shot migrate job and any interactive psql session.
+    command: >
+      postgres
+      -c shared_buffers=64MB
+      -c max_connections=25
+      -c work_mem=2MB
+      -c maintenance_work_mem=32MB
+    mem_limit: 256m
     environment:
       POSTGRES_USER: licensesrv
       POSTGRES_DB: licensesrv
@@ -42,9 +52,16 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Node reads the cgroup limit to size its V8 heap. With NO limit it sees the whole host (or the whole
+    # WSL2 VM) and picks a large max-old-space, so it GCs lazily and RSS drifts well past what this service
+    # actually needs (~19 MB heap in practice). A tight limit plus an explicit --max-old-space-size makes
+    # V8 collect promptly. `mem_limit` is the Compose-v2 non-swarm form; `deploy.resources.limits` is
+    # silently ignored by `docker compose up`.
+    mem_limit: 384m
     environment:
       HOST: 0.0.0.0
       PORT: "8080"
+      NODE_OPTIONS: --max-old-space-size=192
       DATABASE_URL_FILE: /run/secrets/database_url
       API_KEY_SECRET_FILE: /run/secrets/api_key_secret
     secrets:

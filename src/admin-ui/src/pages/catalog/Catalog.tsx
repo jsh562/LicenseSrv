@@ -16,13 +16,18 @@ export function Catalog({ sessionRole }: { sessionRole: Role }): JSX.Element {
   const [product, setProduct] = useState<Product | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
 
+  const tab = (active: boolean): string =>
+    `rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+      active ? "bg-primary text-primary-fg" : "text-fg-muted hover:bg-surface-muted"
+    }`;
+
   return (
-    <section aria-label="Catalog">
-      <nav aria-label="Catalog sections">
-        <button type="button" aria-current={pane === "catalog"} onClick={() => setPane("catalog")}>
+    <section aria-label="Catalog" className="space-y-4">
+      <nav aria-label="Catalog sections" className="flex items-center gap-1 border-b border-border pb-3">
+        <button type="button" aria-current={pane === "catalog"} onClick={() => setPane("catalog")} className={tab(pane === "catalog")}>
           Products &amp; Plans
         </button>
-        <button type="button" aria-current={pane === "entitlements"} onClick={() => setPane("entitlements")}>
+        <button type="button" aria-current={pane === "entitlements"} onClick={() => setPane("entitlements")} className={tab(pane === "entitlements")}>
           Entitlements
         </button>
       </nav>

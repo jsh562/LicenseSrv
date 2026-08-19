@@ -9,6 +9,11 @@ import { useCallback, useState, type FormEvent } from "react";
 
 import { ApiError, usageApi, type Role, type UsageQueryResult } from "../../api";
 import { RequireRole, roleAtLeast } from "../../components/RequireRole";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Input } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
 
 /** A default window: the last 7 days up to now (RFC3339 UTC), comfortably under the server's span bound. */
 function defaultWindow(): { from: string; to: string } {
@@ -51,55 +56,58 @@ export function Usage({ sessionRole }: { sessionRole: Role }): JSX.Element {
   }
 
   return (
-    <section aria-label="Usage">
-      <h3>Usage metering</h3>
-      <form onSubmit={onSubmit} aria-label="Open license usage">
-        <input
-          aria-label="License id"
-          placeholder="license uuid"
-          value={licenseId}
-          onChange={(e) => setLicenseId(e.target.value)}
-        />
-        <button type="submit">Load usage</button>
-        <RequireRole role={sessionRole} min="admin">
-          <label>
-            <input
-              type="checkbox"
-              aria-label="Show true signed net"
-              checked={raw}
-              onChange={(e) => void toggleRaw(e.target.checked)}
-            />
-            True signed net
-          </label>
-        </RequireRole>
-      </form>
+    <section aria-label="Usage" className="space-y-4">
+      <PageHeader title="Usage metering" description="Load a license's per-entitlement consumption aggregate for a window." />
+      <Card>
+        <form onSubmit={onSubmit} aria-label="Open license usage" className="flex flex-wrap items-end gap-3">
+          <Input
+            aria-label="License id"
+            placeholder="license uuid"
+            value={licenseId}
+            onChange={(e) => setLicenseId(e.target.value)}
+            className="w-64"
+          />
+          <Button type="submit">Load usage</Button>
+          <RequireRole role={sessionRole} min="admin">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                aria-label="Show true signed net"
+                checked={raw}
+                onChange={(e) => void toggleRaw(e.target.checked)}
+              />
+              True signed net
+            </label>
+          </RequireRole>
+        </form>
+      </Card>
 
-      {error && <p role="alert" className="error">{error}</p>}
+      {error && <p role="alert" className="error text-sm text-danger">{error}</p>}
 
       {result && (
         <>
-          <p>{`Window ${result.window.from} → ${result.window.to}${result.raw ? " (true signed net)" : ""}`}</p>
-          {result.truncated && <p role="status">Showing the first 1000 entitlements (list truncated).</p>}
+          <p className="text-sm text-fg-muted">{`Window ${result.window.from} → ${result.window.to}${result.raw ? " (true signed net)" : ""}`}</p>
+          {result.truncated && <p role="status" className="text-sm text-fg-muted">Showing the first 1000 entitlements (list truncated).</p>}
           {result.entitlements.length === 0 ? (
-            <p role="status">No usage in this window.</p>
+            <p role="status" className="text-sm text-fg-muted">No usage in this window.</p>
           ) : (
-            <table>
-              <thead>
-                <tr><th>Entitlement</th><th>Aggregation</th><th>Unit</th><th>Value</th><th>Allowance</th><th>Over quota</th></tr>
-              </thead>
-              <tbody>
+            <Table>
+              <THead>
+                <Tr><Th>Entitlement</Th><Th>Aggregation</Th><Th>Unit</Th><Th>Value</Th><Th>Allowance</Th><Th>Over quota</Th></Tr>
+              </THead>
+              <TBody>
                 {result.entitlements.map((e) => (
-                  <tr key={e.entitlementId}>
-                    <td>{e.entitlementId}</td>
-                    <td>{e.aggregation}</td>
-                    <td>{e.unit}</td>
-                    <td>{e.value}</td>
-                    <td>{e.allowance ?? "—"}</td>
-                    <td>{e.overQuota ? "over quota" : "—"}</td>
-                  </tr>
+                  <Tr key={e.entitlementId}>
+                    <Td className="font-mono text-xs">{e.entitlementId}</Td>
+                    <Td>{e.aggregation}</Td>
+                    <Td>{e.unit}</Td>
+                    <Td>{e.value}</Td>
+                    <Td>{e.allowance ?? "—"}</Td>
+                    <Td>{e.overQuota ? "over quota" : "—"}</Td>
+                  </Tr>
                 ))}
-              </tbody>
-            </table>
+              </TBody>
+            </Table>
           )}
         </>
       )}

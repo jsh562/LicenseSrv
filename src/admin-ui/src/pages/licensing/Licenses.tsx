@@ -2,7 +2,7 @@
 // a license's signed key on demand (viewer+), and — for admins — drives the lifecycle: suspend/reinstate,
 // revoke, and transfer to a chosen target customer. Lifecycle errors (invalid transition, transfer limit)
 // surface inline. Admin actions are hidden from viewers by RequireRole; the server enforces RBAC regardless.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   ApiError,
@@ -13,6 +13,13 @@ import {
   type Role,
 } from "../../api";
 import { RequireRole } from "../../components/RequireRole";
+import { Badge, statusTone } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Field, Select, Textarea } from "../../components/ui/Field";
+import { PageHeader } from "../../components/ui/PageHeader";
+import { Table, TBody, Td, Th, THead, Tr } from "../../components/ui/Table";
+import { useAsync } from "../../hooks/useAsync";
 import { Activations } from "./Activations";
 
 type StatusFilter = LicenseStatus | "all";
@@ -27,7 +34,6 @@ function lifecycleError(err: unknown): string {
 }
 
 export function Licenses({ sessionRole }: { sessionRole: Role }): JSX.Element {
-  const [licenses, setLicenses] = useState<License[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [customerId, setCustomerId] = useState("");
@@ -36,24 +42,24 @@ export function Licenses({ sessionRole }: { sessionRole: Role }): JSX.Element {
   const [viewingSeats, setViewingSeats] = useState<License | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refDisplay = useMemo(() => new Map(customers.map((c) => [c.id, c.ref])), [customers]);
-
-  const refresh = useCallback(async () => {
-    setLicenses(
-      await licensingApi.listLicenses({
+  const {
+    data: licenses = [],
+    reload: refresh,
+    error: loadError,
+  } = useAsync(
+    () =>
+      licensingApi.listLicenses({
         status: status === "all" ? undefined : status,
         customerId: customerId || undefined,
       }),
-    );
-  }, [status, customerId]);
+    [status, customerId],
+  );
+
+  const refDisplay = useMemo(() => new Map(customers.map((c) => [c.id, c.ref])), [customers]);
 
   useEffect(() => {
     void licensingApi.listCustomers().then(setCustomers).catch(() => setError("Could not load customers."));
   }, []);
-
-  useEffect(() => {
-    void refresh().catch(() => setError("Could not load licenses."));
-  }, [refresh]);
 
   async function showKey(id: string): Promise<void> {
     setError(null);
@@ -88,86 +94,101 @@ export function Licenses({ sessionRole }: { sessionRole: Role }): JSX.Element {
   }
 
   return (
-    <section aria-label="Licenses">
-      <h3>Licenses</h3>
-      {error && <p role="alert" className="error">{error}</p>}
+    <section aria-label="Licenses" className="space-y-4">
+      <PageHeader title="Licenses" description="Every issued license and its lifecycle — suspend, reinstate, revoke, transfer, and drill into activations." />
+      {Boolean(error || loadError) && (
+        <p role="alert" className="error text-sm text-danger">
+          {error ?? "Could not load licenses."}
+        </p>
+      )}
 
-      <div className="filters">
-        <label>
-          Status
-          <select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
-            <option value="all">All</option>
-            <option value="active">Active</option>
-            <option value="suspended">Suspended</option>
-            <option value="revoked">Revoked</option>
-          </select>
-        </label>
-        <label>
-          Customer
-          <select aria-label="Customer filter" value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
-            <option value="">All customers</option>
-            {customers.map((c) => (
-              <option key={c.id} value={c.id}>{c.ref}</option>
-            ))}
-          </select>
-        </label>
-        <RequireRole role={sessionRole} min="admin">
-          <label>
-            Transfer target
-            <select aria-label="Transfer target" value={transferTarget} onChange={(e) => setTransferTarget(e.target.value)}>
-              <option value="">Select a customer…</option>
-              {customers
-                .filter((c) => c.status === "active")
-                .map((c) => (
-                  <option key={c.id} value={c.id}>{c.ref}</option>
-                ))}
-            </select>
-          </label>
-        </RequireRole>
-      </div>
+      <Card>
+        <div className="filters flex flex-wrap items-end gap-3">
+          <Field label="Status">
+            <Select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
+              <option value="all">All</option>
+              <option value="active">Active</option>
+              <option value="suspended">Suspended</option>
+              <option value="revoked">Revoked</option>
+            </Select>
+          </Field>
+          <Field label="Customer">
+            <Select aria-label="Customer filter" value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
+              <option value="">All customers</option>
+              {customers.map((c) => (
+                <option key={c.id} value={c.id}>{c.ref}</option>
+              ))}
+            </Select>
+          </Field>
+          <RequireRole role={sessionRole} min="admin">
+            <Field label="Transfer target">
+              <Select aria-label="Transfer target" value={transferTarget} onChange={(e) => setTransferTarget(e.target.value)}>
+                <option value="">Select a customer…</option>
+                {customers
+                  .filter((c) => c.status === "active")
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>{c.ref}</option>
+                  ))}
+              </Select>
+            </Field>
+          </RequireRole>
+        </div>
+      </Card>
 
-      <table>
-        <thead>
-          <tr><th>License</th><th>Customer</th><th>Status</th><th>Expires</th><th>Transfers</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
+      <Table>
+        <THead>
+          <Tr>
+            <Th>License</Th>
+            <Th>Customer</Th>
+            <Th>Status</Th>
+            <Th>Expires</Th>
+            <Th>Transfers</Th>
+            <Th>Actions</Th>
+          </Tr>
+        </THead>
+        <TBody>
           {licenses.map((l) => (
-            <tr key={l.id}>
-              <td>{l.id}</td>
-              <td>{refDisplay.get(l.customerId) ?? l.customerId}</td>
-              <td>{l.status}</td>
-              <td>{l.expiresAt ?? "perpetual"}</td>
-              <td>{l.transferCount}</td>
-              <td>
-                <button type="button" onClick={() => void showKey(l.id)}>Get key</button>
-                <button type="button" onClick={() => setViewingSeats(l)}>Activations</button>
-                <RequireRole role={sessionRole} min="admin">
-                  {l.status === "active" && (
-                    <button type="button" onClick={() => void act(() => licensingApi.suspendLicense(l.id))}>Suspend</button>
-                  )}
-                  {l.status === "suspended" && (
-                    <button type="button" onClick={() => void act(() => licensingApi.reinstateLicense(l.id))}>Reinstate</button>
-                  )}
-                  {l.status !== "revoked" && (
-                    <>
-                      <button type="button" onClick={() => void act(() => licensingApi.revokeLicense(l.id))}>Revoke</button>
-                      <button type="button" onClick={() => void transfer(l.id)}>Transfer</button>
-                    </>
-                  )}
-                </RequireRole>
-              </td>
-            </tr>
+            <Tr key={l.id}>
+              <Td>{l.id}</Td>
+              <Td>{refDisplay.get(l.customerId) ?? l.customerId}</Td>
+              <Td>
+                <Badge tone={statusTone(l.status)}>{l.status}</Badge>
+              </Td>
+              <Td>{l.expiresAt ?? "perpetual"}</Td>
+              <Td>{l.transferCount}</Td>
+              <Td>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="secondary" size="sm" type="button" onClick={() => void showKey(l.id)}>Get key</Button>
+                  <Button variant="ghost" size="sm" type="button" onClick={() => setViewingSeats(l)}>Activations</Button>
+                  <RequireRole role={sessionRole} min="admin">
+                    {l.status === "active" && (
+                      <Button variant="secondary" size="sm" type="button" onClick={() => void act(() => licensingApi.suspendLicense(l.id))}>Suspend</Button>
+                    )}
+                    {l.status === "suspended" && (
+                      <Button variant="secondary" size="sm" type="button" onClick={() => void act(() => licensingApi.reinstateLicense(l.id))}>Reinstate</Button>
+                    )}
+                    {l.status !== "revoked" && (
+                      <>
+                        <Button variant="danger" size="sm" type="button" onClick={() => void act(() => licensingApi.revokeLicense(l.id))}>Revoke</Button>
+                        <Button variant="secondary" size="sm" type="button" onClick={() => void transfer(l.id)}>Transfer</Button>
+                      </>
+                    )}
+                  </RequireRole>
+                </div>
+              </Td>
+            </Tr>
           ))}
-        </tbody>
-      </table>
+        </TBody>
+      </Table>
 
       {Object.entries(keys).map(([id, key]) => (
-        <div key={id} role="status" aria-label={`License key ${id}`}>
-          <label>
-            Key for {id}
-            <textarea aria-label={`Key for ${id}`} readOnly rows={4} value={key} />
-          </label>
-        </div>
+        <Card key={id}>
+          <div role="status" aria-label={`License key ${id}`}>
+            <Field label={`Key for ${id}`}>
+              <Textarea aria-label={`Key for ${id}`} readOnly rows={4} value={key} />
+            </Field>
+          </div>
+        </Card>
       ))}
     </section>
   );

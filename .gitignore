@@ -28,3 +28,17 @@ Thumbs.db
 .idea/
 .vscode/
 node_modules
+
+# Local dev secrets & demo artifacts (never commit)
+/secrets/
+# Native (no-Docker) environment file — holds DATABASE_URL with the DB password inline.
+# `.env.native.example` IS committed; the populated `.env.native` must never be.
+/.env.native
+/cookies.txt
+/examples/license-demo/.out/
+
+# Browser demo app (generated wasm build + snapshot; node deps/build)
+/examples/license-demo-app/src/wasm/
+/examples/license-demo-app/public/demo-bundle.json
+/examples/license-demo-app/node_modules/
+/examples/license-demo-app/dist/

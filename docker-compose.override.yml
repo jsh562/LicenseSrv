@@ -1,6 +1,21 @@
-# Local dev override (auto-merged by `docker compose`). Exposes Postgres on the host so the
-# dev seed script (scripts/seed-dev.ts) can connect at localhost:5432. NOT for production.
+# Local dev override (auto-merged by `docker compose`). NOT for production.
+#  - Exposes Postgres on host 15432 so the dev seed scripts can connect.
+#  - Unlocks the signer for the local licensing demo by mounting Shamir custodian shares
+#    (generate with `npx tsx scripts/gen-custody.ts`). Without this the signer stays locked
+#    and `POST /admin/licenses` returns 503 signer_unavailable.
 services:
   db:
     ports:
       - "15432:5432"
+  api:
+    environment:
+      SIGNING_CUSTODIAN_SHARES_FILE: /run/secrets/signing_custodian_shares
+    # Re-list the base api secrets so this override merge does not drop them.
+    secrets:
+      - database_url
+      - api_key_secret
+      - signing_custodian_shares
+
+secrets:
+  signing_custodian_shares:
+    file: ./secrets/custodian_shares

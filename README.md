@@ -48,6 +48,28 @@ All settings come from the environment; secrets use the `<VAR>_FILE` convention 
 baked into the image). See [docs/config-reference.md](docs/config-reference.md) for every variable and
 secret-hygiene guidance.
 
+## Run it without Docker
+
+The API is a plain Node process plus PostgreSQL, so it also runs natively on Windows, Linux, and macOS —
+useful when you don't want the container runtime's overhead (on Windows, Docker Desktop was measured holding
+~4.8 GB working set to run a ~120 MB workload).
+
+```sh
+npm ci
+npm run setup:native     # creates role + database, fills in secrets, writes .env.native
+npm run start:native     # builds, migrates, then serves on 127.0.0.1:8080
+```
+
+If 8080 is already in use (a running `docker compose` stack, typically), the native server relocates to the
+next free port automatically, writes it to `.env.native`, and prints it — the admin-ui dev proxy follows.
+
+Both paths share the same `secrets/` files, so secrets are generated once. Full walkthrough, the
+`db:5432` → `localhost:5432` difference, measured memory figures, and troubleshooting:
+**[docs/native-setup.md](docs/native-setup.md)**.
+
+Note that `npm test` still requires a Docker daemon — the integration suites start Postgres via
+Testcontainers. The native path covers running the server, not testing it.
+
 ### Health probes
 
 | Probe | Path | Meaning |
@@ -55,6 +77,52 @@ secret-hygiene guidance.
 | Liveness | `/internal/health/live` | process is alive (restart if failing) |
 | Readiness | `/internal/health/ready` | can serve traffic — DB + composed signer (withhold traffic if failing, do not restart) |
 | Startup | `/internal/health/startup` | initial boot completed |
+
+## Try it end-to-end
+
+Once the stack is up (`docker compose up --build`), you can exercise the whole product locally. A
+git-ignored `docker-compose.override.yml` (created during setup) exposes Postgres on host `15432` and
+mounts the signer custodian shares that the demos need.
+
+### 1. See a license verified — command line
+
+Proves the core value proposition (issue a signed license → verify it **offline** → tampered/expired
+rejected), all self-checking:
+
+```sh
+npm run demo
+```
+
+It unlocks the signer, seeds a tenant + product/plan/license, issues a real `LIC1.` token, and verifies
+it offline with the WASM verifier core. Details: [examples/license-demo/README.md](examples/license-demo/README.md).
+
+### 2. See a license gate a real app — browser demo
+
+A mock customer product ("Acme Analytics") whose Pro dashboard **visibly unlocks/locks** based on a
+license verified in the browser. Pick Valid / Tampered / Expired / paste-your-own, or issue one live:
+
+```sh
+npm run demo-app        # builds the browser WASM, snapshots the license, and serves the app
+```
+
+Then open the printed URL. Details: [examples/license-demo-app/README.md](examples/license-demo-app/README.md).
+
+### 3. Use the admin console
+
+Create an admin, then run the console SPA (it proxies `/admin` to the API):
+
+```sh
+# create tenant `acme` + owner admin@acme.test / password123!
+DATABASE_URL="postgres://licensesrv:$(cat secrets/db_password)@localhost:15432/licensesrv" \
+API_KEY_SECRET="$(cat secrets/api_key_secret)" \
+  npx tsx scripts/seed-dev.ts
+
+cd src/admin-ui && npm install && npm run dev   # open the printed URL, sign in
+```
+
+From the console you can define products/plans/entitlements, issue and manage licenses, and browse the
+audit log. **What each console section does** — and the difference between Users, API keys, and the
+per-product signing ("trusted") key — is in [docs/admin-console.md](docs/admin-console.md).
 
 ## Verified releases (E011)
 
@@ -72,14 +140,33 @@ failed check means do not deploy):
 
 Operator runbooks: [failed release](docs/release/failed-release.md) · [signing-identity rotation](docs/release/signing-identity-rotation.md).
 
-## Development
+## Development & testing
 
 ```sh
 npm ci
-npm run typecheck && npm run lint
-npm run test:cov          # unit + Testcontainers integration, with the coverage gate
-npm run build             # tsc -> dist/
-DOCKER_SMOKE=1 npm run test:docker   # image build + compose acceptance smoke (needs Docker)
+npm run typecheck && npm run lint    # fast, no Docker
+npm run build                        # tsc -> dist/
 ```
+
+### Test suites
+
+| Suite | Command | Docker? |
+|-------|---------|---------|
+| Server — unit + integration | `npm test` | **Yes** — integration tests spin up `postgres:16` per file via Testcontainers (serial; slow but thorough) |
+| Server — with coverage gate | `npm run test:cov` | Yes |
+| A single module (fast) | `npx vitest run src/server/modules/<mod>` | integration paths need Docker; `*.unit.test.ts` don't |
+| Container image smoke | `DOCKER_SMOKE=1 npm run test:docker` | Yes — builds the image, checks non-root + no baked secrets, then `compose up` + readiness |
+| Admin console (SPA) | `cd src/admin-ui && npm install && npm run test` (or `test:cov`) | No — jsdom + mocked fetch |
+
+Everything requiring the database runs Postgres via **Testcontainers**, so a running **Docker daemon**
+is required for the full server suite; the unit tests and the admin-ui tests run without it.
+
+The two demos are **self-checking**: `npm run demo` exits non-zero if a license fails to issue or
+verify, and `examples/license-demo-app` typechecks + builds in CI-style. See
+[examples/license-demo/README.md](examples/license-demo/README.md) and
+[examples/license-demo-app/README.md](examples/license-demo-app/README.md).
+
+> Local dev artifacts are git-ignored: `secrets/`, `examples/**/.out/`, the generated browser WASM
+> (`examples/license-demo-app/src/wasm/`), and `demo-bundle.json`.
 
 Runbooks for operations live in [docs/runbooks/](docs/runbooks/).

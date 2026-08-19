@@ -85,6 +85,37 @@ const schema = z.object({
     usageIngestRateWindow: z.string().min(1).default("1 minute"),
     usageMaxBatch: z.coerce.number().int().positive().default(1_000),
     usageQueryMaxHours: z.coerce.number().int().positive().default(2_160), // 90 days
+    // E017 policy-rule defaults — a tight sandbox: a short per-evaluation timeout (issuance stays fast), small
+    // author-time condition size/depth/complexity caps (the allow-list IS the security boundary), bounded
+    // decision-context caps (also the dry-run supplied-context bound), the three FR-019 cost caps, a large-but-
+    // finite absolute authored-max ceiling, a ~90d audit retention window, and highest-priority-wins conflict
+    // resolution. The policy module reads the same SCREAMING_SNAKE keys LIVE. Operators retune without a migration.
+    policyEvalTimeoutMs: z.coerce.number().int().positive().default(50), // 50 ms per-evaluation sandbox timeout
+    policyConditionMaxBytes: z.coerce.number().int().positive().default(8_192), // 8 KiB serialized condition
+    policyConditionMaxDepth: z.coerce.number().int().positive().default(16),
+    policyConditionMaxComplexity: z.coerce.number().int().positive().default(128), // node-count / operator budget
+    policyContextMaxBytes: z.coerce.number().int().positive().default(16_384), // 16 KiB serialized context
+    policyContextMaxDepth: z.coerce.number().int().positive().default(8),
+    policyContextMaxFields: z.coerce.number().int().positive().default(128),
+    policyMaxRulesPerEntitlement: z.coerce.number().int().positive().default(50),
+    policyMaxRulesPerTenant: z.coerce.number().int().positive().default(500),
+    policyMaxRulesPerIssuance: z.coerce.number().int().positive().default(100),
+    policyAbsoluteMaxLimit: z.coerce.number().positive().default(1_000_000_000), // absolute authored-max ceiling (numeric)
+    policyEvaluationRetentionSecs: z.coerce.number().int().positive().default(7_776_000), // 90 days
+    policyConflictPolicy: z.enum(["highest_priority_wins"]).default("highest_priority_wins"),
+    // E018 reseller & white-label defaults — a sane default sub-tenant quota, a ~30d offboarding grace window,
+    // the fixed non-white-labelable trust-signal set (revocation/tamper/signing-identity/audit/legal), and the
+    // platform-default branding floor (product name + colors; support/help/logo empty by default). The reseller
+    // module reads the same SCREAMING_SNAKE keys LIVE. Non-secret; operators retune without a migration.
+    resellerDefaultSubTenantQuota: z.coerce.number().int().min(0).default(50),
+    resellerOffboardingGraceSecs: z.coerce.number().int().positive().default(2_592_000), // 30 days
+    resellerTrustSignals: z.string().min(1).default("revocation,tamper,signing_identity,audit,legal"),
+    resellerPlatformProductName: z.string().default("License Server"),
+    resellerPlatformColorPrimary: z.string().default("#1f2937"),
+    resellerPlatformColorSecondary: z.string().default("#3b82f6"),
+    resellerPlatformSupportUrl: z.string().default(""),
+    resellerPlatformHelpUrl: z.string().default(""),
+    resellerPlatformLogoRef: z.string().default(""),
 });
 /**
  * Resolve + validate `DATABASE_URL` (with `<VAR>_FILE` support) on its own. The migration job needs the
@@ -148,6 +179,28 @@ export function loadConfig(env = process.env) {
         usageIngestRateWindow: env.USAGE_INGEST_RATE_WINDOW,
         usageMaxBatch: env.USAGE_MAX_BATCH,
         usageQueryMaxHours: env.USAGE_QUERY_MAX_HOURS,
+        policyEvalTimeoutMs: env.POLICY_EVAL_TIMEOUT_MS,
+        policyConditionMaxBytes: env.POLICY_CONDITION_MAX_BYTES,
+        policyConditionMaxDepth: env.POLICY_CONDITION_MAX_DEPTH,
+        policyConditionMaxComplexity: env.POLICY_CONDITION_MAX_COMPLEXITY,
+        policyContextMaxBytes: env.POLICY_CONTEXT_MAX_BYTES,
+        policyContextMaxDepth: env.POLICY_CONTEXT_MAX_DEPTH,
+        policyContextMaxFields: env.POLICY_CONTEXT_MAX_FIELDS,
+        policyMaxRulesPerEntitlement: env.POLICY_MAX_RULES_PER_ENTITLEMENT,
+        policyMaxRulesPerTenant: env.POLICY_MAX_RULES_PER_TENANT,
+        policyMaxRulesPerIssuance: env.POLICY_MAX_RULES_PER_ISSUANCE,
+        policyAbsoluteMaxLimit: env.POLICY_ABSOLUTE_MAX_LIMIT,
+        policyEvaluationRetentionSecs: env.POLICY_EVALUATION_RETENTION_SECS,
+        policyConflictPolicy: env.POLICY_CONFLICT_POLICY,
+        resellerDefaultSubTenantQuota: env.RESELLER_DEFAULT_SUBTENANT_QUOTA,
+        resellerOffboardingGraceSecs: env.RESELLER_OFFBOARDING_GRACE_SECS,
+        resellerTrustSignals: env.RESELLER_TRUST_SIGNALS,
+        resellerPlatformProductName: env.RESELLER_PLATFORM_PRODUCT_NAME,
+        resellerPlatformColorPrimary: env.RESELLER_PLATFORM_COLOR_PRIMARY,
+        resellerPlatformColorSecondary: env.RESELLER_PLATFORM_COLOR_SECONDARY,
+        resellerPlatformSupportUrl: env.RESELLER_PLATFORM_SUPPORT_URL,
+        resellerPlatformHelpUrl: env.RESELLER_PLATFORM_HELP_URL,
+        resellerPlatformLogoRef: env.RESELLER_PLATFORM_LOGO_REF,
         // Secrets follow the <VAR>_FILE convention (file wins; unset → the documented default salt).
         leaseHolderKeySalt: readSecret(env, "LEASE_HOLDER_KEY_SALT") ?? "licensesrv-lease-salt",
         fingerprintPepper: readSecret(env, "OBS_FINGERPRINT_PEPPER") ?? "",
@@ -231,6 +284,30 @@ export function configSummary(c) {
         usageIngestRateWindow: c.usageIngestRateWindow,
         usageMaxBatch: c.usageMaxBatch,
         usageQueryMaxHours: c.usageQueryMaxHours,
+        // E017 policy-rule bounds (non-secret; deployment-wide defaults read live by the policy module).
+        policyEvalTimeoutMs: c.policyEvalTimeoutMs,
+        policyConditionMaxBytes: c.policyConditionMaxBytes,
+        policyConditionMaxDepth: c.policyConditionMaxDepth,
+        policyConditionMaxComplexity: c.policyConditionMaxComplexity,
+        policyContextMaxBytes: c.policyContextMaxBytes,
+        policyContextMaxDepth: c.policyContextMaxDepth,
+        policyContextMaxFields: c.policyContextMaxFields,
+        policyMaxRulesPerEntitlement: c.policyMaxRulesPerEntitlement,
+        policyMaxRulesPerTenant: c.policyMaxRulesPerTenant,
+        policyMaxRulesPerIssuance: c.policyMaxRulesPerIssuance,
+        policyAbsoluteMaxLimit: c.policyAbsoluteMaxLimit,
+        policyEvaluationRetentionSecs: c.policyEvaluationRetentionSecs,
+        policyConflictPolicy: c.policyConflictPolicy,
+        // E018 reseller & white-label config (non-secret; deployment-wide defaults read live by the reseller module).
+        resellerDefaultSubTenantQuota: c.resellerDefaultSubTenantQuota,
+        resellerOffboardingGraceSecs: c.resellerOffboardingGraceSecs,
+        resellerTrustSignals: c.resellerTrustSignals,
+        resellerPlatformProductName: c.resellerPlatformProductName,
+        resellerPlatformColorPrimary: c.resellerPlatformColorPrimary,
+        resellerPlatformColorSecondary: c.resellerPlatformColorSecondary,
+        resellerPlatformSupportUrl: c.resellerPlatformSupportUrl || "(unset)",
+        resellerPlatformHelpUrl: c.resellerPlatformHelpUrl || "(unset)",
+        resellerPlatformLogoRef: c.resellerPlatformLogoRef || "(unset)",
         // Secrets are never summarised: presence-only, never the value.
         leaseHolderKeySalt: c.leaseHolderKeySalt ? "***" : "(unset)",
         fingerprintPepper: c.fingerprintPepper ? "***" : "(unset)",
